@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import type { PlatformAPI } from "./lib/platform.js";
 import App from "./App.js";
-import { createWebAdapter } from "./lib/web-adapter.js";
+import { applyIncomingWsSessionRouting, createWebAdapter } from "./lib/web-adapter.js";
 import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
 import { useSessionStore } from "./lib/store/session.js";
@@ -29,15 +29,20 @@ class FakeAdapter implements PlatformAPI {
   }
 
   emit(type: string, payload: any): void {
-    this.handler?.(type, payload);
+    const routed = applyIncomingWsSessionRouting(type, payload);
+    this.handler?.(type, routed);
   }
 }
 
 const adapter = new FakeAdapter();
 
-vi.mock("./lib/web-adapter.js", () => ({
-  createWebAdapter: vi.fn(() => adapter),
-}));
+vi.mock("./lib/web-adapter.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./lib/web-adapter.js")>();
+  return {
+    ...actual,
+    createWebAdapter: vi.fn(() => adapter),
+  };
+});
 
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
@@ -99,6 +104,99 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(statusDot.className).toContain("bg-green-500");
     });
+  });
+
+  it("routes incoming text to payload session when active session differs (no cross-session mix)", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+
+    render(<App />);
+    await screen.findByText("cc-connect");
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
+      connectionId: "cc-connect",
+      connected: true,
+    });
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "session-b",
+      content: "delivered to B only",
+    });
+
+    await waitFor(() => {
+      const st = useMessageStore.getState();
+      const keyB = makeChatKey("cc-connect", "session-b");
+      const keyA = makeChatKey("cc-connect", "session-a");
+      expect((st.messagesByChat[keyB] ?? []).some((m) => m.content === "delivered to B only")).toBe(true);
+      expect((st.messagesByChat[keyA] ?? []).some((m) => m.content === "delivered to B only")).toBe(false);
+    });
+  });
+
+  it("routes incoming text by replyCtx when payload sessionKey is missing", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+
+    const routed = applyIncomingWsSessionRouting(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      replyCtx: "ccpet:session-b:42",
+      content: "from reply context",
+    }) as { sessionKey?: string };
+
+    expect(routed.sessionKey).toBe("session-b");
+  });
+
+  it("falls back to active session when replyCtx is not in known sessions", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+
+    const routed = applyIncomingWsSessionRouting(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      replyCtx: "ccpet:session-x:42",
+      content: "fallback to active",
+    }) as { sessionKey?: string };
+
+    expect(routed.sessionKey).toBe("session-a");
+  });
+
+  it("supports reply_ctx fallback key format from server payloads", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+
+    const routed = applyIncomingWsSessionRouting(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      reply_ctx: "ccpet:session-b:77",
+      content: "snake case reply ctx",
+    }) as { sessionKey?: string };
+
+    expect(routed.sessionKey).toBe("session-b");
   });
 
   it("sends message to websocket and renders incoming bridge reply", async () => {

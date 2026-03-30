@@ -1,4 +1,7 @@
+import { WS_EVENTS } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
+import { resolveIncomingSessionKey } from "./sessionRouting.js";
+import { useSessionStore } from "./store/session.js";
 
 const INITIAL_RECONNECT_MS = 3000;
 const MAX_RECONNECT_MS = 60_000;
@@ -22,6 +25,63 @@ function detachWebSocket(socket: WebSocket | null): void {
   } catch {
     // ignore
   }
+}
+
+export type WebAdapterIncomingSessionRoutingContext = {
+  knownSessions: string[];
+  activeSessionKey?: string;
+};
+
+/** Bridge WS event types that carry a session target before UI consumption. */
+const INCOMING_SESSION_ROUTING_TYPES = new Set<string>([
+  WS_EVENTS.BRIDGE_MESSAGE,
+  WS_EVENTS.BRIDGE_STREAM_DELTA,
+  WS_EVENTS.BRIDGE_STREAM_DONE,
+  WS_EVENTS.BRIDGE_BUTTONS,
+  WS_EVENTS.BRIDGE_FILE_RECEIVED,
+  WS_EVENTS.BRIDGE_TYPING_START,
+  WS_EVENTS.BRIDGE_TYPING_STOP,
+  WS_EVENTS.BRIDGE_PREVIEW_START,
+  WS_EVENTS.BRIDGE_PREVIEW_UPDATE,
+  WS_EVENTS.BRIDGE_PREVIEW_DELETE,
+  WS_EVENTS.BRIDGE_ERROR,
+]);
+
+function defaultIncomingSessionRoutingContext(connectionId: string): WebAdapterIncomingSessionRoutingContext {
+  const s = useSessionStore.getState();
+  const sessions = s.sessions[connectionId] ?? [];
+  return {
+    knownSessions: sessions.map((x) => x.key),
+    activeSessionKey: s.activeSessionKey[connectionId],
+  };
+}
+
+/**
+ * Applies payloadSessionKey > replyCtx > active > knownSessions[0] > default before handlers run.
+ * Exported for integration tests that bypass the real WebSocket layer.
+ */
+export function applyIncomingWsSessionRouting(
+  type: string,
+  payload: unknown,
+  getCtx: (connectionId: string) => WebAdapterIncomingSessionRoutingContext = defaultIncomingSessionRoutingContext,
+): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const p = payload as Record<string, unknown>;
+  const connectionId = p.connectionId;
+  if (typeof connectionId !== "string" || connectionId.length === 0) return payload;
+  if (!INCOMING_SESSION_ROUTING_TYPES.has(type)) return payload;
+
+  const { knownSessions, activeSessionKey } = getCtx(connectionId);
+  const replyCtx =
+    (typeof p.replyCtx === "string" ? p.replyCtx : undefined) ??
+    (typeof p.reply_ctx === "string" ? p.reply_ctx : undefined);
+  const resolved = resolveIncomingSessionKey({
+    payloadSessionKey: typeof p.sessionKey === "string" ? p.sessionKey : undefined,
+    replyCtx,
+    knownSessions,
+    activeSessionKey,
+  });
+  return { ...p, sessionKey: resolved };
 }
 
 export function createWebAdapter(serverUrl: string): PlatformAPI {
@@ -103,8 +163,9 @@ export function createWebAdapter(serverUrl: string): PlatformAPI {
       socket.onmessage = (e) => {
         if (ws !== socket) return;
         try {
-          const msg = JSON.parse(e.data);
-          eventHandler?.(msg.type, msg);
+          const msg = JSON.parse(e.data) as { type: string };
+          const routed = applyIncomingWsSessionRouting(msg.type, msg) as typeof msg;
+          eventHandler?.(routed.type, routed);
         } catch {
           /* ignore malformed */
         }

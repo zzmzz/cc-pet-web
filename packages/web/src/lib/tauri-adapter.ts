@@ -1,6 +1,7 @@
 import type { PlatformAPI } from "./platform.js";
 import { createWebAdapter } from "./web-adapter.js";
 
+/** Desktop entry: wraps `createWebAdapter` (inbound session routing lives in the web adapter). */
 export async function createTauriAdapter(serverUrl: string): Promise<PlatformAPI> {
   const base = createWebAdapter(serverUrl);
 
