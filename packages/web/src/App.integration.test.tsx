@@ -47,7 +47,7 @@ vi.mock("./lib/web-adapter.js", async (importOriginal) => {
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {} });
+  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskPhaseByConnection: {} });
   useUIStore.setState({ chatOpen: false, settingsOpen: false, petState: "idle", isMobile: false });
   useConfigStore.setState({ config: null });
   useCommandStore.setState({ agentCommandsByConnection: {} });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
 import { setPlatform } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
@@ -38,6 +38,12 @@ export default function App() {
         connectionId ? (sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default") : undefined;
       const chatKey = connectionId && resolvedSessionKey ? makeChatKey(connectionId, resolvedSessionKey) : "";
 
+      const setTaskPhase = (phase: TaskPhase): void => {
+        if (connectionId && resolvedSessionKey) {
+          useSessionStore.getState().setSessionTaskPhase(connectionId, resolvedSessionKey, phase);
+        }
+      };
+
       switch (type) {
         case WS_EVENTS.BRIDGE_CONNECTED:
           useConnectionStore.getState().setConnectionStatus(connectionId, payload.connected);
@@ -48,14 +54,17 @@ export default function App() {
             id: `msg-${Date.now()}`, role: "assistant", content: payload.content,
             timestamp: Date.now(), connectionId, sessionKey: resolvedSessionKey,
           });
+          setTaskPhase("idle");
           useUIStore.getState().setPetState("idle");
           break;
         case WS_EVENTS.BRIDGE_STREAM_DELTA:
           useMessageStore.getState().appendStreamDelta(chatKey, payload.delta);
+          setTaskPhase("processing");
           useUIStore.getState().setPetState("talking");
           break;
         case WS_EVENTS.BRIDGE_STREAM_DONE:
           useMessageStore.getState().finalizeStream(chatKey, payload.fullText);
+          setTaskPhase("idle");
           useUIStore.getState().setPetState("idle");
           break;
         case WS_EVENTS.BRIDGE_BUTTONS:
@@ -63,6 +72,7 @@ export default function App() {
             id: `msg-${Date.now()}`, role: "assistant", content: payload.content ?? "",
             timestamp: Date.now(), connectionId, sessionKey: resolvedSessionKey, buttons: payload.buttons,
           });
+          setTaskPhase("idle");
           useUIStore.getState().setPetState("idle");
           break;
         case WS_EVENTS.BRIDGE_FILE_RECEIVED:
@@ -81,12 +91,15 @@ export default function App() {
               },
             ],
           });
+          setTaskPhase("idle");
           useUIStore.getState().setPetState("idle");
           break;
         case WS_EVENTS.BRIDGE_TYPING_START:
+          setTaskPhase("thinking");
           useUIStore.getState().setPetState("thinking");
           break;
         case WS_EVENTS.BRIDGE_TYPING_STOP:
+          setTaskPhase("idle");
           useUIStore.getState().setPetState("idle");
           break;
         case WS_EVENTS.BRIDGE_SKILLS_UPDATED: {
@@ -101,6 +114,7 @@ export default function App() {
             const fallbackSessionKey =
               sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
             const errorChatKey = makeChatKey(connectionId, fallbackSessionKey);
+            useSessionStore.getState().setSessionTaskPhase(connectionId, fallbackSessionKey, "failed");
             useMessageStore.getState().addMessage(errorChatKey, {
               id: `msg-${Date.now()}`,
               role: "assistant",

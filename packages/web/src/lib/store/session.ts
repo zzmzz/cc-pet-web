@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { makeChatKey } from "@cc-pet/shared";
-import type { Session } from "@cc-pet/shared";
+import type { Session, TaskPhase } from "@cc-pet/shared";
 import { useMessageStore } from "./message.js";
 import { useUIStore } from "./ui.js";
 
@@ -19,9 +19,13 @@ interface SessionState {
   sessions: Record<string, Session[]>;
   activeSessionKey: Record<string, string>;
   unread: Record<string, number>;
+  /** Per-connection session task phase for dropdown labels (from WS / future bridge task events). */
+  taskPhaseByConnection: Record<string, Record<string, TaskPhase>>;
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
+  setSessionTaskPhase: (connectionId: string, sessionKey: string, phase: TaskPhase) => void;
+  touchSessionLastActive: (connectionId: string, sessionKey: string) => void;
   incrementUnread: (chatKey: string) => void;
   clearUnread: (chatKey: string) => void;
   clearSessionUnread: (connectionId: string, sessionKey: string) => void;
@@ -40,11 +44,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: {},
   activeSessionKey: {},
   unread: {},
+  taskPhaseByConnection: {},
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
   setActiveSession: (connectionId, key) =>
     set((s) => ({ activeSessionKey: { ...s.activeSessionKey, [connectionId]: key } })),
+  setSessionTaskPhase: (connectionId, sessionKey, phase) =>
+    set((s) => {
+      const prevConn = s.taskPhaseByConnection[connectionId] ?? {};
+      return {
+        taskPhaseByConnection: {
+          ...s.taskPhaseByConnection,
+          [connectionId]: { ...prevConn, [sessionKey]: phase },
+        },
+      };
+    }),
+  touchSessionLastActive: (connectionId, sessionKey) =>
+    set((s) => {
+      const list = s.sessions[connectionId] ?? [];
+      const idx = list.findIndex((x) => x.key === sessionKey);
+      if (idx === -1) return s;
+      const now = Date.now();
+      const next = [...list];
+      next[idx] = { ...next[idx], lastActiveAt: now };
+      return { sessions: { ...s.sessions, [connectionId]: next } };
+    }),
   incrementUnread: (chatKey) =>
     set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } })),
   clearUnread: (chatKey) =>
@@ -75,10 +100,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
+      const prevPhases = s.taskPhaseByConnection[connectionId] ?? {};
+      const { [sessionKey]: _p, ...restPhases } = prevPhases;
+      const nextTaskPhase = { ...s.taskPhaseByConnection };
+      if (Object.keys(restPhases).length === 0) {
+        delete nextTaskPhase[connectionId];
+      } else {
+        nextTaskPhase[connectionId] = restPhases;
+      }
+
       return {
         sessions: { ...s.sessions, [connectionId]: nextList },
         activeSessionKey: nextActive,
         unread: restUnread,
+        taskPhaseByConnection: nextTaskPhase,
       };
     }),
   touchSessionAutoTitle: (connectionId, sessionKey, userText) =>

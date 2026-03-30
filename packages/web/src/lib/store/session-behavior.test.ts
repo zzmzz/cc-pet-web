@@ -10,7 +10,7 @@ const chatKey = makeChatKey(conn, sid);
 
 function resetStores() {
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {} });
+  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskPhaseByConnection: {} });
   useUIStore.setState({ chatOpen: false, settingsOpen: false, petState: "idle", isMobile: false });
 }
 
@@ -89,6 +89,32 @@ describe("session store behavior", () => {
     expect(useSessionStore.getState().unread[chatKey]).toBeUndefined();
     expect(useUIStore.getState().petState).toBe("idle");
     expect(useSessionStore.getState().activeSessionKey[conn]).toBeUndefined();
+  });
+
+  it("removeSession clears task phase for removed session", () => {
+    useSessionStore.setState({
+      sessions: {
+        [conn]: [
+          { key: sid, connectionId: conn, createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: conn, createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { [conn]: sid },
+      taskPhaseByConnection: { [conn]: { [sid]: "thinking", "session-b": "processing" } },
+    });
+    useSessionStore.getState().removeSession(conn, sid);
+    const st = useSessionStore.getState();
+    expect(st.taskPhaseByConnection[conn]?.[sid]).toBeUndefined();
+    expect(st.taskPhaseByConnection[conn]?.["session-b"]).toBe("processing");
+  });
+
+  it("touchSessionLastActive bumps lastActiveAt", () => {
+    const t = 1_000_000;
+    useSessionStore.setState({
+      sessions: { [conn]: [{ key: sid, connectionId: conn, createdAt: t, lastActiveAt: t }] },
+    });
+    useSessionStore.getState().touchSessionLastActive(conn, sid);
+    expect(useSessionStore.getState().sessions[conn]?.[0]?.lastActiveAt).toBeGreaterThan(t);
   });
 
   it("touchSessionAutoTitle sets label from first user text when title is still default", () => {
