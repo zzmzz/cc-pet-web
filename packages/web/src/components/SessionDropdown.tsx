@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { Session, TaskPhase } from "@cc-pet/shared";
+import type { ChatMessage, Session, SessionTaskState } from "@cc-pet/shared";
 import { makeChatKey } from "@cc-pet/shared";
 import { useSessionStore } from "../lib/store/session.js";
+import { useMessageStore } from "../lib/store/message.js";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { getPlatform } from "../lib/platform.js";
 
@@ -43,13 +44,24 @@ function sessionLabelText(s: Session): string {
   return s.label?.trim() || s.key.split(":").pop() || s.key;
 }
 
+/** Shown next to session title: last message time, not “last opened”. */
+function lastMessageOrCreatedAt(
+  connectionId: string,
+  session: Session,
+  messagesByChat: Record<string, ChatMessage[]>,
+): number {
+  const msgs = messagesByChat[makeChatKey(connectionId, session.key)] ?? [];
+  if (msgs.length === 0) return session.createdAt;
+  return Math.max(...msgs.map((m) => m.timestamp));
+}
+
 function phaseForSession(
   connectionId: string,
   sessionKey: string,
-  taskPhaseByConnection: Record<string, Record<string, TaskPhase>>,
+  taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
 ): string {
-  const p = taskPhaseByConnection[connectionId]?.[sessionKey];
-  return formatSessionPhase(p);
+  const p = taskStateByConnection[connectionId]?.[sessionKey]?.phase;
+  return formatSessionPhase(p ?? "idle");
 }
 
 export type SessionDropdownProps = {
@@ -75,12 +87,12 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     activeConnectionId ? s.activeSessionKey[activeConnectionId] ?? "default" : "default",
   );
   const unreadMap = useSessionStore((s) => s.unread);
-  const taskPhaseByConnection = useSessionStore((s) => s.taskPhaseByConnection);
+  const taskStateByConnection = useSessionStore((s) => s.taskStateByConnection);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const clearSessionUnread = useSessionStore((s) => s.clearSessionUnread);
   const removeSession = useSessionStore((s) => s.removeSession);
-  const touchSessionLastActive = useSessionStore((s) => s.touchSessionLastActive);
   const setSessions = useSessionStore((s) => s.setSessions);
+  const messagesByChat = useMessageStore((s) => s.messagesByChat);
 
   useEffect(() => {
     if (!open) return;
@@ -111,7 +123,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
 
   const currentSession = sessions.find((s) => s.key === activeKey);
   const activeLabel = currentSession ? sessionLabelText(currentSession) : activeKey;
-  const activeStatusLabel = phaseForSession(activeConnectionId, activeKey, taskPhaseByConnection);
+  const activeStatusLabel = phaseForSession(activeConnectionId, activeKey, taskStateByConnection);
 
   const unreadFor = (sessionKey: string): number => {
     const ck = makeChatKey(activeConnectionId, sessionKey);
@@ -128,7 +140,11 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
 
   const inactive = sessions
     .filter((s) => s.key !== activeKey)
-    .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    .sort(
+      (a, b) =>
+        lastMessageOrCreatedAt(activeConnectionId, b, messagesByChat) -
+        lastMessageOrCreatedAt(activeConnectionId, a, messagesByChat),
+    );
 
   const recentInactive = showAll ? inactive : inactive.slice(0, RECENT_VISIBLE);
   const hiddenCount = inactive.length - RECENT_VISIBLE;
@@ -139,7 +155,6 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     if (!activeConnectionId) return;
     setActiveSession(activeConnectionId, key);
     clearSessionUnread(activeConnectionId, key);
-    touchSessionLastActive(activeConnectionId, key);
     setOpen(false);
     setShowAll(false);
     setConfirmDeleteId(null);
@@ -234,14 +249,14 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
         <span
           className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-400"}`}
         />
-        <span className="text-[12px] font-semibold text-gray-200 truncate">{buttonLabel}</span>
-        <span className="text-[10px] text-gray-500 flex-shrink-0">{activeStatusLabel}</span>
+        <span className="text-sm font-semibold text-gray-800 truncate">{buttonLabel}</span>
+        <span className="text-xs text-gray-600 flex-shrink-0">{activeStatusLabel}</span>
         {hasUnread && (
           <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
             {formatUnread(totalUnread)}
           </span>
         )}
-        <span className="text-[9px] text-gray-500 flex-shrink-0">{open ? "▲" : "▼"}</span>
+        <span className="text-xs text-gray-600 flex-shrink-0">{open ? "▲" : "▼"}</span>
       </button>
 
       {open && (
@@ -249,12 +264,12 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
           {bridgeList.length > 1 && (
             <>
               <div className="px-3 pt-2.5 pb-1">
-                <p className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">连接</p>
+                <p className="text-xs font-semibold text-gray-700 mb-1">连接</p>
                 <div className="flex items-center gap-2 px-2 py-1.5 bg-accent/10 rounded-lg mb-0.5 border border-accent/20">
                   <span
                     className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-400"}`}
                   />
-                  <span className="text-[11px] text-accent font-medium truncate flex-1">{activeConnectionName}</span>
+                  <span className="text-[13px] text-accent font-medium truncate flex-1">{activeConnectionName}</span>
                 </div>
                 {otherConnections.map((conn) => (
                   <button
@@ -266,7 +281,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     <span
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${conn.connected ? "bg-green-500" : "bg-red-400"}`}
                     />
-                    <span className="text-[11px] text-gray-400 truncate flex-1">{conn.name}</span>
+                    <span className="text-[13px] text-gray-800 truncate flex-1">{conn.name}</span>
                   </button>
                 ))}
               </div>
@@ -277,19 +292,19 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
           {sessions.length > 0 && (
             <>
               <div className="px-3 pt-2 pb-1">
-                <p className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">当前会话</p>
+                <p className="text-xs font-semibold text-gray-700 mb-1">当前会话</p>
                 <div className="flex items-center gap-2 px-2 py-1.5 bg-accent/10 rounded-lg group/active border border-accent/20">
                   <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-                  <span className="text-[11px] text-accent font-medium truncate flex-1">{activeLabel}</span>
-                  <span className="text-[10px] text-accent/80 flex-shrink-0">{activeStatusLabel}</span>
+                  <span className="text-[13px] text-accent font-medium truncate flex-1">{activeLabel}</span>
+                  <span className="text-xs text-accent/90 flex-shrink-0">{activeStatusLabel}</span>
                   {unreadFor(activeKey) > 0 && (
                     <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
                       {formatUnread(unreadFor(activeKey))}
                     </span>
                   )}
                   {currentSession && confirmDeleteId !== activeKey && (
-                    <span className="text-[9px] text-gray-600 flex-shrink-0 group-hover/active:hidden">
-                      {formatTime(currentSession.lastActiveAt)}
+                    <span className="text-xs text-gray-600 flex-shrink-0 group-hover/active:hidden">
+                      {formatTime(lastMessageOrCreatedAt(activeConnectionId, currentSession, messagesByChat))}
                     </span>
                   )}
                   {sessions.length > 1 && <DeleteBtn sid={activeKey} className="group-hover/active:flex" />}
@@ -298,7 +313,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
 
               {inactive.length > 0 && (
                 <div className="px-3 pb-1">
-                  <p className="text-[9px] text-gray-500 uppercase tracking-wide mb-1">最近会话</p>
+                  <p className="text-xs font-semibold text-gray-700 mb-1">最近会话</p>
                   {recentInactive.map((sess) => (
                     <div
                       key={sess.key}
@@ -314,9 +329,9 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                       className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-gray-500 flex-shrink-0" />
-                      <span className="text-[11px] text-gray-300 truncate flex-1">{sessionLabelText(sess)}</span>
-                      <span className="text-[10px] text-gray-500 flex-shrink-0">
-                        {phaseForSession(activeConnectionId, sess.key, taskPhaseByConnection)}
+                      <span className="text-[13px] text-gray-800 truncate flex-1">{sessionLabelText(sess)}</span>
+                      <span className="text-xs text-gray-600 flex-shrink-0">
+                        {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}
                       </span>
                       {unreadFor(sess.key) > 0 && (
                         <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
@@ -324,8 +339,8 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                         </span>
                       )}
                       {confirmDeleteId !== sess.key && (
-                        <span className="text-[9px] text-gray-600 flex-shrink-0 group-hover/item:hidden">
-                          {formatTime(sess.lastActiveAt)}
+                        <span className="text-xs text-gray-600 flex-shrink-0 group-hover/item:hidden">
+                          {formatTime(lastMessageOrCreatedAt(activeConnectionId, sess, messagesByChat))}
                         </span>
                       )}
                       <DeleteBtn sid={sess.key} className="group-hover/item:flex" />

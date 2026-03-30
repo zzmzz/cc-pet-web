@@ -14,7 +14,7 @@ vi.mock("../lib/platform.js", () => ({
 
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskPhaseByConnection: {} });
+  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
 }
 
 describe("formatSessionPhase", () => {
@@ -71,7 +71,12 @@ describe("SessionDropdown", () => {
       },
       activeSessionKey: { c1: "a" },
       unread: { [makeChatKey("c1", "a")]: 2, [makeChatKey("c1", "d")]: 5 },
-      taskPhaseByConnection: { c1: { a: "thinking", d: "processing" } },
+      taskStateByConnection: {
+        c1: {
+          a: { activeRequestId: "r1", phase: "thinking", startedAt: 1, lastActivityAt: 1, firstTokenAt: null, stalledReason: null },
+          d: { activeRequestId: "r2", phase: "working", startedAt: 2, lastActivityAt: 2, firstTokenAt: 2, stalledReason: null },
+        },
+      },
     });
 
     render(<SessionDropdown />);
@@ -142,5 +147,27 @@ describe("SessionDropdown", () => {
 
     await user.click(screen.getByRole("button", { name: /Second/ }));
     expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
+  });
+
+  it("uses shared theme classes for opened dropdown menu surface", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [{ key: "a", connectionId: "c1", createdAt: 1, lastActiveAt: 100 }],
+      },
+      activeSessionKey: { c1: "a" },
+    });
+
+    render(<SessionDropdown />);
+    await user.click(screen.getByRole("button", { name: /a/ }));
+
+    const panel = document.querySelector("div.z-50");
+    expect(panel).toBeTruthy();
+    expect(panel?.className).toContain("bg-surface-secondary");
+    expect(panel?.className).toContain("border-border");
   });
 });

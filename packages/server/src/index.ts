@@ -30,7 +30,26 @@ const configStore = new ConfigStore(db, { dataDir: DATA_DIR });
 
 const bridgeManager = new BridgeManager();
 
-const app = Fastify({ logger: true });
+/** 本地/非 production 默认人类可读；生产保留 JSON 便于采集。可设 CC_PET_LOG_PRETTY=0 强制 JSON，或 =1 强制美化。 */
+const usePrettyLog =
+  process.env.CC_PET_LOG_PRETTY === "1" ||
+  (process.env.NODE_ENV !== "production" && process.env.CC_PET_LOG_PRETTY !== "0");
+
+const app = Fastify({
+  logger: usePrettyLog
+    ? {
+        level: process.env.LOG_LEVEL ?? "info",
+        transport: {
+          target: "pino-pretty",
+          options: {
+            colorize: true,
+            translateTime: "SYS:standard",
+            ignore: "pid,hostname",
+          },
+        },
+      }
+    : { level: process.env.LOG_LEVEL ?? "info" },
+});
 await app.register(cors, { origin: true });
 await app.register(multipart);
 
@@ -74,7 +93,10 @@ await app.listen({ port: PORT, host: "0.0.0.0" });
 const hub = new ClientHub(app.server, SECRET, app.log);
 hub.onClientConnected = (send) => {
   const cfg = configStore.load();
-  app.log.info({ bridges: cfg.bridges.length }, "Syncing bridge status snapshot to new dashboard websocket client");
+  app.log.info({ bridges: cfg.bridges.length }, "Syncing bridge manifest and status to new dashboard websocket client");
+  send(WS_EVENTS.BRIDGE_MANIFEST, {
+    bridges: cfg.bridges.map((b) => ({ id: b.id, name: b.name })),
+  });
   for (const bridge of cfg.bridges) {
     send(WS_EVENTS.BRIDGE_CONNECTED, {
       connectionId: bridge.id,

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import type { PlatformAPI } from "./lib/platform.js";
@@ -9,7 +9,6 @@ import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
 import { useSessionStore } from "./lib/store/session.js";
 import { useUIStore } from "./lib/store/ui.js";
-import { useConfigStore } from "./lib/store/config.js";
 import { useCommandStore } from "./lib/store/commands.js";
 
 class FakeAdapter implements PlatformAPI {
@@ -44,12 +43,20 @@ vi.mock("./lib/web-adapter.js", async (importOriginal) => {
   };
 });
 
+function defaultConnectSnapshot(bridges: { id: string; name: string }[]): void {
+  queueMicrotask(() => {
+    adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, { bridges });
+    for (const b of bridges) {
+      adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: b.id, connected: false });
+    }
+  });
+}
+
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskPhaseByConnection: {} });
-  useUIStore.setState({ chatOpen: false, settingsOpen: false, petState: "idle", isMobile: false });
-  useConfigStore.setState({ config: null });
+  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false });
   useCommandStore.setState({ agentCommandsByConnection: {} });
 }
 
@@ -64,15 +71,9 @@ describe("App integration", () => {
     adapter.disconnectWs.mockClear();
     adapter.sendWsMessage.mockClear();
     adapter.fetchApi.mockClear();
-    adapter.fetchApi.mockImplementation(async (path: string, _options?: RequestInit) => {
-      if (path === "/api/config") {
-        return {
-          bridges: [{ id: "cc-connect", name: "cc-connect", host: "127.0.0.1", port: 9810, token: "t", enabled: true }],
-          pet: { opacity: 1, size: 120 },
-          server: { port: 3000, dataDir: "./data" },
-        };
-      }
-      return {};
+    adapter.fetchApi.mockImplementation(async () => ({}));
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
     });
     if (!window.HTMLElement.prototype.scrollIntoView) {
       window.HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -106,6 +107,27 @@ describe("App integration", () => {
     });
   });
 
+  it("shows a switchable connection dropdown when multiple bridges are configured", async () => {
+    const user = userEvent.setup();
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+
+    render(<App />);
+    await screen.findByRole("button", { name: /cc-connect/i });
+
+    await user.click(screen.getByRole("button", { name: /cc-connect/i }));
+    expect(await screen.findByRole("button", { name: /cs-connect/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /cs-connect/i }));
+    await waitFor(() => {
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cs-connect");
+    });
+  });
+
   it("routes incoming text to payload session when active session differs (no cross-session mix)", async () => {
     useSessionStore.setState({
       sessions: {
@@ -136,6 +158,148 @@ describe("App integration", () => {
       const keyA = makeChatKey("cc-connect", "session-a");
       expect((st.messagesByChat[keyB] ?? []).some((m) => m.content === "delivered to B only")).toBe(true);
       expect((st.messagesByChat[keyA] ?? []).some((m) => m.content === "delivered to B only")).toBe(false);
+    });
+  });
+
+  it("updates session task state to awaiting_confirmation on bridge buttons", async () => {
+    render(<App />);
+    await screen.findByText("cc-connect");
+
+    adapter.emit(WS_EVENTS.BRIDGE_BUTTONS, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "请选择",
+      buttons: [[{ id: "b1", label: "确认" }]],
+    });
+
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+      expect(phase).toBe("awaiting_confirmation");
+    });
+  });
+
+  it("keeps working between typing_start and typing_stop", async () => {
+    render(<App />);
+    await screen.findByText("cc-connect");
+
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_START, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+    });
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "still typing",
+    });
+
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+      expect(phase).toBe("working");
+    });
+
+    adapter.emit(WS_EVENTS.BRIDGE_STREAM_DONE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      fullText: "stream done before stop",
+    });
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+      expect(phase).toBe("working");
+    });
+
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_STOP, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+    });
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+      expect(phase).toBe("completed");
+    });
+  });
+
+  it("ignores stray typing_stop before typing_start", async () => {
+    render(<App />);
+    await screen.findByText("cc-connect");
+
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_STOP, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+    });
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "normal message",
+    });
+
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+      expect(phase).toBe("completed");
+    });
+  });
+
+  it("routes fallback typing_stop to in-flight session after user switches active session", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+
+    render(<App />);
+    await screen.findByText("cc-connect");
+
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_START, {
+      connectionId: "cc-connect",
+      sessionKey: "session-a",
+    });
+    await waitFor(() => {
+      const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.["session-a"]?.phase;
+      expect(phase).toBe("working");
+    });
+
+    // User switches to another tab while original session is still in-flight.
+    useSessionStore.getState().setActiveSession("cc-connect", "session-b");
+
+    // Upstream stop event arrives without explicit session key (falls back to active before fix).
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_STOP, {
+      connectionId: "cc-connect",
+    });
+
+    await waitFor(() => {
+      const state = useSessionStore.getState().taskStateByConnection["cc-connect"] ?? {};
+      expect(state["session-a"]?.phase).toBe("completed");
+      expect(state["session-b"]?.phase).not.toBe("completed");
+    });
+  });
+
+  it("increments unread and shows pet talking when assistant message targets a non-active session", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+          { key: "session-b", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+    useUIStore.setState({ chatOpen: true });
+
+    render(<App />);
+    await screen.findByText("cc-connect");
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "session-b",
+      content: "background reply",
+    });
+
+    await waitFor(() => {
+      const keyB = makeChatKey("cc-connect", "session-b");
+      expect(useSessionStore.getState().unread[keyB]).toBe(1);
+      expect(useUIStore.getState().petState).toBe("talking");
     });
   });
 
@@ -199,6 +363,48 @@ describe("App integration", () => {
     expect(routed.sessionKey).toBe("session-b");
   });
 
+  it("hydrates sessions and chat history from REST after websocket manifest", async () => {
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) {
+        return {
+          sessions: [
+            {
+              key: "sess-restored",
+              connectionId: "cc-connect",
+              label: "Saved tab",
+              createdAt: 100,
+              lastActiveAt: 300,
+            },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) {
+        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
+        if (chatKey === makeChatKey("cc-connect", "sess-restored")) {
+          return {
+            messages: [
+              {
+                id: "hm1",
+                role: "user",
+                content: "from server history",
+                timestamp: 200,
+                connectionId: "cc-connect",
+                sessionKey: "sess-restored",
+              },
+            ],
+          };
+        }
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("from server history")).toBeInTheDocument();
+    expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("sess-restored");
+  });
+
   it("sends message to websocket and renders incoming bridge reply", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -249,6 +455,29 @@ describe("App integration", () => {
     expect(screen.queryByText("当前连接已断开，消息未发送。请等待重连后重试。")).not.toBeInTheDocument();
   });
 
+  it("does not send when Enter is used to confirm IME composition", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
+      connectionId: "cc-connect",
+      connected: true,
+    });
+
+    const input = screen.getByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "hello world");
+
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(adapter.sendWsMessage).not.toHaveBeenCalled();
+    expect(input).toHaveValue("hello world");
+  });
+
   it("shows slash palette with bridge skill commands after skills_updated", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -273,13 +502,6 @@ describe("App integration", () => {
   it("applies local /clear without sending websocket message", async () => {
     const user = userEvent.setup();
     adapter.fetchApi.mockImplementation(async (path: string, options?: RequestInit) => {
-      if (path === "/api/config") {
-        return {
-          bridges: [{ id: "cc-connect", name: "cc-connect", host: "127.0.0.1", port: 9810, token: "t", enabled: true }],
-          pet: { opacity: 1, size: 120 },
-          server: { port: 3000, dataDir: "./data" },
-        };
-      }
       if (path.startsWith("/api/history/") && options?.method === "DELETE") {
         return { ok: true };
       }

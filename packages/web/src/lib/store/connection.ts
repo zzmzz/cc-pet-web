@@ -12,7 +12,7 @@ interface ConnectionState {
 
   setConnections: (connections: ConnectionInfo[]) => void;
   setConnectionStatus: (id: string, connected: boolean) => void;
-  setActiveConnection: (id: string) => void;
+  setActiveConnection: (id: string | null) => void;
 }
 
 export const useConnectionStore = create<ConnectionState>((set) => ({

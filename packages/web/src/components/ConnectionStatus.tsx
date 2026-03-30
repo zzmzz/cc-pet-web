@@ -9,7 +9,7 @@ export function ConnectionStatus() {
   return (
     <div className="flex items-center gap-1.5">
       <span className={`w-2 h-2 rounded-full ${active.connected ? "bg-green-500" : "bg-red-500"}`} />
-      <span className="text-sm text-gray-300 truncate">{active.name}</span>
+      <span className="text-sm font-medium text-gray-800 truncate">{active.name}</span>
     </div>
   );
 }

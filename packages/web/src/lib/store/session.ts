@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { makeChatKey } from "@cc-pet/shared";
-import type { Session, TaskPhase } from "@cc-pet/shared";
+import type { Session, SessionTaskState, TaskPhase } from "@cc-pet/shared";
 import { useMessageStore } from "./message.js";
 import { useUIStore } from "./ui.js";
 
@@ -15,22 +15,44 @@ function maybeIdlePetWhenNoUnread(unread: Record<string, number>): void {
   }
 }
 
+/** Auto session title from first user message: max length before ellipsis. */
+export const AUTO_SESSION_TITLE_MAX_LEN = 15;
+
+const DEFAULT_SESSION_TASK_STATE: SessionTaskState = {
+  activeRequestId: null,
+  phase: "idle",
+  startedAt: null,
+  lastActivityAt: null,
+  firstTokenAt: null,
+  stalledReason: null,
+};
+
 interface SessionState {
   sessions: Record<string, Session[]>;
   activeSessionKey: Record<string, string>;
   unread: Record<string, number>;
-  /** Per-connection session task phase for dropdown labels (from WS / future bridge task events). */
-  taskPhaseByConnection: Record<string, Record<string, TaskPhase>>;
+  /** Per-connection session task state for dropdown labels and task lifecycle. */
+  taskStateByConnection: Record<string, Record<string, SessionTaskState>>;
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
+  setSessionTaskState: (connectionId: string, sessionKey: string, taskState: SessionTaskState) => void;
+  patchSessionTaskState: (
+    connectionId: string,
+    sessionKey: string,
+    partial: Partial<SessionTaskState>,
+  ) => void;
+  clearSessionTaskState: (connectionId: string, sessionKey: string) => void;
+  /** Backward-compatible setter for phase-only callers. */
   setSessionTaskPhase: (connectionId: string, sessionKey: string, phase: TaskPhase) => void;
   touchSessionLastActive: (connectionId: string, sessionKey: string) => void;
   incrementUnread: (chatKey: string) => void;
   clearUnread: (chatKey: string) => void;
   clearSessionUnread: (connectionId: string, sessionKey: string) => void;
+  /** True if any chatKey has unread count > 0. */
+  hasAnyUnread: () => boolean;
   removeSession: (connectionId: string, sessionKey: string) => void;
-  /** First non-empty user line becomes label when session still shows default title. */
+  /** First non-empty user message (trimmed, first N chars) becomes label when title still default. */
   touchSessionAutoTitle: (connectionId: string, sessionKey: string, userText: string) => void;
   /** Pick first user text from history and apply touchSessionAutoTitle. */
   syncAutoTitleFromHistoryMessages: (
@@ -44,19 +66,63 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: {},
   activeSessionKey: {},
   unread: {},
-  taskPhaseByConnection: {},
+  taskStateByConnection: {},
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
   setActiveSession: (connectionId, key) =>
     set((s) => ({ activeSessionKey: { ...s.activeSessionKey, [connectionId]: key } })),
+  setSessionTaskState: (connectionId, sessionKey, taskState) =>
+    set((s) => {
+      const prevConn = s.taskStateByConnection[connectionId] ?? {};
+      return {
+        taskStateByConnection: {
+          ...s.taskStateByConnection,
+          [connectionId]: { ...prevConn, [sessionKey]: taskState },
+        },
+      };
+    }),
+  patchSessionTaskState: (connectionId, sessionKey, partial) =>
+    set((s) => {
+      const prevConn = s.taskStateByConnection[connectionId] ?? {};
+      const prevTask = prevConn[sessionKey] ?? DEFAULT_SESSION_TASK_STATE;
+      return {
+        taskStateByConnection: {
+          ...s.taskStateByConnection,
+          [connectionId]: { ...prevConn, [sessionKey]: { ...prevTask, ...partial } },
+        },
+      };
+    }),
+  clearSessionTaskState: (connectionId, sessionKey) =>
+    set((s) => {
+      const prevConn = s.taskStateByConnection[connectionId];
+      if (!prevConn || !prevConn[sessionKey]) return s;
+      const { [sessionKey]: _removedTask, ...restTasks } = prevConn;
+      const nextByConnection = { ...s.taskStateByConnection };
+      if (Object.keys(restTasks).length === 0) {
+        delete nextByConnection[connectionId];
+      } else {
+        nextByConnection[connectionId] = restTasks;
+      }
+      return { taskStateByConnection: nextByConnection };
+    }),
   setSessionTaskPhase: (connectionId, sessionKey, phase) =>
     set((s) => {
-      const prevConn = s.taskPhaseByConnection[connectionId] ?? {};
+      const prevConn = s.taskStateByConnection[connectionId] ?? {};
+      const prevTask = prevConn[sessionKey] ?? DEFAULT_SESSION_TASK_STATE;
       return {
-        taskPhaseByConnection: {
-          ...s.taskPhaseByConnection,
-          [connectionId]: { ...prevConn, [sessionKey]: phase },
+        taskStateByConnection: {
+          ...s.taskStateByConnection,
+          [connectionId]: {
+            ...prevConn,
+            [sessionKey]: {
+              ...prevTask,
+              phase,
+              lastActivityAt: Date.now(),
+              activeRequestId:
+                phase === "completed" || phase === "failed" || phase === "idle" ? null : prevTask.activeRequestId,
+            },
+          },
         },
       };
     }),
@@ -70,8 +136,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       next[idx] = { ...next[idx], lastActiveAt: now };
       return { sessions: { ...s.sessions, [connectionId]: next } };
     }),
-  incrementUnread: (chatKey) =>
-    set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } })),
+  incrementUnread: (chatKey) => {
+    useUIStore.getState().setPetState("talking");
+    set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } }));
+  },
   clearUnread: (chatKey) =>
     set((s) => {
       const nextUnread = { ...s.unread, [chatKey]: 0 };
@@ -81,6 +149,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   clearSessionUnread: (connectionId, sessionKey) => {
     get().clearUnread(makeChatKey(connectionId, sessionKey));
   },
+  hasAnyUnread: () => hasAnyUnread(get().unread),
   removeSession: (connectionId, sessionKey) =>
     set((s) => {
       const chatKey = makeChatKey(connectionId, sessionKey);
@@ -100,20 +169,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
-      const prevPhases = s.taskPhaseByConnection[connectionId] ?? {};
-      const { [sessionKey]: _p, ...restPhases } = prevPhases;
-      const nextTaskPhase = { ...s.taskPhaseByConnection };
-      if (Object.keys(restPhases).length === 0) {
-        delete nextTaskPhase[connectionId];
+      const prevTasks = s.taskStateByConnection[connectionId] ?? {};
+      const { [sessionKey]: _removedTask, ...restTasks } = prevTasks;
+      const nextTaskState = { ...s.taskStateByConnection };
+      if (Object.keys(restTasks).length === 0) {
+        delete nextTaskState[connectionId];
       } else {
-        nextTaskPhase[connectionId] = restPhases;
+        nextTaskState[connectionId] = restTasks;
       }
 
       return {
         sessions: { ...s.sessions, [connectionId]: nextList },
         activeSessionKey: nextActive,
         unread: restUnread,
-        taskPhaseByConnection: nextTaskPhase,
+        taskStateByConnection: nextTaskState,
       };
     }),
   touchSessionAutoTitle: (connectionId, sessionKey, userText) =>
@@ -129,7 +198,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const current = sess.label?.trim();
       if (current && current !== sess.key) return s;
 
-      const title = trimmed.length > 48 ? `${trimmed.slice(0, 48)}…` : trimmed;
+      const title =
+        trimmed.length > AUTO_SESSION_TITLE_MAX_LEN
+          ? `${trimmed.slice(0, AUTO_SESSION_TITLE_MAX_LEN)}…`
+          : trimmed;
       const next = [...list];
       next[idx] = { ...sess, label: title };
       return { sessions: { ...s.sessions, [connectionId]: next } };

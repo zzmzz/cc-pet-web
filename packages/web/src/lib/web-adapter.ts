@@ -1,6 +1,6 @@
 import { WS_EVENTS } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
-import { resolveIncomingSessionKey } from "./sessionRouting.js";
+import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
 
 const INITIAL_RECONNECT_MS = 3000;
@@ -75,13 +75,13 @@ export function applyIncomingWsSessionRouting(
   const replyCtx =
     (typeof p.replyCtx === "string" ? p.replyCtx : undefined) ??
     (typeof p.reply_ctx === "string" ? p.reply_ctx : undefined);
-  const resolved = resolveIncomingSessionKey({
+  const resolved = resolveIncomingSessionRouting({
     payloadSessionKey: typeof p.sessionKey === "string" ? p.sessionKey : undefined,
     replyCtx,
     knownSessions,
     activeSessionKey,
   });
-  return { ...p, sessionKey: resolved };
+  return { ...p, sessionKey: resolved.sessionKey, sessionRouteSource: resolved.source };
 }
 
 export function createWebAdapter(serverUrl: string): PlatformAPI {

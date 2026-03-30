@@ -40,8 +40,14 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
     ref,
   ) {
     const fileRef = useRef<HTMLInputElement>(null);
+    const composingRef = useRef(false);
     const safeValue = value ?? "";
     const sendBtnDisabled = sendDisabled ?? (!safeValue.trim() || !!disabled);
+
+    const isImeComposing = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      const native = e.nativeEvent as globalThis.KeyboardEvent;
+      return composingRef.current || native.isComposing || native.keyCode === 229 || e.key === "Process";
+    };
 
     const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (onKeyDown) {
@@ -49,6 +55,7 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
         if (e.defaultPrevented) return;
       }
       if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        if (isImeComposing(e)) return;
         e.preventDefault();
         if (!sendBtnDisabled) onSend();
       }
@@ -99,6 +106,12 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
             value={safeValue}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
             disabled={disabled}
           />
         </div>

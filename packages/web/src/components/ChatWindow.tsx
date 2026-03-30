@@ -47,6 +47,13 @@ export function ChatWindow() {
     ? activeSessionKeyByConn[activeConnectionId] ?? "default"
     : "default";
   const chatKey = activeConnectionId ? makeChatKey(activeConnectionId, activeSessionKey) : "";
+  const chatOpen = useUIStore((s) => s.chatOpen);
+  const clearSessionUnread = useSessionStore((s) => s.clearSessionUnread);
+
+  useEffect(() => {
+    if (!chatOpen || !activeConnectionId || !activeSessionKey) return;
+    clearSessionUnread(activeConnectionId, activeSessionKey);
+  }, [chatOpen, activeConnectionId, activeSessionKey, clearSessionUnread]);
   const messages = chatKey ? (messagesByChat[chatKey] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const streaming = chatKey ? streamingByChat[chatKey] : undefined;
 
@@ -89,9 +96,6 @@ export function ChatWindow() {
           useMessageStore.getState().clearMessages(chatKey);
           return true;
         }
-        case "/settings":
-          useUIStore.getState().setSettingsOpen(true);
-          return true;
         case "/connect":
           try {
             await getPlatform().fetchApi(`/api/bridges/${encodeURIComponent(activeConnectionId)}/connect`, {
@@ -149,6 +153,9 @@ export function ChatWindow() {
         connectionId: activeConnectionId,
         sessionKey: activeSessionKey,
       });
+      if (caption) {
+        useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
+      }
 
       getPlatform().sendWsMessage({
         type: WS_EVENTS.SEND_FILE,
@@ -170,6 +177,7 @@ export function ChatWindow() {
       connectionId: activeConnectionId,
       sessionKey: activeSessionKey,
     });
+    useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
 
     getPlatform().sendWsMessage({
       type: WS_EVENTS.SEND_MESSAGE,

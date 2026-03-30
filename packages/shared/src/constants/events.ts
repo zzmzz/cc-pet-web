@@ -1,4 +1,6 @@
 export const WS_EVENTS = {
+  /** Server → dashboard: fixed bridge list from backend config (no REST config API). */
+  BRIDGE_MANIFEST: "bridge:manifest",
   BRIDGE_CONNECTED: "bridge:connected",
   BRIDGE_ERROR: "bridge:error",
   BRIDGE_MESSAGE: "bridge:message",

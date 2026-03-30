@@ -10,8 +10,8 @@ const chatKey = makeChatKey(conn, sid);
 
 function resetStores() {
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskPhaseByConnection: {} });
-  useUIStore.setState({ chatOpen: false, settingsOpen: false, petState: "idle", isMobile: false });
+  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useUIStore.setState({ chatOpen: false, petState: "idle", isMobile: false });
 }
 
 describe("session store behavior", () => {
@@ -50,6 +50,13 @@ describe("session store behavior", () => {
     expect(sess.sessions[conn]?.map((x) => x.key)).toEqual(["session-b"]);
     expect(sess.unread[chatKey]).toBeUndefined();
     expect(sess.activeSessionKey[conn]).toBe("session-b");
+  });
+
+  it("incrementUnread sets pet to talking", () => {
+    useUIStore.getState().setPetState("idle");
+    useSessionStore.getState().incrementUnread(chatKey);
+    expect(useSessionStore.getState().unread[chatKey]).toBe(1);
+    expect(useUIStore.getState().petState).toBe("talking");
   });
 
   it("clearSessionUnread sets pet to idle when no unread remains and pet was talking", () => {
@@ -91,7 +98,7 @@ describe("session store behavior", () => {
     expect(useSessionStore.getState().activeSessionKey[conn]).toBeUndefined();
   });
 
-  it("removeSession clears task phase for removed session", () => {
+  it("removeSession clears task state for removed session", () => {
     useSessionStore.setState({
       sessions: {
         [conn]: [
@@ -100,12 +107,37 @@ describe("session store behavior", () => {
         ],
       },
       activeSessionKey: { [conn]: sid },
-      taskPhaseByConnection: { [conn]: { [sid]: "thinking", "session-b": "processing" } },
+      taskStateByConnection: {
+        [conn]: {
+          [sid]: { activeRequestId: "r1", phase: "thinking", startedAt: 1, lastActivityAt: 1, firstTokenAt: null, stalledReason: null },
+          "session-b": { activeRequestId: "r2", phase: "working", startedAt: 2, lastActivityAt: 2, firstTokenAt: 2, stalledReason: null },
+        },
+      },
     });
     useSessionStore.getState().removeSession(conn, sid);
     const st = useSessionStore.getState();
-    expect(st.taskPhaseByConnection[conn]?.[sid]).toBeUndefined();
-    expect(st.taskPhaseByConnection[conn]?.["session-b"]).toBe("processing");
+    expect(st.taskStateByConnection[conn]?.[sid]).toBeUndefined();
+    expect(st.taskStateByConnection[conn]?.["session-b"]?.phase).toBe("working");
+  });
+
+  it("patchSessionTaskState updates phase and keeps existing fields", () => {
+    useSessionStore.getState().setSessionTaskState(conn, sid, {
+      activeRequestId: "r1",
+      phase: "thinking",
+      startedAt: 100,
+      lastActivityAt: 100,
+      firstTokenAt: null,
+      stalledReason: null,
+    });
+    useSessionStore.getState().patchSessionTaskState(conn, sid, {
+      phase: "working",
+      firstTokenAt: 120,
+    });
+    const next = useSessionStore.getState().taskStateByConnection[conn]?.[sid];
+    expect(next?.activeRequestId).toBe("r1");
+    expect(next?.phase).toBe("working");
+    expect(next?.startedAt).toBe(100);
+    expect(next?.firstTokenAt).toBe(120);
   });
 
   it("touchSessionLastActive bumps lastActiveAt", () => {
@@ -165,18 +197,16 @@ describe("session store behavior", () => {
     expect(useSessionStore.getState().sessions[conn]?.[0]?.label).toBe("Pinned title");
   });
 
-  it("touchSessionAutoTitle truncates long text to 48 chars with ellipsis", () => {
+  it("touchSessionAutoTitle truncates long text to 15 chars with ellipsis", () => {
     useSessionStore.setState({
       sessions: {
         [conn]: [{ key: sid, connectionId: conn, createdAt: 1, lastActiveAt: 1 }],
       },
     });
 
-    const long = "1234567890123456789012345678901234567890123456789";
+    const long = "123456789012345678901234567890";
     useSessionStore.getState().touchSessionAutoTitle(conn, sid, long);
 
-    expect(useSessionStore.getState().sessions[conn]?.[0]?.label).toBe(
-      "123456789012345678901234567890123456789012345678…",
-    );
+    expect(useSessionStore.getState().sessions[conn]?.[0]?.label).toBe("123456789012345…");
   });
 });
