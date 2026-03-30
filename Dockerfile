@@ -39,4 +39,6 @@ ENV NODE_ENV=production
 EXPOSE 3000
 VOLUME ["/data"]
 
-CMD ["node", "--import", "tsx", "packages/server/src/index.ts"]
+# pnpm 将 workspace 依赖装在 packages/server/node_modules；`--import tsx` 从 cwd 解析，故 cwd 需为 server 包根目录。
+WORKDIR /app/packages/server
+CMD ["node", "--import", "tsx", "src/index.ts"]
