@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -64,6 +64,34 @@ describe("Storage", () => {
       sessions.updateLabel("conn-1", "s1", "My Session");
       const list = sessions.listByConnection("conn-1");
       expect(list[0].label).toBe("My Session");
+    });
+
+    it("listByConnection orders by last_active_at descending", () => {
+      const tOld = 1_700_000_000_000;
+      const tNew = tOld + 60_000;
+      sessions.create({ key: "older", connectionId: "conn-1", createdAt: tOld, lastActiveAt: tOld });
+      sessions.create({ key: "newer", connectionId: "conn-1", createdAt: tNew, lastActiveAt: tNew });
+      const keys = sessions.listByConnection("conn-1").map((s) => s.key);
+      expect(keys).toEqual(["newer", "older"]);
+    });
+
+    it("touchActive updates last_active_at and affects list order", () => {
+      const base = 1_700_000_000_000;
+      sessions.create({ key: "a", connectionId: "conn-1", createdAt: base, lastActiveAt: base + 10_000 });
+      sessions.create({ key: "b", connectionId: "conn-1", createdAt: base, lastActiveAt: base });
+      expect(sessions.listByConnection("conn-1").map((s) => s.key)).toEqual(["a", "b"]);
+
+      const touched = base + 50_000;
+      const spy = vi.spyOn(Date, "now").mockReturnValue(touched);
+      try {
+        sessions.touchActive("conn-1", "b");
+      } finally {
+        spy.mockRestore();
+      }
+
+      const after = sessions.listByConnection("conn-1");
+      expect(after.map((s) => s.key)).toEqual(["b", "a"]);
+      expect(after.find((s) => s.key === "b")?.lastActiveAt).toBe(touched);
     });
   });
 
