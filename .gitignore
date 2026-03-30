@@ -4,7 +4,14 @@ dist/
 .superpowers/
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 .env
 .DS_Store
 target/
 .worktrees/
+packages/server/data/
+packages/web/tests/setup.js
+packages/web/tests/setup.js.map
+packages/web/tests/setup.d.ts
+packages/web/tests/setup.d.ts.map

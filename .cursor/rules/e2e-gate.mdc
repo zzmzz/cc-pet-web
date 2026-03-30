@@ -1,0 +1,32 @@
+---
+description: 代码改动后必须先跑 e2e 再回复完成
+alwaysApply: true
+---
+
+# E2E 验证闸门（强制）
+
+只要 Agent 修改了代码（任意文件），在回复“已修复/已完成”之前，必须先执行并通过以下回归：
+
+1. `pnpm test:e2e`
+
+## 失败处理规则
+
+- 如果 e2e 任一用例失败，**禁止**给出“改好了”结论。
+- 必须继续修复直到 e2e 通过，或者明确告知阻塞原因与复现步骤。
+
+## 最低回复要求
+
+在每次声称修复完成时，回复中必须包含：
+
+1. 本次执行的 e2e 命令
+2. 通过/失败结果
+3. 若失败：下一步修复动作
+
+## 覆盖范围说明
+
+当前 `pnpm test:e2e` 默认覆盖：
+
+- server 侧连接与断线重连回归：`packages/server/tests/e2e-connect-regression.test.ts`
+- web 侧关键集成链路回归：`packages/web/src/App.integration.test.tsx`
+
+如新增关键链路 e2e，必须同步更新根脚本 `test:e2e`，确保该规则持续有效。
