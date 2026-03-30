@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepkg/gpt-runner/refs/heads/main/packages/gpt-runner-web/src-tauri/gen/schemas/desktop-schema.json",
+  "productName": "CC Pet",
+  "version": "0.1.0",
+  "identifier": "com.ccpet.web",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CC Pet",
+        "width": 360,
+        "height": 500,
+        "resizable": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true
+      }
+    ],
+    "withGlobalTauri": true
+  }
+}
