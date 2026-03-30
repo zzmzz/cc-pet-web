@@ -1,5 +1,7 @@
 node_modules
 dist
+# 镜像内仅跑生产构建；tests 在 src 外，会触发 tsc rootDir 与 include 冲突
+packages/web/tests
 .git
 *.db
 *.db-journal

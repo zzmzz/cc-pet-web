@@ -4,6 +4,7 @@ import { setPlatform } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
+import { LoginGate } from "./components/LoginGate.js";
 import { useUIStore } from "./lib/store/ui.js";
 import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
@@ -16,14 +17,77 @@ const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const [authBooting, setAuthBooting] = useState(true);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    const bootstrapAuth = async () => {
+      const storedToken = localStorage.getItem("cc-pet-token")?.trim();
+      if (!storedToken) {
+        if (!cancelled) setAuthBooting(false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/auth/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: storedToken }),
+        });
+        if (!cancelled && res.ok) {
+          setAuthToken(storedToken);
+        }
+        if (!res.ok) {
+          localStorage.removeItem("cc-pet-token");
+        }
+      } catch {
+        localStorage.removeItem("cc-pet-token");
+      } finally {
+        if (!cancelled) setAuthBooting(false);
+      }
+    };
+    void bootstrapAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLogin = async (rawToken: string): Promise<boolean> => {
+    const token = rawToken.trim();
+    if (token.length === 0) {
+      setAuthError("Token 不能为空");
+      return false;
+    }
+    try {
+      const res = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) {
+        setAuthError("Token 无效");
+        return false;
+      }
+    } catch {
+      setAuthError("认证服务不可用，请稍后重试");
+      return false;
+    }
+    localStorage.setItem("cc-pet-token", token);
+    setAuthError(null);
+    setReady(false);
+    setAuthToken(token);
+    return true;
+  };
+
+  useEffect(() => {
+    if (!authToken) return;
     let cancelled = false;
     let happyAfterConnectTimer: ReturnType<typeof setTimeout> | null = null;
     let unsub: (() => void) | null = null;
     const typingActiveByChatKey: Record<string, boolean> = {};
     const stickySessionByConnection: Record<string, string> = {};
-    const adapter = createWebAdapter("");
+    const adapter = createWebAdapter("", authToken);
     setPlatform(adapter);
 
     const subscribeWs = (): void => {
@@ -278,8 +342,10 @@ export default function App() {
       unsub?.();
       adapter.disconnectWs();
     };
-  }, []);
+  }, [authToken]);
 
+  if (authBooting) return null;
+  if (!authToken) return <LoginGate onSubmit={handleLogin} errorMessage={authError} />;
   if (!ready) return null;
 
   return (

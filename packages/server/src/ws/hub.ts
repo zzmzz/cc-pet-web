@@ -1,8 +1,12 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "node:http";
+import { findTokenIdentity, type AuthIdentity } from "../auth/token-auth.js";
+import type { TokenConfig } from "@cc-pet/shared";
 
 interface ClientInfo {
   ws: WebSocket;
+  remoteAddress: string;
+  auth: AuthIdentity;
 }
 
 interface HubLogger {
@@ -17,29 +21,32 @@ export class ClientHub {
   private clients = new Set<ClientInfo>();
   private logger?: HubLogger;
 
-  onMessage: (msg: any) => void = () => {};
-  onClientConnected: (send: (event: string, payload: Record<string, any>) => void) => void = () => {};
+  onMessage: (msg: any, client: ClientInfo) => void = () => {};
+  onClientConnected: (client: ClientInfo, send: (event: string, payload: Record<string, any>) => void) => void = () => {};
 
-  constructor(server: Server, secret: string, logger?: HubLogger) {
+  constructor(server: Server, tokens: TokenConfig[], logger?: HubLogger) {
     this.wss = new WebSocketServer({ server, path: "/ws" });
     this.logger = logger;
-    const authEnabled = secret.trim().length > 0;
 
     this.wss.on("connection", (ws, req) => {
       const url = new URL(req.url ?? "", "http://localhost");
       const token = url.searchParams.get("token");
       const remoteAddress = req.socket.remoteAddress ?? "unknown";
+      const identity = findTokenIdentity(tokens, token);
 
-      if (authEnabled && token !== secret) {
+      if (!identity) {
         this.logger?.warn({ remoteAddress }, "Rejected dashboard websocket: unauthorized token");
         ws.close(4001, "Unauthorized");
         return;
       }
 
-      const client: ClientInfo = { ws };
+      const client: ClientInfo = { ws, remoteAddress, auth: identity };
       this.clients.add(client);
-      this.logger?.info({ remoteAddress, clients: this.clients.size }, "Dashboard websocket connected");
-      this.onClientConnected((event, payload) => {
+      this.logger?.info(
+        { remoteAddress, tokenName: identity.tokenName, clients: this.clients.size },
+        "Dashboard websocket connected",
+      );
+      this.onClientConnected(client, (event, payload) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         ws.send(JSON.stringify({ type: event, ...payload }));
       });
@@ -61,7 +68,7 @@ export class ClientHub {
         try {
           const msg = JSON.parse(raw);
           try {
-            this.onMessage(msg);
+            this.onMessage(msg, client);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.logger?.error({ remoteAddress, error: message }, "Failed handling dashboard websocket message");
@@ -76,7 +83,9 @@ export class ClientHub {
   broadcast(event: string, payload: Record<string, any>): void {
     this.logger?.debug({ event, clients: this.clients.size }, "Broadcasting websocket event");
     const data = JSON.stringify({ type: event, ...payload });
+    const connectionId = typeof payload.connectionId === "string" ? payload.connectionId : null;
     for (const client of this.clients) {
+      if (connectionId && !client.auth.bridgeIds.has(connectionId)) continue;
       if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(data);
       }

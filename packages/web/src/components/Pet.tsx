@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, type TargetAndTransition } from "framer-motion";
 import { useUIStore, type PetState } from "../lib/store/ui.js";
 import { isTauri } from "../lib/platform.js";
 
@@ -17,7 +17,7 @@ const STATE_COLORS: Record<PetState, string> = {
   happy: "border-green-500", error: "border-red-500",
 };
 
-const STATE_ANIMATIONS: Record<PetState, object> = {
+const STATE_ANIMATIONS: Record<PetState, TargetAndTransition> = {
   idle: {},
   thinking: { scale: [1, 1.05, 1], transition: { repeat: Infinity, duration: 1.5 } },
   talking: { opacity: [1, 0.8, 1], transition: { repeat: Infinity, duration: 1 } },

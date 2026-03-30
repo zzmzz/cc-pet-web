@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -61,7 +61,7 @@ async function waitForWsMessage<T = any>(
 async function startServerAndBridge() {
   const bridgePort = await getFreePort();
   const serverPort = await getFreePort();
-  const secret = "cc-pet-dev";
+  const dashboardToken = "cc-pet-dev-token";
   const bridgeToken = "V&cMUakQ$5c8da256";
   const connectionId = "cc-connect";
   const dataDir = await mkdtemp(path.join(tmpdir(), "cc-pet-e2e-"));
@@ -79,6 +79,28 @@ async function startServerAndBridge() {
     port: bridgePort,
     path: "/bridge/ws",
   });
+
+  const configPath = path.join(dataDir, "cc-pet.config.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      bridges: [
+        {
+          id: connectionId,
+          name: connectionId,
+          host: "127.0.0.1",
+          port: bridgePort,
+          token: bridgeToken,
+          enabled: true,
+        },
+      ],
+      tokens: [{ token: dashboardToken, name: "e2e", bridgeIds: [connectionId] }],
+      corsOrigins: [],
+      pet: { opacity: 1, size: 120 },
+      server: { port: serverPort, dataDir: "./data" },
+    }),
+    "utf8",
+  );
 
   bridgeWss.on("connection", (ws, req) => {
     const url = new URL(req.url ?? "", "http://localhost");
@@ -102,14 +124,7 @@ async function startServerAndBridge() {
     env: {
       ...process.env,
       CC_PET_PORT: String(serverPort),
-      CC_PET_SECRET: secret,
       CC_PET_DATA_DIR: dataDir,
-      CC_CONNECT_ID: connectionId,
-      CC_CONNECT_NAME: connectionId,
-      CC_CONNECT_HOST: "127.0.0.1",
-      CC_CONNECT_PORT: String(bridgePort),
-      CC_CONNECT_TOKEN: bridgeToken,
-      CC_CONNECT_ENABLED: "true",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -125,7 +140,9 @@ async function startServerAndBridge() {
 
   await waitFor(async () => {
     try {
-      const res = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+      const res = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
+        headers: { Authorization: `Bearer ${dashboardToken}` },
+      });
       return res.ok;
     } catch {
       return false;
@@ -134,7 +151,9 @@ async function startServerAndBridge() {
 
   await waitFor(async () => {
     try {
-      const res = await fetch(`http://127.0.0.1:${serverPort}/api/bridges/${connectionId}/status`);
+      const res = await fetch(`http://127.0.0.1:${serverPort}/api/bridges/${connectionId}/status`, {
+        headers: { Authorization: `Bearer ${dashboardToken}` },
+      });
       if (!res.ok) return false;
       const body = (await res.json()) as { connected?: boolean };
       return body.connected === true;
@@ -149,7 +168,7 @@ async function startServerAndBridge() {
 
   const openDashboardWs = async (): Promise<WebSocket> =>
     new Promise<WebSocket>((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${serverPort}/ws?token=${encodeURIComponent(secret)}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${serverPort}/ws?token=${encodeURIComponent(dashboardToken)}`);
       ws.once("open", () => resolve(ws));
       ws.once("error", reject);
     });
@@ -166,7 +185,9 @@ async function startServerAndBridge() {
 
   const fetchHistory = async () => {
     const chatKey = encodeURIComponent(`${connectionId}::default`);
-    const res = await fetch(`http://127.0.0.1:${serverPort}/api/history/${chatKey}`);
+    const res = await fetch(`http://127.0.0.1:${serverPort}/api/history/${chatKey}`, {
+      headers: { Authorization: `Bearer ${dashboardToken}` },
+    });
     const body = (await res.json()) as { messages: Array<{ role: string; content: string }> };
     return body.messages;
   };

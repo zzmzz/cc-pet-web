@@ -34,6 +34,7 @@ COPY --from=builder /app/packages/web/dist packages/web/dist
 
 ENV CC_PET_PORT=3000
 ENV CC_PET_DATA_DIR=/data
+ENV NODE_ENV=production
 
 EXPOSE 3000
 VOLUME ["/data"]

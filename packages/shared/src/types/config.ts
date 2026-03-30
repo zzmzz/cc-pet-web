@@ -1,5 +1,7 @@
 export interface AppConfig {
   bridges: BridgeConfig[];
+  tokens: TokenConfig[];
+  corsOrigins?: string[];
   pet: PetConfig;
   server: ServerConfig;
 }
@@ -11,6 +13,12 @@ export interface BridgeConfig {
   port: number;
   token: string;
   enabled: boolean;
+}
+
+export interface TokenConfig {
+  token: string;
+  name: string;
+  bridgeIds: string[];
 }
 
 export interface PetConfig {

@@ -34,6 +34,7 @@ class FakeAdapter implements PlatformAPI {
 }
 
 const adapter = new FakeAdapter();
+const fetchMock = vi.fn();
 
 vi.mock("./lib/web-adapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/web-adapter.js")>();
@@ -64,13 +65,20 @@ const INPUT_PLACEHOLDER = "输入消息，Enter 发送，Shift+Enter 换行";
 
 describe("App integration", () => {
   beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
     cleanup();
     resetStores();
     localStorage.clear();
+    localStorage.setItem("cc-pet-token", "test-token");
     adapter.connectWs.mockClear();
     adapter.disconnectWs.mockClear();
     adapter.sendWsMessage.mockClear();
     adapter.fetchApi.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ valid: true, name: "test", bridgeIds: ["cc-connect"] }),
+    });
     adapter.fetchApi.mockImplementation(async () => ({}));
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
@@ -86,7 +94,24 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByText("cc-connect");
-    expect(createWebAdapter).toHaveBeenCalledWith("");
+    expect(createWebAdapter).toHaveBeenCalledWith("", "legacy-token");
+  });
+
+  it("shows login gate when token missing and enters app after verification", async () => {
+    localStorage.removeItem("cc-pet-token");
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ valid: true, name: "manual", bridgeIds: ["cc-connect"] }),
+    });
+    render(<App />);
+
+    await screen.findByText("输入访问 Token");
+    const input = screen.getByPlaceholderText("请输入 token");
+    await userEvent.type(input, "manual-token");
+    await userEvent.click(screen.getByRole("button", { name: "进入" }));
+
+    await screen.findByText("cc-connect");
+    expect(createWebAdapter).toHaveBeenCalledWith("", "manual-token");
   });
 
   it("shows connection status and updates to connected after bridge event", async () => {

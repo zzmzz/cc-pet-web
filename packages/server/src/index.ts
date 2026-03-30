@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming } from "@cc-pet/shared";
+import { findTokenIdentity } from "./auth/token-auth.js";
 import { parseSkillCommandsFromSkillsText } from "./bridge/parse-skills-probe.js";
 import {
   bridgeReplyCtx,
@@ -26,9 +27,9 @@ import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerFileRoutes } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
+import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
-const SECRET = process.env.CC_PET_SECRET ?? "";
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,12 @@ const db = createDatabase(DATA_DIR);
 const messageStore = new MessageStore(db);
 const sessionStore = new SessionStore(db);
 const configStore = new ConfigStore(db, { dataDir: DATA_DIR });
+const initialConfig = configStore.load();
+if (initialConfig.tokens.length === 0) {
+  throw new Error(
+    "No auth tokens configured. Add a non-empty `tokens` array to cc-pet.config.json (under CC_PET_DATA_DIR) or seed config via the app.",
+  );
+}
 
 const bridgeManager = new BridgeManager();
 
@@ -59,7 +66,10 @@ const app = Fastify({
       }
     : { level: process.env.LOG_LEVEL ?? "info" },
 });
-await app.register(cors, { origin: true });
+const corsOrigins = initialConfig.corsOrigins ?? [];
+await app.register(cors, {
+  origin: corsOrigins.length > 0 ? corsOrigins : false,
+});
 await app.register(multipart);
 
 const webDistPath = path.resolve(__dirname, "../../web/dist");
@@ -70,13 +80,25 @@ try {
 }
 
 app.get("/api/health", async () => ({ status: "ok", timestamp: Date.now() }));
+app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) => {
+  const token = typeof req.body?.token === "string" ? req.body.token : "";
+  const identity = findTokenIdentity(initialConfig.tokens, token);
+  if (!identity) {
+    reply.code(401);
+    return { valid: false, error: "Invalid token" };
+  }
+  return { valid: true, name: identity.tokenName, bridgeIds: Array.from(identity.bridgeIds) };
+});
+app.addHook("onRequest", authGuard(initialConfig.tokens));
 registerConfigRoutes(app, configStore);
 registerSessionRoutes(app, sessionStore);
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerMiscRoutes(app);
 
-app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req) => {
+app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
+  const auth = getRequestAuthIdentity(req);
+  if (!auth?.bridgeIds.has(req.params.id)) return reply.code(403).send({ error: "Forbidden" });
   const cfg = configStore.load();
   const bridge = cfg.bridges.find((b) => b.id === req.params.id);
   if (!bridge) return { error: "Bridge not found" };
@@ -85,13 +107,17 @@ app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req) => 
   return { ok: true };
 });
 
-app.post<{ Params: { id: string } }>("/api/bridges/:id/disconnect", async (req) => {
+app.post<{ Params: { id: string } }>("/api/bridges/:id/disconnect", async (req, reply) => {
+  const auth = getRequestAuthIdentity(req);
+  if (!auth?.bridgeIds.has(req.params.id)) return reply.code(403).send({ error: "Forbidden" });
   app.log.info({ bridgeId: req.params.id }, "Bridge disconnect requested");
   bridgeManager.disconnect(req.params.id);
   return { ok: true };
 });
 
-app.get<{ Params: { id: string } }>("/api/bridges/:id/status", async (req) => {
+app.get<{ Params: { id: string } }>("/api/bridges/:id/status", async (req, reply) => {
+  const auth = getRequestAuthIdentity(req);
+  if (!auth?.bridgeIds.has(req.params.id)) return reply.code(403).send({ error: "Forbidden" });
   const connected = bridgeManager.getStatus(req.params.id);
   app.log.debug({ bridgeId: req.params.id, connected }, "Bridge status queried");
   return { connected };
@@ -99,14 +125,18 @@ app.get<{ Params: { id: string } }>("/api/bridges/:id/status", async (req) => {
 
 await app.listen({ port: PORT, host: "0.0.0.0" });
 
-const hub = new ClientHub(app.server, SECRET, app.log);
-hub.onClientConnected = (send) => {
+const hub = new ClientHub(app.server, initialConfig.tokens, app.log);
+hub.onClientConnected = (client, send) => {
   const cfg = configStore.load();
-  app.log.info({ bridges: cfg.bridges.length }, "Syncing bridge manifest and status to new dashboard websocket client");
+  const allowedBridges = cfg.bridges.filter((b) => client.auth.bridgeIds.has(b.id));
+  app.log.info(
+    { tokenName: client.auth.tokenName, bridges: allowedBridges.length },
+    "Syncing bridge manifest and status to new dashboard websocket client",
+  );
   send(WS_EVENTS.BRIDGE_MANIFEST, {
-    bridges: cfg.bridges.map((b) => ({ id: b.id, name: b.name })),
+    bridges: allowedBridges.map((b) => ({ id: b.id, name: b.name })),
   });
-  for (const bridge of cfg.bridges) {
+  for (const bridge of allowedBridges) {
     send(WS_EVENTS.BRIDGE_CONNECTED, {
       connectionId: bridge.id,
       connected: bridgeManager.getStatus(bridge.id),
@@ -228,8 +258,15 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   }
 });
 
-hub.onMessage = (msg: any) => {
+hub.onMessage = (msg: any, client) => {
   const { type, connectionId, sessionKey, content, buttonId, customInput, fileId, name, data, mimeType, files } = msg;
+  if (typeof connectionId === "string" && connectionId.length > 0 && !client.auth.bridgeIds.has(connectionId)) {
+    app.log.warn(
+      { tokenName: client.auth.tokenName, connectionId, eventType: type },
+      "Rejected dashboard websocket event: unauthorized bridge",
+    );
+    return;
+  }
   switch (type) {
     case WS_EVENTS.SEND_MESSAGE:
       const msgId = `msg-${Date.now()}`;

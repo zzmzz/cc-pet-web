@@ -84,7 +84,7 @@ export function applyIncomingWsSessionRouting(
   return { ...p, sessionKey: resolved.sessionKey, sessionRouteSource: resolved.source };
 }
 
-export function createWebAdapter(serverUrl: string): PlatformAPI {
+export function createWebAdapter(serverUrl: string, token: string): PlatformAPI {
   let ws: WebSocket | null = null;
   let eventHandler: ((type: string, payload: any) => void) | null = null;
   let shouldReconnect = true;
@@ -150,7 +150,8 @@ export function createWebAdapter(serverUrl: string): PlatformAPI {
         serverUrl.trim().length > 0
           ? serverUrl.replace(/^http/, "ws")
           : `${window.location.origin.replace(/^http/, "ws")}`;
-      const url = `${wsBase}/ws`;
+      const qs = token.trim().length > 0 ? `?token=${encodeURIComponent(token)}` : "";
+      const url = `${wsBase}/ws${qs}`;
       const socket = new WebSocket(url);
       ws = socket;
 
@@ -225,12 +226,16 @@ export function createWebAdapter(serverUrl: string): PlatformAPI {
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
       const base = serverUrl.trim();
       const requestUrl = base.length > 0 ? `${base}${path}` : path;
+      const headers = new Headers(options?.headers ?? {});
+      if (!headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
+      if (token.trim().length > 0) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
       const res = await fetch(requestUrl, {
         ...options,
-        headers: {
-          "Content-Type": "application/json",
-          ...options?.headers,
-        },
+        headers,
       });
       return res.json() as T;
     },

@@ -1,34 +1,17 @@
 import type Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, BridgeConfig } from "@cc-pet/shared";
+import type { AppConfig, BridgeConfig, TokenConfig } from "@cc-pet/shared";
 
 const DEFAULT_CONFIG: AppConfig = {
   bridges: [],
+  tokens: [],
+  corsOrigins: [],
   pet: { opacity: 1, size: 120 },
   server: { port: 3000, dataDir: "./data" },
 };
 
 const CONFIG_FILENAME = "cc-pet.config.json";
-
-function applyEnvBridge(config: AppConfig): AppConfig {
-  const host = process.env.CC_CONNECT_HOST;
-  if (!host) return config;
-
-  const envBridge: BridgeConfig = {
-    id: process.env.CC_CONNECT_ID ?? "cc-connect",
-    name: process.env.CC_CONNECT_NAME ?? "cc-connect",
-    host,
-    port: parseInt(process.env.CC_CONNECT_PORT ?? "9810", 10),
-    token: process.env.CC_CONNECT_TOKEN ?? "",
-    enabled: (process.env.CC_CONNECT_ENABLED ?? "true").toLowerCase() !== "false",
-  };
-
-  return {
-    ...config,
-    bridges: [envBridge],
-  };
-}
 
 function normalizeBridge(b: unknown): BridgeConfig | null {
   if (!b || typeof b !== "object") return null;
@@ -49,6 +32,20 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
   };
 }
 
+function normalizeToken(t: unknown): TokenConfig | null {
+  if (!t || typeof t !== "object") return null;
+  const x = t as Record<string, unknown>;
+  if (typeof x.token !== "string" || x.token.trim().length === 0) return null;
+  const bridgeIds = Array.isArray(x.bridgeIds)
+    ? x.bridgeIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+    : [];
+  return {
+    token: x.token,
+    name: typeof x.name === "string" && x.name.trim().length > 0 ? x.name : "token",
+    bridgeIds,
+  };
+}
+
 function normalizeAppConfig(raw: unknown): AppConfig {
   if (!raw || typeof raw !== "object") {
     throw new Error(`Invalid ${CONFIG_FILENAME}: root must be a JSON object`);
@@ -58,6 +55,14 @@ function normalizeAppConfig(raw: unknown): AppConfig {
   const bridges = Array.isArray(bridgesRaw)
     ? (bridgesRaw.map(normalizeBridge).filter(Boolean) as BridgeConfig[])
     : DEFAULT_CONFIG.bridges;
+  const tokensRaw = o.tokens;
+  const tokens = Array.isArray(tokensRaw)
+    ? (tokensRaw.map(normalizeToken).filter(Boolean) as TokenConfig[])
+    : DEFAULT_CONFIG.tokens;
+  const corsOriginsRaw = o.corsOrigins;
+  const corsOrigins = Array.isArray(corsOriginsRaw)
+    ? corsOriginsRaw.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    : DEFAULT_CONFIG.corsOrigins;
 
   const pet =
     o.pet && typeof o.pet === "object"
@@ -69,7 +74,7 @@ function normalizeAppConfig(raw: unknown): AppConfig {
       ? { ...DEFAULT_CONFIG.server, ...(o.server as AppConfig["server"]) }
       : { ...DEFAULT_CONFIG.server };
 
-  return { bridges, pet, server };
+  return { bridges, tokens, corsOrigins, pet, server };
 }
 
 export interface ConfigStoreOptions {
@@ -88,12 +93,6 @@ export class ConfigStore {
     private options?: ConfigStoreOptions,
   ) {}
 
-  private resolveExplicitEnvPath(): string | undefined {
-    const raw = process.env.CC_PET_CONFIG_FILE?.trim();
-    if (!raw) return undefined;
-    return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
-  }
-
   private defaultDataDirConfigPath(): string | undefined {
     if (!this.options?.dataDir) return undefined;
     const dir = path.resolve(process.cwd(), this.options.dataDir);
@@ -106,14 +105,12 @@ export class ConfigStore {
       const p = this.options.configFilePath;
       return path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
     }
-    return this.resolveExplicitEnvPath() ?? this.defaultDataDirConfigPath();
+    return this.defaultDataDirConfigPath();
   }
 
   load(): AppConfig {
     const candidate = this.resolveConfigFileCandidate();
-    const wantsExplicitFile = Boolean(
-      this.options?.configFilePath?.trim() || process.env.CC_PET_CONFIG_FILE?.trim(),
-    );
+    const wantsExplicitFile = Boolean(this.options?.configFilePath?.trim());
 
     if (candidate && fs.existsSync(candidate)) {
       let parsed: unknown;
@@ -126,7 +123,7 @@ export class ConfigStore {
       }
       const merged = normalizeAppConfig(parsed);
       this.persistFilePath = candidate;
-      return applyEnvBridge(merged);
+      return merged;
     }
 
     if (candidate && wantsExplicitFile) {
@@ -136,8 +133,8 @@ export class ConfigStore {
     }
 
     const row = this.db.prepare(`SELECT data FROM config WHERE id = 1`).get() as any;
-    const base = row ? (JSON.parse(row.data) as AppConfig) : { ...DEFAULT_CONFIG };
-    return applyEnvBridge(base);
+    const base = row ? normalizeAppConfig(JSON.parse(row.data) as AppConfig) : { ...DEFAULT_CONFIG };
+    return base;
   }
 
   save(config: AppConfig): void {

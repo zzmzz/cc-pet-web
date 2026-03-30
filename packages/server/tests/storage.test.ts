@@ -97,7 +97,13 @@ describe("Storage", () => {
 
   describe("ConfigStore", () => {
     it("should save and load config", () => {
-      const cfg = { bridges: [], pet: { opacity: 1, size: 120 }, server: { port: 3000, dataDir: "./data" } };
+      const cfg = {
+        bridges: [],
+        tokens: [],
+        corsOrigins: [],
+        pet: { opacity: 1, size: 120 },
+        server: { port: 3000, dataDir: "./data" },
+      };
       config.save(cfg);
       const loaded = config.load();
       expect(loaded).toEqual(cfg);

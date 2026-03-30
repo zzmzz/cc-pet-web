@@ -3,18 +3,9 @@ services:
     build: .
     ports:
       - "3000:3000"
-    environment:
-      CC_PET_PORT: "3000"
-      CC_PET_SECRET: "${CC_PET_SECRET:-cc-pet-dev}"
-      CC_PET_DATA_DIR: "/data"
-      CC_CONNECT_HOST: "${CC_CONNECT_HOST:-}"
-      CC_CONNECT_PORT: "${CC_CONNECT_PORT:-9810}"
-      CC_CONNECT_TOKEN: "${CC_CONNECT_TOKEN:-}"
-      CC_CONNECT_ID: "${CC_CONNECT_ID:-cc-connect}"
-      CC_CONNECT_NAME: "${CC_CONNECT_NAME:-cc-connect}"
-      CC_CONNECT_ENABLED: "${CC_CONNECT_ENABLED:-true}"
     volumes:
       - cc-pet-data:/data
+      - ./cc-pet.docker.config.json:/data/cc-pet.config.json
     restart: unless-stopped
 
 volumes:

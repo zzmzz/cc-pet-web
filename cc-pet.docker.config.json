@@ -1,0 +1,28 @@
+{
+  "bridges": [
+    {
+      "id": "cc-connect",
+      "name": "cc-connect",
+      "host": "host.docker.internal",
+      "port": 9810,
+      "token": "",
+      "enabled": false
+    }
+  ],
+  "tokens": [
+    {
+      "token": "cc-pet-docker-dev",
+      "name": "docker-local",
+      "bridgeIds": ["cc-connect"]
+    }
+  ],
+  "corsOrigins": [],
+  "pet": {
+    "opacity": 1,
+    "size": 120
+  },
+  "server": {
+    "port": 3000,
+    "dataDir": "/data"
+  }
+}
