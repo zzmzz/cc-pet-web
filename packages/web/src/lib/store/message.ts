@@ -10,6 +10,8 @@ interface MessageState {
   appendStreamDelta: (chatKey: string, delta: string) => void;
   finalizeStream: (chatKey: string, fullText: string) => void;
   clearMessages: (chatKey: string) => void;
+  /** Remove chatKey from message + streaming maps (e.g. session delete). */
+  purgeChat: (chatKey: string) => void;
 }
 
 export const useMessageStore = create<MessageState>((set) => ({
@@ -48,4 +50,10 @@ export const useMessageStore = create<MessageState>((set) => ({
     }),
   clearMessages: (chatKey) =>
     set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: [] } })),
+  purgeChat: (chatKey) =>
+    set((s) => {
+      const { [chatKey]: _m, ...messagesByChat } = s.messagesByChat;
+      const { [chatKey]: _st, ...streamingContent } = s.streamingContent;
+      return { messagesByChat, streamingContent };
+    }),
 }));
