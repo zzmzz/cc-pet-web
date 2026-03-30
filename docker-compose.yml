@@ -1,0 +1,15 @@
+services:
+  cc-pet:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      CC_PET_PORT: "3000"
+      CC_PET_SECRET: "${CC_PET_SECRET:-cc-pet-dev}"
+      CC_PET_DATA_DIR: "/data"
+    volumes:
+      - cc-pet-data:/data
+    restart: unless-stopped
+
+volumes:
+  cc-pet-data:
