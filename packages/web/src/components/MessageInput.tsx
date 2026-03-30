@@ -1,60 +1,127 @@
-import { useState, useRef, type KeyboardEvent } from "react";
+import {
+  forwardRef,
+  useRef,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
-interface Props {
-  onSend: (content: string) => void;
-  onFileUpload?: (file: File) => void;
+export interface MessageInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  onSend: () => void;
+  onKeyDown?: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Rendered above the textarea (e.g. slash command palette) */
+  slashMenu?: ReactNode;
+  onFilesSelected?: (files: File[]) => void;
+  pendingAttachments?: File[];
+  onRemoveAttachment?: (file: File) => void;
+  /** When true, disables send button (textarea stays editable unless `disabled`) */
+  sendDisabled?: boolean;
+  /** When true, disables textarea and buttons */
   disabled?: boolean;
+  placeholder?: string;
 }
 
-export function MessageInput({ onSend, onFileUpload, disabled }: Props) {
-  const [text, setText] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
+  function MessageInput(
+    {
+      value,
+      onChange,
+      onSend,
+      onKeyDown,
+      slashMenu,
+      onFilesSelected,
+      pendingAttachments = [],
+      onRemoveAttachment,
+      sendDisabled,
+      disabled,
+      placeholder = "输入消息，Enter 发送，Shift+Enter 换行",
+    },
+    ref,
+  ) {
+    const fileRef = useRef<HTMLInputElement>(null);
+    const safeValue = value ?? "";
+    const sendBtnDisabled = sendDisabled ?? (!safeValue.trim() || !!disabled);
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+    const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (onKeyDown) {
+        onKeyDown(e);
+        if (e.defaultPrevented) return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        if (!sendBtnDisabled) onSend();
+      }
+    };
 
-  const handleSend = () => {
-    const trimmed = text.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
-    setText("");
-  };
-
-  return (
-    <div className="flex items-end gap-2 p-3 bg-surface-secondary border-t border-border">
-      <button className="text-gray-400 hover:text-gray-200 pb-1" onClick={() => fileRef.current?.click()}>
-        📎
-      </button>
-      <input
-        ref={fileRef}
-        type="file"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) onFileUpload?.(file);
-          e.target.value = "";
-        }}
-      />
-      <textarea
-        className="flex-1 bg-surface-tertiary rounded-lg px-3 py-2 text-sm text-gray-200 resize-none outline-none placeholder:text-gray-600"
-        rows={1}
-        placeholder="输入消息..."
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
-      />
-      <button
-        className="bg-accent rounded-lg px-4 py-2 text-white text-sm font-medium disabled:opacity-40"
-        onClick={handleSend}
-        disabled={!text.trim() || disabled}
-      >
-        发送
-      </button>
-    </div>
-  );
-}
+    return (
+      <div className="border-t border-gray-100 p-3 shrink-0 bg-white">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            if (files.length > 0) onFilesSelected?.(files);
+            e.target.value = "";
+          }}
+        />
+        {pendingAttachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {pendingAttachments.map((file) => (
+              <span
+                key={`${file.name}-${file.size}-${file.lastModified}`}
+                className="inline-flex items-center gap-1 max-w-full rounded-lg border border-indigo-200 bg-indigo-50/80 pl-2.5 pr-1 py-1 text-[11px] text-indigo-800"
+              >
+                <span className="truncate" title={file.name}>
+                  📎 {file.name}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`移除附件 ${file.name}`}
+                  className="shrink-0 rounded px-1 text-indigo-500 hover:bg-indigo-100 hover:text-indigo-800"
+                  onClick={() => onRemoveAttachment?.(file)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="relative">
+          {slashMenu}
+          <textarea
+            ref={ref}
+            className="w-full resize-none rounded-xl border border-gray-200 bg-gray-50 px-4 py-2.5 text-[13.5px] text-gray-800 caret-gray-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all placeholder:text-gray-400"
+            rows={3}
+            placeholder={placeholder}
+            value={safeValue}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+          />
+        </div>
+        <div className="flex items-center mt-2">
+          <button
+            type="button"
+            className="text-sm text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 hover:bg-gray-50 transition-colors"
+            onClick={() => fileRef.current?.click()}
+            disabled={disabled}
+          >
+            📎 文件
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            className="bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg px-5 py-1.5 transition-colors"
+            onClick={onSend}
+            disabled={sendBtnDisabled}
+          >
+            发送
+          </button>
+        </div>
+      </div>
+    );
+  },
+);

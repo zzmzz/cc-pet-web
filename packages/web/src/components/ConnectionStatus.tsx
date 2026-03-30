@@ -1,7 +1,8 @@
 import { useConnectionStore } from "../lib/store/connection.js";
 
 export function ConnectionStatus() {
-  const { connections, activeConnectionId } = useConnectionStore();
+  const connections = useConnectionStore((s) => s.connections);
+  const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
   const active = connections.find((c) => c.id === activeConnectionId);
   if (!active) return null;
 

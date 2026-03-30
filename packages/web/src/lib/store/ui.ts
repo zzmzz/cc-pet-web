@@ -20,8 +20,16 @@ export const useUIStore = create<UIState>((set) => ({
   petState: "idle",
   isMobile: false,
 
-  setChatOpen: (open) => set({ chatOpen: open, settingsOpen: open ? false : undefined }),
-  setSettingsOpen: (open) => set({ settingsOpen: open, chatOpen: open ? false : undefined }),
+  setChatOpen: (open) =>
+    set(() => ({
+      chatOpen: open,
+      ...(open ? { settingsOpen: false } : {}),
+    })),
+  setSettingsOpen: (open) =>
+    set(() => ({
+      settingsOpen: open,
+      ...(open ? { chatOpen: false } : {}),
+    })),
   setPetState: (petState) => set({ petState }),
   setIsMobile: (isMobile) => set({ isMobile }),
 }));

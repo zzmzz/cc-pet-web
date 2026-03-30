@@ -19,7 +19,7 @@ export function MessageList({ messages, streamingContent }: Props) {
   }, [messages, streamingContent]);
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-3">
+    <div className="flex-1 min-h-0 overflow-y-auto py-3 space-y-1">
       {messages.map((msg) => (
         <MessageBubble key={msg.id} message={msg} />
       ))}
@@ -35,16 +35,49 @@ export function MessageList({ messages, streamingContent }: Props) {
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
+  const hasFiles = Array.isArray(message.files) && message.files.length > 0;
+
+  if (hasFiles) {
+    const caption = message.content.trim();
+    return (
+      <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1`}>
+        <div
+          className={`${
+            isUser
+              ? "bg-blue-50 border-blue-200 text-blue-700"
+              : "bg-green-50 border-green-200 text-green-700"
+          } border rounded-lg px-3 py-2 text-sm max-w-[80%]`}
+        >
+          {caption ? <div className="mb-1.5 whitespace-pre-wrap break-words">{caption}</div> : null}
+          <div className="space-y-1">
+            {(message.files ?? []).map((file) => (
+              <div key={file.id} className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0">{isUser ? "📎" : "📥"}</span>
+                <span className="truncate">{file.name}</span>
+              </div>
+            ))}
+          </div>
+          <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
+            {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1`}>
       <div
-        className={`max-w-[80%] rounded-lg px-3 py-2 ${
-          isUser ? "bg-accent/20 text-blue-100" : "bg-surface-tertiary text-gray-200"
+        className={`max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
+          isUser
+            ? "bg-indigo-500 text-white rounded-br-md"
+            : "bg-gray-100 text-gray-800 rounded-bl-md markdown-body"
         }`}
       >
-        <div className="text-[10px] text-gray-500 mb-1">{isUser ? "you" : "bot"}</div>
-        <div className="prose prose-invert prose-sm max-w-none">
+        <div className="break-words">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             rehypePlugins={[rehypeRaw]}
@@ -53,14 +86,43 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 const match = /language-(\w+)/.exec(className || "");
                 const code = String(children).replace(/\n$/, "");
                 if (match) {
-                  return <SyntaxHighlighter style={oneDark} language={match[1]} PreTag="div">{code}</SyntaxHighlighter>;
+                  return (
+                    <SyntaxHighlighter
+                      style={oneDark}
+                      language={match[1]}
+                      PreTag="div"
+                      wrapLongLines
+                      customStyle={{
+                        borderRadius: "8px",
+                        margin: 0,
+                        fontSize: "12.5px",
+                      }}
+                    >
+                      {code}
+                    </SyntaxHighlighter>
+                  );
                 }
-                return <code className="bg-surface-tertiary px-1 rounded" {...props}>{children}</code>;
+                return (
+                  <code
+                    className={`px-1.5 py-0.5 rounded text-[0.9em] ${
+                      isUser ? "bg-indigo-400/40 text-indigo-50" : "bg-slate-100 text-rose-600"
+                    }`}
+                    {...props}
+                  >
+                    {children}
+                  </code>
+                );
               },
             }}
           >
-            {message.content}
+            {isUser ? message.content : message.content.replace(/\n/g, "  \n")}
           </ReactMarkdown>
+        </div>
+        <div className={`text-[10px] mt-1 ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
+          {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
         </div>
       </div>
     </div>

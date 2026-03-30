@@ -8,17 +8,17 @@ import { Settings } from "./components/Settings.js";
 import { useUIStore } from "./lib/store/ui.js";
 import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
+import { useSessionStore } from "./lib/store/session.js";
 import { useConfigStore } from "./lib/store/config.js";
+import { useCommandStore } from "./lib/store/commands.js";
+import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 
 export default function App() {
-  const { settingsOpen } = useUIStore();
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const serverUrl = localStorage.getItem("cc-pet-server-url") ?? "http://localhost:3000";
-    const token = localStorage.getItem("cc-pet-token") ?? "cc-pet-dev";
-
-    const adapter = createWebAdapter(serverUrl, token);
+    const adapter = createWebAdapter("");
     setPlatform(adapter);
 
     adapter.fetchApi("/api/config").then((cfg: any) => {
@@ -34,7 +34,9 @@ export default function App() {
 
     const unsub = adapter.onWsEvent((type, payload) => {
       const { connectionId, sessionKey } = payload;
-      const chatKey = connectionId && sessionKey ? makeChatKey(connectionId, sessionKey) : "";
+      const resolvedSessionKey =
+        connectionId ? (sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default") : undefined;
+      const chatKey = connectionId && resolvedSessionKey ? makeChatKey(connectionId, resolvedSessionKey) : "";
 
       switch (type) {
         case WS_EVENTS.BRIDGE_CONNECTED:
@@ -44,7 +46,7 @@ export default function App() {
         case WS_EVENTS.BRIDGE_MESSAGE:
           useMessageStore.getState().addMessage(chatKey, {
             id: `msg-${Date.now()}`, role: "assistant", content: payload.content,
-            timestamp: Date.now(), connectionId, sessionKey,
+            timestamp: Date.now(), connectionId, sessionKey: resolvedSessionKey,
           });
           useUIStore.getState().setPetState("idle");
           break;
@@ -59,7 +61,25 @@ export default function App() {
         case WS_EVENTS.BRIDGE_BUTTONS:
           useMessageStore.getState().addMessage(chatKey, {
             id: `msg-${Date.now()}`, role: "assistant", content: payload.content ?? "",
-            timestamp: Date.now(), connectionId, sessionKey, buttons: payload.buttons,
+            timestamp: Date.now(), connectionId, sessionKey: resolvedSessionKey, buttons: payload.buttons,
+          });
+          useUIStore.getState().setPetState("idle");
+          break;
+        case WS_EVENTS.BRIDGE_FILE_RECEIVED:
+          useMessageStore.getState().addMessage(chatKey, {
+            id: `msg-${Date.now()}`,
+            role: "assistant",
+            content: payload.name ?? "",
+            timestamp: Date.now(),
+            connectionId,
+            sessionKey: resolvedSessionKey,
+            files: [
+              {
+                id: `recv-${Date.now()}`,
+                name: payload.name ?? "收到文件",
+                size: 0,
+              },
+            ],
           });
           useUIStore.getState().setPetState("idle");
           break;
@@ -69,7 +89,27 @@ export default function App() {
         case WS_EVENTS.BRIDGE_TYPING_STOP:
           useUIStore.getState().setPetState("idle");
           break;
+        case WS_EVENTS.BRIDGE_SKILLS_UPDATED: {
+          const connectionId = payload.connectionId as string;
+          if (!connectionId) break;
+          const cmds = normalizeBridgeSlashCommands(payload.commands as unknown[]);
+          useCommandStore.getState().setAgentCommands(connectionId, cmds);
+          break;
+        }
         case WS_EVENTS.BRIDGE_ERROR:
+          if (connectionId) {
+            const fallbackSessionKey =
+              sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
+            const errorChatKey = makeChatKey(connectionId, fallbackSessionKey);
+            useMessageStore.getState().addMessage(errorChatKey, {
+              id: `msg-${Date.now()}`,
+              role: "assistant",
+              content: `发送失败：${payload.error ?? "Bridge 未连接"}`,
+              timestamp: Date.now(),
+              connectionId,
+              sessionKey: fallbackSessionKey,
+            });
+          }
           useUIStore.getState().setPetState("error");
           break;
       }

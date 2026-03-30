@@ -26,7 +26,9 @@ const STATE_ANIMATIONS: Record<PetState, object> = {
 };
 
 export function PetFull() {
-  const { petState, chatOpen, setChatOpen } = useUIStore();
+  const petState = useUIStore((s) => s.petState);
+  const chatOpen = useUIStore((s) => s.chatOpen);
+  const setChatOpen = useUIStore((s) => s.setChatOpen);
 
   return (
     <motion.div
@@ -42,7 +44,9 @@ export function PetFull() {
 }
 
 export function PetMini() {
-  const { petState, setChatOpen, chatOpen } = useUIStore();
+  const petState = useUIStore((s) => s.petState);
+  const setChatOpen = useUIStore((s) => s.setChatOpen);
+  const chatOpen = useUIStore((s) => s.chatOpen);
 
   return (
     <motion.button

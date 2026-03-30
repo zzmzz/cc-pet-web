@@ -4,7 +4,9 @@ import { PetFull, PetMini } from "./Pet.js";
 import { ConnectionStatus } from "./ConnectionStatus.js";
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { isMobile, setIsMobile, setSettingsOpen } = useUIStore();
+  const isMobile = useUIStore((s) => s.isMobile);
+  const setIsMobile = useUIStore((s) => s.setIsMobile);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);

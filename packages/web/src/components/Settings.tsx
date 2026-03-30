@@ -5,18 +5,32 @@ import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
 import { randomId } from "../lib/utils.js";
 
+function createDefaultBridge(): BridgeConfig {
+  return {
+    id: randomId(),
+    name: "cc-connect",
+    host: "localhost",
+    port: 9810,
+    token: "",
+    enabled: true,
+  };
+}
+
 export function Settings() {
   const config = useConfigStore((s) => s.config);
   const setConfig = useConfigStore((s) => s.setConfig);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
-  const [bridges, setBridges] = useState<BridgeConfig[]>(config?.bridges ?? []);
+  const [bridges, setBridges] = useState<BridgeConfig[]>(
+    config?.bridges.length ? config.bridges : [createDefaultBridge()]
+  );
 
   useEffect(() => {
-    if (config) setBridges(config.bridges);
+    if (!config) return;
+    setBridges(config.bridges.length ? config.bridges : [createDefaultBridge()]);
   }, [config]);
 
   const addBridge = () => {
-    setBridges([...bridges, { id: randomId(), name: "", host: "localhost", port: 9810, token: "", enabled: true }]);
+    setBridges([...bridges, createDefaultBridge()]);
   };
 
   const removeBridge = (id: string) => {
@@ -28,8 +42,13 @@ export function Settings() {
   };
 
   const save = async () => {
+    const baseConfig: AppConfig = config ?? {
+      bridges: [],
+      pet: { opacity: 1, size: 120 },
+      server: { port: 3000, dataDir: "./data" },
+    };
     const newConfig: AppConfig = {
-      ...config!,
+      ...baseConfig,
       bridges,
     };
     try {

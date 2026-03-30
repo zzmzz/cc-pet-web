@@ -1,8 +1,8 @@
 import type { PlatformAPI } from "./platform.js";
 import { createWebAdapter } from "./web-adapter.js";
 
-export async function createTauriAdapter(serverUrl: string, token: string): Promise<PlatformAPI> {
-  const base = createWebAdapter(serverUrl, token);
+export async function createTauriAdapter(serverUrl: string): Promise<PlatformAPI> {
+  const base = createWebAdapter(serverUrl);
 
   return {
     ...base,

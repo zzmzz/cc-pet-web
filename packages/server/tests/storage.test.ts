@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { initSchema } from "../src/storage/db.js";
 import { MessageStore } from "../src/storage/messages.js";
 import { SessionStore } from "../src/storage/sessions.js";
@@ -70,6 +73,51 @@ describe("Storage", () => {
       config.save(cfg);
       const loaded = config.load();
       expect(loaded).toEqual(cfg);
+    });
+
+    it("loads bridges from local config file when configFilePath exists", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "cc-pet-cfg-"));
+      const filePath = path.join(dir, "app.json");
+      const fileCfg = {
+        bridges: [
+          {
+            id: "b1",
+            name: "bridge-one",
+            host: "127.0.0.1",
+            port: 9810,
+            token: "secret",
+            enabled: true,
+          },
+        ],
+        pet: { opacity: 0.5, size: 100 },
+        server: { port: 3000, dataDir: "./data" },
+      };
+      await writeFile(filePath, JSON.stringify(fileCfg), "utf8");
+
+      const fileStore = new ConfigStore(db, { configFilePath: filePath });
+      const loaded = fileStore.load();
+      expect(loaded.bridges).toHaveLength(1);
+      expect(loaded.bridges[0]?.id).toBe("b1");
+      expect(loaded.pet.opacity).toBe(0.5);
+
+      const next = {
+        ...loaded,
+        bridges: [
+          {
+            id: "b2",
+            name: "bridge-two",
+            host: "127.0.0.1",
+            port: 9811,
+            token: "",
+            enabled: true,
+          },
+        ],
+      };
+      fileStore.save(next);
+      const raw = JSON.parse(await readFile(filePath, "utf8"));
+      expect(raw.bridges[0].id).toBe("b2");
+
+      await rm(dir, { recursive: true, force: true });
     });
   });
 });

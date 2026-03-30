@@ -4,10 +4,14 @@ import { useSessionStore } from "../lib/store/session.js";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { getPlatform } from "../lib/platform.js";
 
+const EMPTY_SESSIONS: Session[] = [];
+
 export function SessionDropdown() {
   const [open, setOpen] = useState(false);
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
-  const sessions = useSessionStore((s) => activeConnectionId ? s.sessions[activeConnectionId] ?? [] : []);
+  const sessions = useSessionStore((s) =>
+    activeConnectionId ? s.sessions[activeConnectionId] ?? EMPTY_SESSIONS : EMPTY_SESSIONS
+  );
   const activeKey = useSessionStore((s) => activeConnectionId ? s.activeSessionKey[activeConnectionId] ?? "default" : "default");
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
 
