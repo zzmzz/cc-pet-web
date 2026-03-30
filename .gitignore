@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.superpowers/
+*.db
+*.db-journal
+.env
+.DS_Store
+target/
