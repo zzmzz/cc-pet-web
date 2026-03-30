@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { WS_EVENTS } from "@cc-pet/shared";
+import { SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 
 async function getFreePort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
@@ -330,6 +330,97 @@ describe("e2e bridge connection status sync", () => {
       });
       expect(bridgeOutgoing.files[0]).toMatchObject({ file_name: "a.txt", mime_type: "text/plain" });
       expect(bridgeOutgoing.files[1]).toMatchObject({ file_name: "b.txt", mime_type: "text/plain" });
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("after register_ack sends /skills probe and maps probe reply to skills-updated without persisting chat", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
+
+      const probe = await waitForWsMessage<{
+        type: string;
+        content: string;
+        reply_ctx?: string;
+        session_key: string;
+      }>(
+        bridgeClient,
+        (msg) =>
+          msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+      expect(probe.session_key).toBe("default");
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "reply",
+          session_key: "default",
+          reply_ctx: SKILLS_PROBE_REPLY_CTX,
+          content: "/probe-skill — from e2e\n",
+        }),
+      );
+
+      const skillsEvt = await waitForWsMessage<{
+        type: string;
+        connectionId: string;
+        commands: Array<{ name?: string; command?: string }>;
+      }>(
+        dashboardWs,
+        (msg) => msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED && msg.connectionId === stack.connectionId,
+        10_000,
+      );
+      const names = skillsEvt.commands.map((c) => c.name ?? c.command?.replace(/^\//, ""));
+      expect(names).toContain("probe-skill");
+
+      await waitFor(async () => {
+        const history = await stack.fetchHistory();
+        return !history.some((m) => m.role === "assistant" && m.content.includes("probe-skill"));
+      });
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("nested data.reply_ctx still counts as skills probe (no chat persistence)", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
+      await waitForWsMessage(bridgeClient, (msg) => msg.type === "message" && msg.content === "/skills", 10_000);
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "reply",
+          data: {
+            session_key: "default",
+            reply_ctx: SKILLS_PROBE_REPLY_CTX,
+            content: "/nested-only — from nested envelope\n",
+          },
+        }),
+      );
+
+      await waitForWsMessage<{ type: string; commands: Array<{ name?: string }> }>(
+        dashboardWs,
+        (msg) => msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED,
+        10_000,
+      );
+
+      await waitFor(async () => {
+        const history = await stack.fetchHistory();
+        return !history.some((m) => m.content?.includes("nested-only"));
+      });
     } finally {
       dashboardWs.close();
       await stack.stop();

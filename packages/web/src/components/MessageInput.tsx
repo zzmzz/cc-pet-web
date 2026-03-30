@@ -17,6 +17,10 @@ export interface MessageInputProps {
   onRemoveAttachment?: (file: File) => void;
   /** When true, disables send button (textarea stays editable unless `disabled`) */
   sendDisabled?: boolean;
+  /** When true, shows stop button near send button */
+  showStopButton?: boolean;
+  onStop?: () => void;
+  stopDisabled?: boolean;
   /** When true, disables textarea and buttons */
   disabled?: boolean;
   placeholder?: string;
@@ -34,6 +38,9 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
       pendingAttachments = [],
       onRemoveAttachment,
       sendDisabled,
+      showStopButton,
+      onStop,
+      stopDisabled,
       disabled,
       placeholder = "输入消息，Enter 发送，Shift+Enter 换行",
     },
@@ -125,6 +132,16 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
             📎 文件
           </button>
           <div className="flex-1" />
+          {showStopButton ? (
+            <button
+              type="button"
+              className="mr-2 border border-red-300 bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-semibold rounded-lg px-4 py-1.5 transition-colors"
+              onClick={onStop}
+              disabled={stopDisabled ?? disabled}
+            >
+              停止
+            </button>
+          ) : null}
           <button
             type="button"
             className="bg-indigo-500 hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg px-5 py-1.5 transition-colors"

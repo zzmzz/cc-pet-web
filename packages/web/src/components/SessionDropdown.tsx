@@ -67,14 +67,17 @@ function phaseForSession(
 export type SessionDropdownProps = {
   /** When true, session delete controls stay visible (for tests; JSDOM cannot emulate group-hover). */
   testShowDeleteButtons?: boolean;
+  /** Desktop sidebar uses always-visible panel; mobile keeps dropdown interaction. */
+  variant?: "dropdown" | "panel";
 };
 
 export function SessionDropdown(props: SessionDropdownProps = {}) {
-  const { testShowDeleteButtons = false } = props;
+  const { testShowDeleteButtons = false, variant = "dropdown" } = props;
   const [open, setOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const panelMode = variant === "panel";
 
   const connections = useConnectionStore((s) => s.connections);
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
@@ -95,7 +98,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   const messagesByChat = useMessageStore((s) => s.messagesByChat);
 
   useEffect(() => {
-    if (!open) return;
+    if (panelMode || !open) return;
     function handleClick(e: globalThis.MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false);
@@ -105,7 +108,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
+  }, [open, panelMode]);
 
   useEffect(() => {
     if (!open) setConfirmDeleteId(null);
@@ -238,50 +241,43 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     );
   }
 
-  return (
-    <div ref={ref} className="relative flex items-center min-w-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-surface-tertiary transition-colors min-w-0 max-w-[220px]"
-        title={buttonLabel}
-      >
-        <span
-          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-400"}`}
-        />
-        <span className="text-sm font-semibold text-gray-800 truncate">{buttonLabel}</span>
-        <span className="text-xs text-gray-600 flex-shrink-0">{activeStatusLabel}</span>
-        {hasUnread && (
-          <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
-            {formatUnread(totalUnread)}
-          </span>
-        )}
-        <span className="text-xs text-gray-600 flex-shrink-0">{open ? "▲" : "▼"}</span>
-      </button>
-
-      {open && (
-        <div className="absolute top-full left-0 mt-1 w-60 bg-surface-secondary border border-border rounded-xl shadow-lg z-50 overflow-hidden">
+  const panel = (
+    <div
+      className={
+        panelMode
+          ? "w-full bg-surface-tertiary/50 border border-border rounded-xl overflow-hidden"
+          : "absolute top-full left-0 mt-1 w-60 bg-surface-secondary border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+      }
+    >
           {bridgeList.length > 1 && (
             <>
               <div className="px-3 pt-2.5 pb-1">
                 <p className="text-xs font-semibold text-gray-700 mb-1">连接</p>
-                <div className="flex items-center gap-2 px-2 py-1.5 bg-accent/10 rounded-lg mb-0.5 border border-accent/20">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-400"}`}
-                  />
-                  <span className="text-[13px] text-accent font-medium truncate flex-1">{activeConnectionName}</span>
-                </div>
-                {otherConnections.map((conn) => (
+                {bridgeList.map((conn) => (
                   <button
                     key={conn.id}
                     type="button"
-                    onClick={() => handleSwitchConnection(conn.id)}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-left"
+                    onClick={() => {
+                      if (conn.id !== activeConnectionId) {
+                        handleSwitchConnection(conn.id);
+                      }
+                    }}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors text-left ${
+                      conn.id === activeConnectionId
+                        ? "bg-accent/10 border border-accent/20 text-accent"
+                        : "hover:bg-surface-tertiary text-gray-800"
+                    }`}
                   >
                     <span
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${conn.connected ? "bg-green-500" : "bg-red-400"}`}
                     />
-                    <span className="text-[13px] text-gray-800 truncate flex-1">{conn.name}</span>
+                    <span
+                      className={`text-[13px] truncate flex-1 ${
+                        conn.id === activeConnectionId ? "text-accent font-medium" : "text-gray-800"
+                      }`}
+                    >
+                      {conn.name}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -374,7 +370,38 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
             </button>
           </div>
         </div>
-      )}
+  );
+
+  if (panelMode) {
+    return (
+      <div ref={ref} className="w-full min-w-0">
+        {panel}
+      </div>
+    );
+  }
+
+  return (
+    <div ref={ref} className="relative flex items-center min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-surface-tertiary transition-colors min-w-0 max-w-[220px]"
+        title={buttonLabel}
+      >
+        <span
+          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isConnected ? "bg-green-500" : "bg-red-400"}`}
+        />
+        <span className="text-sm font-semibold text-gray-800 truncate">{buttonLabel}</span>
+        <span className="text-xs text-gray-600 flex-shrink-0">{activeStatusLabel}</span>
+        {hasUnread && (
+          <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
+            {formatUnread(totalUnread)}
+          </span>
+        )}
+        <span className="text-xs text-gray-600 flex-shrink-0">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && panel}
     </div>
   );
 }

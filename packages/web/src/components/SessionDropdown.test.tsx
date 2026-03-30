@@ -149,6 +149,40 @@ describe("SessionDropdown", () => {
     expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
   });
 
+  it("keeps connection order stable after switching", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [
+        { id: "c1", name: "First", connected: true },
+        { id: "c2", name: "Second", connected: false },
+      ],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [{ key: "x", connectionId: "c1", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { c1: "x" },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+
+    const beforeSwitch = screen
+      .getAllByRole("button")
+      .map((el) => el.textContent ?? "")
+      .filter((text) => text.includes("First") || text.includes("Second"));
+    expect(beforeSwitch).toEqual(["First", "Second"]);
+
+    await user.click(screen.getByRole("button", { name: /Second/ }));
+    expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
+
+    const afterSwitch = screen
+      .getAllByRole("button")
+      .map((el) => el.textContent ?? "")
+      .filter((text) => text.includes("First") || text.includes("Second"));
+    expect(afterSwitch).toEqual(["First", "Second"]);
+  });
+
   it("uses shared theme classes for opened dropdown menu surface", async () => {
     const user = userEvent.setup();
     useConnectionStore.setState({

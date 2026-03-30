@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import { EventEmitter } from "node:events";
 import type { BridgeConfig, BridgeIncoming, BridgeOutgoing } from "@cc-pet/shared";
+import { SKILLS_PROBE_REPLY_CTX } from "@cc-pet/shared";
+import { registerAckOk } from "./incoming-fields.js";
 import { parseBridgeMessage } from "./protocol.js";
 
 export interface BridgeClientEvents {
@@ -48,6 +50,15 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
 
     this.ws.on("message", (data) => {
       const raw = data.toString();
+      let envelope: Record<string, unknown> = {};
+      try {
+        envelope = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        /* parseBridgeMessage will surface error */
+      }
+      if (envelope.type === "register_ack" && registerAckOk(envelope)) {
+        this.sendSkillsListProbe();
+      }
       const msg = parseBridgeMessage(raw);
       this.emit("message", this.connectionId, msg);
     });
@@ -157,5 +168,18 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
         metadata: { protocol_version: 1, source: "cc-pet-web" },
       })
     );
+  }
+
+  /** cc-pet 对齐：register 成功后探测 `/skills`，reply_ctx 用于服务端过滤、不写入聊天记录 */
+  private sendSkillsListProbe(): void {
+    this.send({
+      type: "message",
+      content: "/skills",
+      session_key: "default",
+      msg_id: `skills-probe-${Date.now()}`,
+      user_id: this.connectionId,
+      user_name: "cc-pet-user",
+      reply_ctx: SKILLS_PROBE_REPLY_CTX,
+    });
   }
 }

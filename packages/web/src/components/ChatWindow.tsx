@@ -42,6 +42,7 @@ export function ChatWindow() {
   const messagesByChat = useMessageStore((s) => s.messagesByChat);
   const streamingByChat = useMessageStore((s) => s.streamingContent);
   const agentCommandsByConnection = useCommandStore((s) => s.agentCommandsByConnection);
+  const taskStateByConnection = useSessionStore((s) => s.taskStateByConnection);
 
   const activeSessionKey = activeConnectionId
     ? activeSessionKeyByConn[activeConnectionId] ?? "default"
@@ -56,6 +57,8 @@ export function ChatWindow() {
   }, [chatOpen, activeConnectionId, activeSessionKey, clearSessionUnread]);
   const messages = chatKey ? (messagesByChat[chatKey] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const streaming = chatKey ? streamingByChat[chatKey] : undefined;
+  const activePhase = activeConnectionId ? taskStateByConnection[activeConnectionId]?.[activeSessionKey]?.phase : "idle";
+  const showStopButton = activePhase === "working" || activePhase === "processing";
 
   const agentCommands = activeConnectionId
     ? agentCommandsByConnection[activeConnectionId] ?? EMPTY_AGENT_COMMANDS
@@ -258,6 +261,16 @@ export function ChatWindow() {
     [slashMenuVisible, slashQuery, slashIndex, agentCommands, handleSlashSelect],
   );
 
+  const handleStop = useCallback(() => {
+    if (!activeConnectionId) return;
+    getPlatform().sendWsMessage({
+      type: WS_EVENTS.SEND_MESSAGE,
+      connectionId: activeConnectionId,
+      sessionKey: activeSessionKey,
+      content: "/stop",
+    });
+  }, [activeConnectionId, activeSessionKey]);
+
   const slashMenu = (
     <SlashCommandMenu
       query={slashQuery}
@@ -270,7 +283,7 @@ export function ChatWindow() {
 
   return (
     <div className="flex flex-col h-full">
-      <MessageList messages={messages} streamingContent={streaming} />
+      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} />
       <MessageInput
         ref={inputRef}
         value={input}
@@ -282,6 +295,9 @@ export function ChatWindow() {
         pendingAttachments={pendingAttachments}
         onRemoveAttachment={removePendingAttachment}
         sendDisabled={(!input.trim() && pendingAttachments.length === 0) || !activeConnectionId}
+        showStopButton={showStopButton}
+        onStop={handleStop}
+        stopDisabled={!activeConnectionId}
         placeholder={
           pendingAttachments.length > 0
             ? "输入说明（可选），Enter 发送，Shift+Enter 换行"

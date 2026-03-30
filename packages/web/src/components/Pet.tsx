@@ -13,7 +13,7 @@ const PET_IMAGES: Record<PetState, string> = {
 };
 
 const STATE_COLORS: Record<PetState, string> = {
-  idle: "border-gray-500", thinking: "border-yellow-500", talking: "border-blue-500",
+  idle: "border-green-500", thinking: "border-yellow-500", talking: "border-blue-500",
   happy: "border-green-500", error: "border-red-500",
 };
 

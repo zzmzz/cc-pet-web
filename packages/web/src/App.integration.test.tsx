@@ -107,7 +107,7 @@ describe("App integration", () => {
     });
   });
 
-  it("shows a switchable connection dropdown when multiple bridges are configured", async () => {
+  it("shows switchable connection list in desktop sidebar when multiple bridges are configured", async () => {
     const user = userEvent.setup();
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([
@@ -117,9 +117,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
-    await screen.findByRole("button", { name: /cc-connect/i });
-
-    await user.click(screen.getByRole("button", { name: /cc-connect/i }));
+    await screen.findByText("连接");
     expect(await screen.findByRole("button", { name: /cs-connect/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /cs-connect/i }));
@@ -435,6 +433,28 @@ describe("App integration", () => {
     });
 
     expect(await screen.findByText("pong from bridge")).toBeInTheDocument();
+  });
+
+  it("shows stop button while session is working and sends /stop", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    adapter.emit(WS_EVENTS.BRIDGE_TYPING_START, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+    });
+
+    const stopButton = await screen.findByRole("button", { name: "停止" });
+    expect(stopButton).toBeInTheDocument();
+
+    await user.click(stopButton);
+    expect(adapter.sendWsMessage).toHaveBeenCalledWith({
+      type: WS_EVENTS.SEND_MESSAGE,
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "/stop",
+    });
   });
 
   it("still sends message even when bridge is currently disconnected", async () => {

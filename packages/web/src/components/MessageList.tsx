@@ -4,31 +4,82 @@ import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
 import type { ChatMessage } from "@cc-pet/shared";
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 
 interface Props {
   messages: ChatMessage[];
   streamingContent?: string;
+  sessionKey?: string;
 }
 
-export function MessageList({ messages, streamingContent }: Props) {
+export function MessageList({ messages, streamingContent, sessionKey }: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const initializedRef = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const [showBackToLatest, setShowBackToLatest] = useState(false);
+
+  const isNearBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return true;
+    const threshold = 56;
+    const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distance <= threshold;
+  }, []);
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    bottomRef.current?.scrollIntoView({ behavior });
+    stickToBottomRef.current = true;
+    setShowBackToLatest(false);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const shouldStick = isNearBottom();
+    stickToBottomRef.current = shouldStick;
+    setShowBackToLatest(!shouldStick);
+  }, [isNearBottom]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+    if (!sessionKey) return;
+    scrollToLatest("auto");
+  }, [sessionKey, scrollToLatest]);
+
+  useEffect(() => {
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      scrollToLatest("auto");
+      return;
+    }
+    if (stickToBottomRef.current) {
+      scrollToLatest("smooth");
+      return;
+    }
+    setShowBackToLatest(true);
+  }, [messages, streamingContent, scrollToLatest]);
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto py-3 space-y-1">
-      {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} />
-      ))}
-      {streamingContent && (
-        <MessageBubble
-          message={{ id: "streaming", role: "assistant", content: streamingContent, timestamp: Date.now() }}
-        />
-      )}
-      <div ref={bottomRef} />
+    <div className="relative flex-1 min-h-0">
+      <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto py-3 space-y-1">
+        {messages.map((msg) => (
+          <MessageBubble key={msg.id} message={msg} />
+        ))}
+        {streamingContent && (
+          <MessageBubble
+            message={{ id: "streaming", role: "assistant", content: streamingContent, timestamp: Date.now() }}
+          />
+        )}
+        <div ref={bottomRef} />
+      </div>
+      {showBackToLatest ? (
+        <button
+          type="button"
+          aria-label="回到最新"
+          onClick={() => scrollToLatest("smooth")}
+          className="absolute bottom-3 right-3 rounded-full border border-border bg-surface-secondary px-3 py-1.5 text-xs font-medium text-gray-800 shadow-md hover:bg-surface"
+        >
+          回到最新
+        </button>
+      ) : null}
     </div>
   );
 }

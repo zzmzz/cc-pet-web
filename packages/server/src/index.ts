@@ -4,8 +4,17 @@ import multipart from "@fastify/multipart";
 import fstatic from "@fastify/static";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { WS_EVENTS } from "@cc-pet/shared";
+import { SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming } from "@cc-pet/shared";
+import { parseSkillCommandsFromSkillsText } from "./bridge/parse-skills-probe.js";
+import {
+  bridgeReplyCtx,
+  bridgeReplyStreamDone,
+  bridgeReplyTextContent,
+  bridgeSessionKey,
+  extractReplyStreamChunk,
+  extractReplyStreamFullText,
+} from "./bridge/incoming-fields.js";
 import { createDatabase } from "./storage/db.js";
 import { MessageStore } from "./storage/messages.js";
 import { SessionStore } from "./storage/sessions.js";
@@ -125,33 +134,61 @@ bridgeManager.on("error", (connId: string, err: string) => {
 });
 
 bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
-  const sessionKey = "session_key" in msg ? (msg as any).session_key : undefined;
+  const raw = msg as unknown as Record<string, unknown>;
+  const sessionKey = bridgeSessionKey(raw);
   app.log.debug({ connectionId: connId, sessionKey, bridgeMessageType: msg.type }, "Received message from bridge");
 
   switch (msg.type) {
     case "register_ack":
       app.log.info({ connectionId: connId, ok: msg.ok, error: msg.error }, "Bridge register acknowledged");
       break;
-    case "reply":
+    case "reply": {
+      const replyCtx = bridgeReplyCtx(raw);
+      if (replyCtx === SKILLS_PROBE_REPLY_CTX) {
+        const commands = parseSkillCommandsFromSkillsText(bridgeReplyTextContent(raw));
+        hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands });
+        break;
+      }
+      const replyContent = bridgeReplyTextContent(raw);
       messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant", content: msg.content,
+        id: `msg-${Date.now()}`, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
-      hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, { connectionId: connId, sessionKey, content: msg.content, replyCtx: msg.reply_ctx });
+      hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, {
+        connectionId: connId,
+        sessionKey,
+        content: replyContent,
+        replyCtx: replyCtx || undefined,
+      });
       break;
-    case "reply_stream":
-      if (msg.done) {
-        if (msg.full_text) {
+    }
+    case "reply_stream": {
+      const replyCtx = bridgeReplyCtx(raw);
+      if (replyCtx === SKILLS_PROBE_REPLY_CTX) {
+        if (bridgeReplyStreamDone(raw)) {
+          const full = extractReplyStreamFullText(raw);
+          if (full) {
+            const commands = parseSkillCommandsFromSkillsText(full);
+            hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands });
+          }
+        }
+        break;
+      }
+      if (bridgeReplyStreamDone(raw)) {
+        const fullText = extractReplyStreamFullText(raw);
+        if (fullText) {
           messageStore.save({
-            id: `msg-${Date.now()}`, role: "assistant", content: msg.full_text,
+            id: `msg-${Date.now()}`, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
         }
-        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText: msg.full_text });
+        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText });
       } else {
-        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DELTA, { connectionId: connId, sessionKey, delta: msg.content });
+        const delta = extractReplyStreamChunk(raw) ?? (typeof raw.content === "string" ? raw.content : undefined);
+        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DELTA, { connectionId: connId, sessionKey, delta });
       }
       break;
+    }
     case "buttons":
       hub.broadcast(WS_EVENTS.BRIDGE_BUTTONS, { connectionId: connId, sessionKey, content: msg.content, buttons: msg.buttons });
       break;
