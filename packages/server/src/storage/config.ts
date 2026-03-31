@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, BridgeConfig, TokenConfig } from "@cc-pet/shared";
+import type { AppConfig, BridgeConfig, TokenConfig, TokenPetImages } from "@cc-pet/shared";
 
 const DEFAULT_CONFIG: AppConfig = {
   bridges: [],
@@ -39,10 +39,28 @@ function normalizeToken(t: unknown): TokenConfig | null {
   const bridgeIds = Array.isArray(x.bridgeIds)
     ? x.bridgeIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
     : [];
+  const parseImagePath = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+  const rawPetImages = x.petImages;
+  let petImages: TokenPetImages | undefined;
+  if (rawPetImages && typeof rawPetImages === "object") {
+    const p = rawPetImages as Record<string, unknown>;
+    const idle = parseImagePath(p.idle);
+    if (idle) {
+      petImages = {
+        idle,
+        thinking: parseImagePath(p.thinking),
+        talking: parseImagePath(p.talking),
+        happy: parseImagePath(p.happy),
+        error: parseImagePath(p.error),
+      };
+    }
+  }
   return {
     token: x.token,
     name: typeof x.name === "string" && x.name.trim().length > 0 ? x.name : "token",
     bridgeIds,
+    petImages,
   };
 }
 

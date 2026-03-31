@@ -93,7 +93,7 @@ describe("App integration", () => {
     localStorage.setItem("cc-pet-token", "legacy-token");
     render(<App />);
 
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
     expect(createWebAdapter).toHaveBeenCalledWith("", "legacy-token");
   });
 
@@ -110,17 +110,19 @@ describe("App integration", () => {
     await userEvent.type(input, "manual-token");
     await userEvent.click(screen.getByRole("button", { name: "进入" }));
 
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
     expect(createWebAdapter).toHaveBeenCalledWith("", "manual-token");
   });
 
   it("shows connection status and updates to connected after bridge event", async () => {
     render(<App />);
 
-    await screen.findByText("cc-connect");
-    const name = screen.getByText("cc-connect");
-    const statusDot = name.previousElementSibling as HTMLElement;
-    expect(statusDot.className).toContain("bg-red-500");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(
+      useConnectionStore
+        .getState()
+        .connections.find((c) => c.id === "cc-connect")?.connected,
+    ).toBe(false);
 
     adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
       connectionId: "cc-connect",
@@ -128,7 +130,11 @@ describe("App integration", () => {
     });
 
     await waitFor(() => {
-      expect(statusDot.className).toContain("bg-green-500");
+      expect(
+        useConnectionStore
+          .getState()
+          .connections.find((c) => c.id === "cc-connect")?.connected,
+      ).toBe(true);
     });
   });
 
@@ -163,7 +169,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
     adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
       connectionId: "cc-connect",
       connected: true,
@@ -186,7 +192,7 @@ describe("App integration", () => {
 
   it("updates session task state to awaiting_confirmation on bridge buttons", async () => {
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
 
     adapter.emit(WS_EVENTS.BRIDGE_BUTTONS, {
       connectionId: "cc-connect",
@@ -203,7 +209,7 @@ describe("App integration", () => {
 
   it("keeps working between typing_start and typing_stop", async () => {
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
 
     adapter.emit(WS_EVENTS.BRIDGE_TYPING_START, {
       connectionId: "cc-connect",
@@ -242,7 +248,7 @@ describe("App integration", () => {
 
   it("ignores stray typing_stop before typing_start", async () => {
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
 
     adapter.emit(WS_EVENTS.BRIDGE_TYPING_STOP, {
       connectionId: "cc-connect",
@@ -272,7 +278,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
 
     adapter.emit(WS_EVENTS.BRIDGE_TYPING_START, {
       connectionId: "cc-connect",
@@ -311,7 +317,7 @@ describe("App integration", () => {
     useUIStore.setState({ chatOpen: true });
 
     render(<App />);
-    await screen.findByText("cc-connect");
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
 
     adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
       connectionId: "cc-connect",

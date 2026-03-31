@@ -153,5 +153,63 @@ describe("Storage", () => {
 
       await rm(dir, { recursive: true, force: true });
     });
+
+    it("keeps token petImages when idle path is provided", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "cc-pet-cfg-"));
+      const filePath = path.join(dir, "app.json");
+      const fileCfg = {
+        bridges: [],
+        tokens: [
+          {
+            token: "t1",
+            name: "u1",
+            bridgeIds: [],
+            petImages: {
+              idle: "/tmp/pet/idle.png",
+              talking: "/tmp/pet/talking.png",
+            },
+          },
+        ],
+        pet: { opacity: 1, size: 120 },
+        server: { port: 3000, dataDir: "./data" },
+      };
+      await writeFile(filePath, JSON.stringify(fileCfg), "utf8");
+
+      const fileStore = new ConfigStore(db, { configFilePath: filePath });
+      const loaded = fileStore.load();
+      expect(loaded.tokens[0]?.petImages).toEqual({
+        idle: "/tmp/pet/idle.png",
+        talking: "/tmp/pet/talking.png",
+      });
+
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("drops token petImages when idle path is missing", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "cc-pet-cfg-"));
+      const filePath = path.join(dir, "app.json");
+      const fileCfg = {
+        bridges: [],
+        tokens: [
+          {
+            token: "t1",
+            name: "u1",
+            bridgeIds: [],
+            petImages: {
+              talking: "/tmp/pet/talking.png",
+            },
+          },
+        ],
+        pet: { opacity: 1, size: 120 },
+        server: { port: 3000, dataDir: "./data" },
+      };
+      await writeFile(filePath, JSON.stringify(fileCfg), "utf8");
+
+      const fileStore = new ConfigStore(db, { configFilePath: filePath });
+      const loaded = fileStore.load();
+      expect(loaded.tokens[0]?.petImages).toBeUndefined();
+
+      await rm(dir, { recursive: true, force: true });
+    });
   });
 });

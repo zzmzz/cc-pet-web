@@ -3,6 +3,7 @@ import {
   bridgeReplyCtx,
   bridgeReplyTextContent,
   registerAckOk,
+  registerAckSessionKey,
   extractReplyStreamFullText,
   extractReplyStreamChunk,
 } from "./incoming-fields.js";
@@ -31,6 +32,12 @@ describe("incoming-fields", () => {
     expect(registerAckOk({ type: "register_ack", data: { ok: true } })).toBe(true);
     expect(registerAckOk({ type: "register_ack", ok: true })).toBe(true);
     expect(registerAckOk({ type: "register_ack" })).toBe(false);
+  });
+
+  it("registerAckSessionKey reads top-level/nested session_key", () => {
+    expect(registerAckSessionKey({ type: "register_ack", session_key: "s-top" })).toBe("s-top");
+    expect(registerAckSessionKey({ type: "register_ack", data: { session_key: "s-nested" } })).toBe("s-nested");
+    expect(registerAckSessionKey({ type: "register_ack" })).toBeUndefined();
   });
 
   it("extractReplyStreamFullText reads nested data", () => {

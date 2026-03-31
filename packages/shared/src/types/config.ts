@@ -19,6 +19,15 @@ export interface TokenConfig {
   token: string;
   name: string;
   bridgeIds: string[];
+  petImages?: TokenPetImages;
+}
+
+export interface TokenPetImages {
+  idle: string;
+  thinking?: string;
+  talking?: string;
+  happy?: string;
+  error?: string;
 }
 
 export interface PetConfig {

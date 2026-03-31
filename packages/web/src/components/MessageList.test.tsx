@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ChatMessage } from "@cc-pet/shared";
 import { MessageList } from "./MessageList.js";
 
@@ -14,6 +14,7 @@ function buildMessages(count: number): ChatMessage[] {
 
 describe("MessageList", () => {
   beforeEach(() => {
+    cleanup();
     if (!window.HTMLElement.prototype.scrollIntoView) {
       window.HTMLElement.prototype.scrollIntoView = vi.fn();
     }
@@ -77,5 +78,186 @@ describe("MessageList", () => {
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth" });
     expect(screen.queryByRole("button", { name: "回到最新" })).not.toBeInTheDocument();
+  });
+
+  it("copies fenced code block content with one click", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-code",
+        role: "assistant",
+        content: "```ts\nconst answer = 42;\n```",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    const copyButton = screen.getByRole("button", { name: "复制代码" });
+    fireEvent.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith("const answer = 42;");
+    expect(await screen.findByRole("button", { name: "已复制" })).toBeInTheDocument();
+  });
+
+  it("renders assistant link as preview card", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        url: "https://example.com/article",
+        title: "Example Article",
+        description: "Preview description",
+        image: "https://example.com/cover.png",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-link",
+        role: "assistant",
+        content: "请查看 [示例链接](https://example.com/article)",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    const title = await screen.findByText("示例链接");
+    expect(title).toBeInTheDocument();
+    expect(screen.getByAltText("链接站点图标")).toHaveAttribute("src", "https://example.com/favicon.ico");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/link-preview?url=https%3A%2F%2Fexample.com%2Farticle",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("uses finalUrl metadata for redirect short links", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        url: "https://t.cn/A6abc",
+        finalUrl: "https://docs.example.com/path/to/page",
+        title: "落地页标题",
+        description: "落地页描述",
+        image: "",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-short-link",
+        role: "assistant",
+        content: "短链 [点击查看](https://t.cn/A6abc)",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    expect(await screen.findByText("落地页标题")).toBeInTheDocument();
+    expect(screen.getByText("落地页标题").closest("a")).toHaveAttribute("href", "https://t.cn/A6abc");
+    expect(screen.getByText(/docs\.example\.com/)).toBeInTheDocument();
+    const thumbs = screen.getAllByAltText("链接站点图标");
+    expect(
+      thumbs.some((img) => img.getAttribute("src") === "https://docs.example.com/favicon.ico"),
+    ).toBe(true);
+  });
+
+  it("renders file link as download card", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        url: "https://files.example.com/report.pdf",
+        finalUrl: "https://files.example.com/report.pdf",
+        title: "report.pdf",
+        description: "",
+        image: "",
+        isFile: true,
+        fileName: "report.pdf",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-file-link",
+        role: "assistant",
+        content: "[report.pdf](https://files.example.com/report.pdf)",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    expect(await screen.findByText("下载文件")).toBeInTheDocument();
+    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByText(/files\.example\.com/)).toBeInTheDocument();
+  });
+
+  it("prefers extracted filename over raw short-link text for file cards", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        url: "https://ziiimo.cn/v/f317",
+        finalUrl: "https://data.ziiimo.cn:99/data/2026-03/test-upload.md?X-Amz-foo=bar",
+        title: "",
+        description: "",
+        image: "",
+        isFile: true,
+        fileName: "test-upload.md",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-file-short-link",
+        role: "assistant",
+        content: "https://ziiimo.cn/v/f317",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    expect(await screen.findByText("test-upload.md")).toBeInTheDocument();
+    expect(screen.queryByText("https://ziiimo.cn/v/f317")).not.toBeInTheDocument();
+  });
+
+  it("copies original link from preview card", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        url: "https://t.cn/A6abc",
+        finalUrl: "https://docs.example.com/path/to/page",
+        title: "落地页标题",
+        description: "落地页描述",
+        image: "",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-short-link-copy",
+        role: "assistant",
+        content: "[点击查看](https://t.cn/A6abc)",
+        timestamp: Date.now(),
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+    const cardLink = (await screen.findByText("落地页标题")).closest("a");
+    expect(cardLink).toBeTruthy();
+    const copyButton = within(cardLink as HTMLElement).getByRole("button", { name: "复制链接" });
+    fireEvent.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith("https://t.cn/A6abc");
   });
 });

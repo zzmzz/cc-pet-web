@@ -1,8 +1,8 @@
 import WebSocket from "ws";
 import { EventEmitter } from "node:events";
 import type { BridgeConfig, BridgeIncoming, BridgeOutgoing } from "@cc-pet/shared";
-import { SKILLS_PROBE_REPLY_CTX } from "@cc-pet/shared";
-import { registerAckOk } from "./incoming-fields.js";
+import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX } from "@cc-pet/shared";
+import { bridgeReplyCtx, registerAckSessionKey } from "./incoming-fields.js";
 import { parseBridgeMessage } from "./protocol.js";
 
 export interface BridgeClientEvents {
@@ -10,6 +10,17 @@ export interface BridgeClientEvents {
   connected: [connectionId: string];
   disconnected: [connectionId: string, reason: string];
   error: [connectionId: string, error: string];
+  skillsProbe: [
+    connectionId: string,
+    event: {
+      phase: "register_ack" | "sent" | "retry" | "reply_matched" | "max_retries_reached";
+      probe?: "skills" | "commands";
+      sessionKey?: string;
+      retries?: number;
+      messageType?: string;
+      replyCtx?: string;
+    },
+  ];
 }
 
 export class BridgeClient extends EventEmitter<BridgeClientEvents> {
@@ -19,8 +30,13 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
   private pendingMessages: BridgeOutgoing[] = [];
   private _connected = false;
   private reconnectAttempt = 0;
+  private skillsProbeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private skillsProbeAwaitingReply = false;
+  private skillsProbeRetries = 0;
   private static readonly INITIAL_RECONNECT_MS = 3000;
   private static readonly MAX_RECONNECT_MS = 60_000;
+  private static readonly SKILLS_PROBE_MAX_RETRIES = 2;
+  private static readonly SKILLS_PROBE_RETRY_MS = 1_500;
 
   constructor(
     public readonly connectionId: string,
@@ -56,8 +72,32 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       } catch {
         /* parseBridgeMessage will surface error */
       }
-      if (envelope.type === "register_ack" && registerAckOk(envelope)) {
-        this.sendSkillsListProbe();
+      if (envelope.type === "register_ack") {
+        const sessionKey = registerAckSessionKey(envelope) ?? "default";
+        this.emit("skillsProbe", this.connectionId, {
+          phase: "register_ack",
+          probe: "skills",
+          sessionKey,
+        });
+        this.startSkillsProbe(sessionKey);
+        this.sendCommandsListProbe(sessionKey);
+      }
+      if (this.isSkillsProbeReply(envelope)) {
+        this.emit("skillsProbe", this.connectionId, {
+          phase: "reply_matched",
+          probe: "skills",
+          messageType: String(envelope.type ?? ""),
+          replyCtx: bridgeReplyCtx(envelope),
+        });
+        this.clearSkillsProbeRetry();
+      }
+      if (this.isCommandsProbeReply(envelope)) {
+        this.emit("skillsProbe", this.connectionId, {
+          phase: "reply_matched",
+          probe: "commands",
+          messageType: String(envelope.type ?? ""),
+          replyCtx: bridgeReplyCtx(envelope),
+        });
       }
       const msg = parseBridgeMessage(raw);
       this.emit("message", this.connectionId, msg);
@@ -66,6 +106,7 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
     this.ws.on("close", (_code, reason) => {
       const code = _code;
       this._connected = false;
+      this.clearSkillsProbeRetry();
       this.stopHeartbeat();
       this.emit("disconnected", this.connectionId, `code=${code} reason=${reason.toString()}`);
       this.scheduleReconnect();
@@ -87,6 +128,7 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.clearSkillsProbeRetry();
     if (this.ws) {
       this.ws.removeAllListeners();
       this.ws.close();
@@ -171,15 +213,93 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
   }
 
   /** cc-pet 对齐：register 成功后探测 `/skills`，reply_ctx 用于服务端过滤、不写入聊天记录 */
-  private sendSkillsListProbe(): void {
+  private sendSkillsListProbe(sessionKey = "default"): void {
+    this.emit("skillsProbe", this.connectionId, {
+      phase: "sent",
+      probe: "skills",
+      sessionKey,
+      retries: this.skillsProbeRetries,
+    });
     this.send({
       type: "message",
       content: "/skills",
-      session_key: "default",
+      session_key: sessionKey,
       msg_id: `skills-probe-${Date.now()}`,
       user_id: this.connectionId,
       user_name: "cc-pet-user",
       reply_ctx: SKILLS_PROBE_REPLY_CTX,
     });
+  }
+
+  private sendCommandsListProbe(sessionKey = "default"): void {
+    this.emit("skillsProbe", this.connectionId, {
+      phase: "sent",
+      probe: "commands",
+      sessionKey,
+      retries: 0,
+    });
+    this.send({
+      type: "message",
+      content: "/commands",
+      session_key: sessionKey,
+      msg_id: `commands-probe-${Date.now()}`,
+      user_id: this.connectionId,
+      user_name: "cc-pet-user",
+      reply_ctx: COMMANDS_PROBE_REPLY_CTX,
+    });
+  }
+
+  private startSkillsProbe(sessionKey: string): void {
+    this.clearSkillsProbeRetry();
+    this.skillsProbeAwaitingReply = true;
+    this.skillsProbeRetries = 0;
+    this.sendSkillsListProbe(sessionKey);
+    this.scheduleSkillsProbeRetry(sessionKey);
+  }
+
+  private scheduleSkillsProbeRetry(sessionKey: string): void {
+    if (!this.skillsProbeAwaitingReply) return;
+    if (this.skillsProbeRetries >= BridgeClient.SKILLS_PROBE_MAX_RETRIES) {
+      this.emit("skillsProbe", this.connectionId, {
+        phase: "max_retries_reached",
+        probe: "skills",
+        sessionKey,
+        retries: this.skillsProbeRetries,
+      });
+      return;
+    }
+    if (this.skillsProbeRetryTimer) return;
+    this.skillsProbeRetryTimer = setTimeout(() => {
+      this.skillsProbeRetryTimer = null;
+      if (!this.skillsProbeAwaitingReply) return;
+      this.skillsProbeRetries += 1;
+      this.emit("skillsProbe", this.connectionId, {
+        phase: "retry",
+        probe: "skills",
+        sessionKey,
+        retries: this.skillsProbeRetries,
+      });
+      this.sendSkillsListProbe(sessionKey);
+      this.scheduleSkillsProbeRetry(sessionKey);
+    }, BridgeClient.SKILLS_PROBE_RETRY_MS);
+  }
+
+  private clearSkillsProbeRetry(): void {
+    if (this.skillsProbeRetryTimer) {
+      clearTimeout(this.skillsProbeRetryTimer);
+      this.skillsProbeRetryTimer = null;
+    }
+    this.skillsProbeAwaitingReply = false;
+    this.skillsProbeRetries = 0;
+  }
+
+  private isSkillsProbeReply(envelope: Record<string, unknown>): boolean {
+    if (bridgeReplyCtx(envelope) !== SKILLS_PROBE_REPLY_CTX) return false;
+    return envelope.type === "reply" || envelope.type === "reply_stream";
+  }
+
+  private isCommandsProbeReply(envelope: Record<string, unknown>): boolean {
+    if (bridgeReplyCtx(envelope) !== COMMANDS_PROBE_REPLY_CTX) return false;
+    return envelope.type === "reply" || envelope.type === "reply_stream";
   }
 }

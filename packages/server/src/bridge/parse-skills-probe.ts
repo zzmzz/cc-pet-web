@@ -3,7 +3,7 @@ import type { SlashCommand } from "@cc-pet/shared";
 /**
  * 与 cc-pet `parse_skill_commands_from_text` 对齐：从 `/skills` 返回的纯文本解析可补全的斜杠命令。
  */
-export function parseSkillCommandsFromSkillsText(text: string): SlashCommand[] {
+export function parseSlashCommandsFromProbeText(text: string): SlashCommand[] {
   const out: SlashCommand[] = [];
   const seen = new Set<string>();
 
@@ -41,3 +41,6 @@ export function parseSkillCommandsFromSkillsText(text: string): SlashCommand[] {
 
   return out;
 }
+
+/** 向后兼容：历史命名仍指向同一解析逻辑。 */
+export const parseSkillCommandsFromSkillsText = parseSlashCommandsFromProbeText;

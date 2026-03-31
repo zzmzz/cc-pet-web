@@ -13,6 +13,7 @@ export class BridgeManager extends EventEmitter {
     client.on("connected", (connId) => this.emit("connected", connId));
     client.on("disconnected", (connId, reason) => this.emit("disconnected", connId, reason));
     client.on("error", (connId, err) => this.emit("error", connId, err));
+    client.on("skillsProbe", (connId, event) => this.emit("skillsProbe", connId, event));
 
     this.clients.set(config.id, client);
     client.connect();

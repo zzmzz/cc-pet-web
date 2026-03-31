@@ -19,6 +19,11 @@ export function registerAckOk(val: Record<string, unknown>): boolean {
   return data?.ok === true;
 }
 
+/** register_ack 的会话：优先显式 session_key；缺失时由上层回退 default。 */
+export function registerAckSessionKey(val: Record<string, unknown>): string | undefined {
+  return bridgeSessionKey(val);
+}
+
 /** 与 Rust: reply_ctx 或 data.reply_ctx 一致，并兼容 replyCtx */
 export function bridgeReplyCtx(val: Record<string, unknown>): string {
   return (

@@ -4,10 +4,11 @@ import multipart from "@fastify/multipart";
 import fstatic from "@fastify/static";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
+import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming } from "@cc-pet/shared";
+import type { SlashCommand } from "@cc-pet/shared";
 import { findTokenIdentity } from "./auth/token-auth.js";
-import { parseSkillCommandsFromSkillsText } from "./bridge/parse-skills-probe.js";
+import { parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
 import {
   bridgeReplyCtx,
   bridgeReplyStreamDone,
@@ -27,6 +28,7 @@ import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerFileRoutes } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
+import { registerPetImageRoutes } from "./api/pet-images.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
@@ -45,6 +47,40 @@ if (initialConfig.tokens.length === 0) {
 }
 
 const bridgeManager = new BridgeManager();
+const latestSkillsByConnection = new Map<string, SlashCommand[]>();
+const latestProbeCommandsByConnection = new Map<
+  string,
+  { skills: SlashCommand[]; commands: SlashCommand[] }
+>();
+
+function mergeSlashCommands(skills: SlashCommand[], commands: SlashCommand[]): SlashCommand[] {
+  const out: SlashCommand[] = [];
+  const seen = new Set<string>();
+  for (const list of [skills, commands]) {
+    for (const c of list) {
+      const key = c.name.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+function setLatestProbeCommands(
+  connectionId: string,
+  source: "skills" | "commands",
+  commands: SlashCommand[],
+): SlashCommand[] {
+  const prev = latestProbeCommandsByConnection.get(connectionId) ?? { skills: [], commands: [] };
+  const next = source === "skills"
+    ? { skills: commands, commands: prev.commands }
+    : { skills: prev.skills, commands };
+  latestProbeCommandsByConnection.set(connectionId, next);
+  const merged = mergeSlashCommands(next.skills, next.commands);
+  latestSkillsByConnection.set(connectionId, merged);
+  return merged;
+}
 
 /** 本地/非 production 默认人类可读；生产保留 JSON 便于采集。可设 CC_PET_LOG_PRETTY=0 强制 JSON，或 =1 强制美化。 */
 const usePrettyLog =
@@ -94,6 +130,7 @@ registerConfigRoutes(app, configStore);
 registerSessionRoutes(app, sessionStore);
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
+registerPetImageRoutes(app);
 registerMiscRoutes(app);
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
@@ -141,6 +178,13 @@ hub.onClientConnected = (client, send) => {
       connectionId: bridge.id,
       connected: bridgeManager.getStatus(bridge.id),
     });
+    const commands = latestSkillsByConnection.get(bridge.id);
+    if (commands && commands.length > 0) {
+      send(WS_EVENTS.BRIDGE_SKILLS_UPDATED, {
+        connectionId: bridge.id,
+        commands,
+      });
+    }
   }
 };
 
@@ -163,6 +207,10 @@ bridgeManager.on("error", (connId: string, err: string) => {
   hub.broadcast(WS_EVENTS.BRIDGE_ERROR, { connectionId: connId, error: err });
 });
 
+bridgeManager.on("skillsProbe", (connId: string, event: Record<string, unknown>) => {
+  app.log.info({ connectionId: connId, ...event }, "Bridge skills probe event");
+});
+
 bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
@@ -174,9 +222,21 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       break;
     case "reply": {
       const replyCtx = bridgeReplyCtx(raw);
-      if (replyCtx === SKILLS_PROBE_REPLY_CTX) {
-        const commands = parseSkillCommandsFromSkillsText(bridgeReplyTextContent(raw));
-        hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands });
+      if (replyCtx === SKILLS_PROBE_REPLY_CTX || replyCtx === COMMANDS_PROBE_REPLY_CTX) {
+        const probeSource = replyCtx === SKILLS_PROBE_REPLY_CTX ? "skills" : "commands";
+        const commands = parseSlashCommandsFromProbeText(bridgeReplyTextContent(raw));
+        const merged = setLatestProbeCommands(connId, probeSource, commands);
+        app.log.info(
+          {
+            connectionId: connId,
+            probe: probeSource,
+            commands: commands.length,
+            merged: merged.length,
+            preview: merged.slice(0, 8).map((c) => c.name),
+          },
+          "Bridge slash probe parsed commands",
+        );
+        hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: merged });
         break;
       }
       const replyContent = bridgeReplyTextContent(raw);
@@ -194,12 +254,26 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
     }
     case "reply_stream": {
       const replyCtx = bridgeReplyCtx(raw);
-      if (replyCtx === SKILLS_PROBE_REPLY_CTX) {
+      if (replyCtx === SKILLS_PROBE_REPLY_CTX || replyCtx === COMMANDS_PROBE_REPLY_CTX) {
         if (bridgeReplyStreamDone(raw)) {
           const full = extractReplyStreamFullText(raw);
           if (full) {
-            const commands = parseSkillCommandsFromSkillsText(full);
-            hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands });
+            const probeSource = replyCtx === SKILLS_PROBE_REPLY_CTX ? "skills" : "commands";
+            const commands = parseSlashCommandsFromProbeText(full);
+            const merged = setLatestProbeCommands(connId, probeSource, commands);
+            app.log.info(
+              {
+                connectionId: connId,
+                probe: probeSource,
+                commands: commands.length,
+                merged: merged.length,
+                preview: merged.slice(0, 8).map((c) => c.name),
+              },
+              "Bridge slash probe parsed stream commands",
+            );
+            hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: merged });
+          } else {
+            app.log.warn({ connectionId: connId }, "Bridge slash probe stream done without full_text");
           }
         }
         break;
@@ -241,6 +315,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name });
       break;
     case "skills_updated":
+      latestSkillsByConnection.set(connId, msg.commands);
       hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: msg.commands });
       break;
     case "preview_start":

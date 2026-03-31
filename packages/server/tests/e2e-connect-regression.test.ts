@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
+import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 
 async function getFreePort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
@@ -81,6 +81,10 @@ async function startServerAndBridge() {
   });
 
   const configPath = path.join(dataDir, "cc-pet.config.json");
+  const idlePetPath = path.join(dataDir, "pet-idle.png");
+  const talkingPetPath = path.join(dataDir, "pet-talking.png");
+  await writeFile(idlePetPath, "idle-image-bytes", "utf8");
+  await writeFile(talkingPetPath, "talking-image-bytes", "utf8");
   await writeFile(
     configPath,
     JSON.stringify({
@@ -94,7 +98,15 @@ async function startServerAndBridge() {
           enabled: true,
         },
       ],
-      tokens: [{ token: dashboardToken, name: "e2e", bridgeIds: [connectionId] }],
+      tokens: [{
+        token: dashboardToken,
+        name: "e2e",
+        bridgeIds: [connectionId],
+        petImages: {
+          idle: idlePetPath,
+          talking: talkingPetPath,
+        },
+      }],
       corsOrigins: [],
       pet: { opacity: 1, size: 120 },
       server: { port: serverPort, dataDir: "./data" },
@@ -208,6 +220,8 @@ async function startServerAndBridge() {
   };
 
   return {
+    serverPort,
+    dashboardToken,
     connectionId,
     bridgeClient: () => {
       if (!bridgeClient) throw new Error("bridge client not connected");
@@ -221,6 +235,28 @@ async function startServerAndBridge() {
 }
 
 describe("e2e bridge connection status sync", () => {
+  it("serves token pet image and falls back missing states to idle image", async () => {
+    const stack = await startServerAndBridge();
+    try {
+      const authHeaders = { Authorization: `Bearer ${stack.dashboardToken}` };
+      const idleRes = await fetch(`http://127.0.0.1:${stack.serverPort}/api/pet-images/idle`, {
+        headers: authHeaders,
+      });
+      expect(idleRes.ok).toBe(true);
+      expect(idleRes.headers.get("content-type")).toBe("image/png");
+      expect(await idleRes.text()).toBe("idle-image-bytes");
+
+      const happyRes = await fetch(`http://127.0.0.1:${stack.serverPort}/api/pet-images/happy`, {
+        headers: authHeaders,
+      });
+      expect(happyRes.ok).toBe(true);
+      expect(happyRes.headers.get("content-type")).toBe("image/png");
+      expect(await happyRes.text()).toBe("idle-image-bytes");
+    } finally {
+      await stack.stop();
+    }
+  }, 30_000);
+
   it("pushes current bridge connected state to a newly connected dashboard client", async () => {
     const stack = await startServerAndBridge();
     const dashboardWs = await stack.openDashboardWs();
@@ -411,6 +447,123 @@ describe("e2e bridge connection status sync", () => {
     }
   }, 30_000);
 
+  it("after register_ack also sends /commands probe and merges parsed slash commands", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
+
+      await waitForWsMessage(
+        bridgeClient,
+        (msg: any) => msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+      await waitForWsMessage(
+        bridgeClient,
+        (msg: any) => msg.type === "message" && msg.content === "/commands" && msg.reply_ctx === COMMANDS_PROBE_REPLY_CTX,
+        10_000,
+      );
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "reply",
+          session_key: "default",
+          reply_ctx: SKILLS_PROBE_REPLY_CTX,
+          content: "/skill-only — from skills\n",
+        }),
+      );
+      bridgeClient.send(
+        JSON.stringify({
+          type: "reply",
+          session_key: "default",
+          reply_ctx: COMMANDS_PROBE_REPLY_CTX,
+          content: "/cmd-only — from commands\n",
+        }),
+      );
+
+      const mergedEvt = await waitForWsMessage<{ type: string; commands: Array<{ name?: string; command?: string }> }>(
+        dashboardWs,
+        (msg) =>
+          msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
+          Array.isArray(msg.commands) &&
+          msg.commands.some((c) => (c.name ?? c.command) === "skill-only") &&
+          msg.commands.some((c) => (c.name ?? c.command) === "cmd-only"),
+        10_000,
+      );
+      const names = mergedEvt.commands.map((c) => c.name ?? c.command?.replace(/^\//, ""));
+      expect(names).toContain("skill-only");
+      expect(names).toContain("cmd-only");
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("register_ack without ok still triggers /skills probe", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      bridgeClient.send(JSON.stringify({ type: "register_ack" }));
+
+      const probe = await waitForWsMessage<{
+        type: string;
+        content: string;
+        reply_ctx?: string;
+        session_key: string;
+      }>(
+        bridgeClient,
+        (msg) =>
+          msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+      expect(probe.session_key).toBe("default");
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("uses register_ack session_key when sending /skills probe", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "register_ack",
+          ok: true,
+          session_key: "bootstrap-session",
+        }),
+      );
+
+      const probe = await waitForWsMessage<{
+        type: string;
+        content: string;
+        reply_ctx?: string;
+        session_key: string;
+      }>(
+        bridgeClient,
+        (msg) =>
+          msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+      expect(probe.session_key).toBe("bootstrap-session");
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
   it("nested data.reply_ctx still counts as skills probe (no chat persistence)", async () => {
     const stack = await startServerAndBridge();
     const dashboardWs = await stack.openDashboardWs();
@@ -444,6 +597,64 @@ describe("e2e bridge connection status sync", () => {
       });
     } finally {
       dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("replays latest skills-updated to newly connected dashboard websocket clients", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWsA = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWsA, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
+      await waitForWsMessage(
+        bridgeClient,
+        (msg: any) =>
+          msg.type === "message" &&
+          msg.content === "/skills" &&
+          msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "reply",
+          session_key: "default",
+          reply_ctx: SKILLS_PROBE_REPLY_CTX,
+          content: "/persist-skill — persisted for replay\n",
+        }),
+      );
+
+      await waitForWsMessage(
+        dashboardWsA,
+        (msg: any) =>
+          msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
+          msg.connectionId === stack.connectionId &&
+          Array.isArray(msg.commands) &&
+          msg.commands.some((c: any) => (c.name ?? c.command) === "persist-skill"),
+        10_000,
+      );
+
+      const dashboardWsB = await stack.openDashboardWs();
+      try {
+        const replayEvt = await waitForWsMessage(
+          dashboardWsB,
+          (msg: any) =>
+            msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
+            msg.connectionId === stack.connectionId &&
+            Array.isArray(msg.commands) &&
+            msg.commands.some((c: any) => (c.name ?? c.command) === "persist-skill"),
+          10_000,
+        );
+        const names = replayEvt.commands.map((c: any) => c.name ?? c.command?.replace(/^\//, ""));
+        expect(names).toContain("persist-skill");
+      } finally {
+        dashboardWsB.close();
+      }
+    } finally {
+      dashboardWsA.close();
       await stack.stop();
     }
   }, 30_000);

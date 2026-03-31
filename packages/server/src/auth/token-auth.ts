@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
-import type { TokenConfig } from "@cc-pet/shared";
+import type { TokenConfig, TokenPetImages } from "@cc-pet/shared";
 
 export interface AuthIdentity {
   tokenName: string;
   bridgeIds: Set<string>;
+  petImages?: TokenPetImages;
 }
 
 function secureEquals(a: string, b: string): boolean {
@@ -22,6 +23,7 @@ export function findTokenIdentity(tokens: TokenConfig[], rawToken: string | null
   return {
     tokenName: matched.name,
     bridgeIds: new Set(matched.bridgeIds),
+    petImages: matched.petImages,
   };
 }
 

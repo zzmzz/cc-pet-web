@@ -4,12 +4,288 @@ import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
 import type { ChatMessage } from "@cc-pet/shared";
+import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState } from "react";
+import { getPlatform } from "../lib/platform.js";
 
 interface Props {
   messages: ChatMessage[];
   streamingContent?: string;
   sessionKey?: string;
+}
+
+interface LinkPreviewData {
+  url: string;
+  finalUrl?: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  isFile?: boolean;
+  fileName?: string;
+}
+
+const LINK_PREVIEW_CACHE = new Map<string, LinkPreviewData | null>();
+const LINK_PREVIEW_INFLIGHT = new Map<string, Promise<LinkPreviewData | null>>();
+const FILE_LINK_EXTS = new Set([
+  "zip", "rar", "7z", "tar", "gz", "bz2",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv",
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "mp3", "wav",
+  "apk", "exe", "dmg", "msi",
+]);
+
+function parseUrl(href?: string): URL | null {
+  const normalized = normalizeHref(href);
+  if (!normalized) return null;
+  try {
+    return new URL(normalized);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHref(href?: string): string {
+  if (!href) return "";
+  const trimmed = href.trim().replace(/(?:%20)+$/gi, "");
+  if (!trimmed) return "";
+  return splitUrlTrailingNote(trimmed)?.url ?? trimmed;
+}
+
+function normalizeLinkDisplayText(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s+([（(\[【《])/g, "$1")
+    .replace(/([（(\[【《])\s+/g, "$1")
+    .replace(/\s+([）)\]】》])/g, "$1")
+    .trim();
+}
+
+function splitUrlTrailingNote(text: string): { url: string; note: string } | null {
+  if (!text.startsWith("http")) return null;
+  if (!text.endsWith("）")) return null;
+  const idx = text.lastIndexOf("（");
+  if (idx <= 0) return null;
+  const urlPart = text.slice(0, idx);
+  const note = text.slice(idx);
+  if (note.length > 40) return null;
+  if (!parseUrl(urlPart)) return null;
+  return { url: urlPart, note };
+}
+
+function getNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (!node) return "";
+  if (Array.isArray(node)) return node.map((item) => getNodeText(item)).join("");
+  if (typeof node === "object" && "props" in node) {
+    const el = node as { props?: { children?: ReactNode } };
+    return getNodeText(el.props?.children);
+  }
+  return "";
+}
+
+function getReadablePath(url: URL): string {
+  const pathname = normalizeLinkDisplayText(decodeURIComponent(url.pathname || "/"));
+  if (!pathname || pathname === "/") return "";
+  if (pathname.length <= 28) return pathname;
+  return `${pathname.slice(0, 25)}...`;
+}
+
+function getReadableLinkTitle(url: URL): string {
+  const host = url.hostname.replace(/^www\./, "");
+  const pathname = decodeURIComponent(url.pathname || "");
+  if (!pathname || pathname === "/") return host;
+  const last = pathname.split("/").filter(Boolean).pop() || "";
+  const fromLast = normalizeLinkDisplayText(last.replace(/[-_]+/g, " "));
+  if (fromLast) return fromLast;
+  return `${host}${getReadablePath(url)}`;
+}
+
+function getFaviconUrl(url: URL): string {
+  return `${url.origin}/favicon.ico`;
+}
+
+function isFileLikeLink(url: URL): boolean {
+  const path = url.pathname || "";
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (FILE_LINK_EXTS.has(ext)) return true;
+  const q = url.search.toLowerCase();
+  return q.includes("download=") || q.includes("filename=");
+}
+
+function getDisplayFileName(url: URL): string {
+  const seg = decodeURIComponent(url.pathname.split("/").pop() || "").trim();
+  if (seg) return seg;
+  const filename = url.searchParams.get("filename");
+  if (filename) return filename;
+  return "下载文件";
+}
+
+async function loadLinkPreview(url: string): Promise<LinkPreviewData | null> {
+  if (LINK_PREVIEW_CACHE.has(url)) {
+    return LINK_PREVIEW_CACHE.get(url) ?? null;
+  }
+  const existing = LINK_PREVIEW_INFLIGHT.get(url);
+  if (existing) return existing;
+  const task = Promise.resolve()
+    .then(async () => {
+      try {
+        // Prefer platform adapter to include auth token automatically.
+        return await getPlatform().fetchApi<LinkPreviewData | { error: string }>(
+          `/api/link-preview?url=${encodeURIComponent(url)}`,
+          { method: "GET" },
+        );
+      } catch {
+        const res = await fetch(`/api/link-preview?url=${encodeURIComponent(url)}`, { method: "GET" });
+        if (!res.ok) return null;
+        return (await res.json()) as LinkPreviewData | { error: string };
+      }
+    })
+    .then((payload) => {
+      if (!payload || typeof payload !== "object" || "error" in payload) return null;
+      return payload as LinkPreviewData;
+    })
+    .then((data) => {
+      LINK_PREVIEW_CACHE.set(url, data);
+      LINK_PREVIEW_INFLIGHT.delete(url);
+      return data;
+    })
+    .catch(() => {
+      LINK_PREVIEW_CACHE.set(url, null);
+      LINK_PREVIEW_INFLIGHT.delete(url);
+      return null;
+    });
+  LINK_PREVIEW_INFLIGHT.set(url, task);
+  return task;
+}
+
+function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactNode }) {
+  const normalizedHref = normalizeHref(href);
+  const parsed = parseUrl(normalizedHref);
+  if (!parsed || !normalizedHref) {
+    return <span>{children}</span>;
+  }
+  const childText = getNodeText(children).trim();
+  const isRawHref =
+    !childText ||
+    childText === href ||
+    childText === normalizedHref ||
+    childText === decodeURIComponent(href ?? "") ||
+    childText === decodeURIComponent(normalizedHref) ||
+    childText === parsed.toString();
+  const fallbackTitle = isRawHref ? getReadableLinkTitle(parsed) : childText;
+  const [preview, setPreview] = useState<LinkPreviewData | null>(() => LINK_PREVIEW_CACHE.get(normalizedHref) ?? null);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadLinkPreview(normalizedHref).then((data) => {
+      if (!cancelled) setPreview(data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedHref]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const effectiveUrl = parseUrl(preview?.finalUrl) ?? parseUrl(preview?.url) ?? parsed;
+  const fileLike = isFileLikeLink(effectiveUrl);
+  const previewIsFile = Boolean(preview?.isFile);
+  const fileName = preview?.fileName?.trim() || getDisplayFileName(effectiveUrl);
+  const title = preview?.title?.trim() || fallbackTitle;
+  const fileTitle = preview?.title?.trim() || fileName || fallbackTitle;
+  const description = preview?.description?.trim() || "";
+  const siteName = effectiveUrl.hostname.replace(/^www\./, "");
+  const iconUrl = getFaviconUrl(effectiveUrl);
+  const [iconFailed, setIconFailed] = useState(false);
+
+  useEffect(() => {
+    setIconFailed(false);
+  }, [iconUrl]);
+
+  const handleCopyLink = useCallback(async (ev: React.MouseEvent<HTMLButtonElement>) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!window.navigator?.clipboard?.writeText) return;
+    await window.navigator.clipboard.writeText(normalizedHref);
+    setCopiedLink(true);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopiedLink(false);
+      copyTimerRef.current = null;
+    }, 1200);
+  }, [normalizedHref]);
+
+  if (fileLike || previewIsFile) {
+    return (
+      <a
+        href={normalizedHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="link-preview-card file-link-card"
+      >
+        <button
+          type="button"
+          className="link-preview-copy-btn"
+          onClick={(ev) => {
+            void handleCopyLink(ev);
+          }}
+          aria-label={copiedLink ? "已复制链接" : "复制链接"}
+          title={copiedLink ? "已复制链接" : "复制链接"}
+        >
+          {copiedLink ? "已复制" : "复制链接"}
+        </button>
+        <span className="link-preview-badge">下载文件</span>
+        <span className="link-preview-title">{fileTitle}</span>
+        <span className="link-preview-meta">{fileName} · {siteName}</span>
+      </a>
+    );
+  }
+
+  return (
+    <a href={normalizedHref} target="_blank" rel="noopener noreferrer" className="link-preview-card">
+      <button
+        type="button"
+        className="link-preview-copy-btn"
+        onClick={(ev) => {
+          void handleCopyLink(ev);
+        }}
+        aria-label={copiedLink ? "已复制链接" : "复制链接"}
+        title={copiedLink ? "已复制链接" : "复制链接"}
+      >
+        {copiedLink ? "已复制" : "复制链接"}
+      </button>
+      <span className="link-preview-main">
+        {!iconFailed ? (
+          <img
+            src={iconUrl}
+            alt="链接站点图标"
+            className="link-preview-thumb"
+            loading="lazy"
+            onError={() => setIconFailed(true)}
+          />
+        ) : (
+          <span className="link-preview-icon-fallback" aria-hidden="true">🔗</span>
+        )}
+        <span className="link-preview-texts">
+          <span className="link-preview-title">{title}</span>
+          <span className="link-preview-meta">
+            {siteName}
+            {getReadablePath(effectiveUrl) ? ` · ${getReadablePath(effectiveUrl)}` : ""}
+          </span>
+        </span>
+      </span>
+      {description ? <span className="link-preview-desc">{description}</span> : null}
+    </a>
+  );
 }
 
 export function MessageList({ messages, streamingContent, sessionKey }: Props) {
@@ -87,6 +363,31 @@ export function MessageList({ messages, streamingContent, sessionKey }: Props) {
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  const handleCopyCode = useCallback(async (content: string) => {
+    if (!window.navigator?.clipboard?.writeText) {
+      return;
+    }
+    await window.navigator.clipboard.writeText(content);
+    setCopiedCode(content);
+    if (copiedTimerRef.current !== null) {
+      window.clearTimeout(copiedTimerRef.current);
+    }
+    copiedTimerRef.current = window.setTimeout(() => {
+      setCopiedCode(null);
+      copiedTimerRef.current = null;
+    }, 1500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
 
   if (hasFiles) {
     const caption = message.content.trim();
@@ -135,22 +436,37 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             components={{
               code({ className, children, ...props }) {
                 const match = /language-(\w+)/.exec(className || "");
-                const code = String(children).replace(/\n$/, "");
+                const code = String(children).replace(/\n$/, "").trimEnd();
                 if (match) {
+                  const isCopied = copiedCode === code;
                   return (
-                    <SyntaxHighlighter
-                      style={oneDark}
-                      language={match[1]}
-                      PreTag="div"
-                      wrapLongLines
-                      customStyle={{
-                        borderRadius: "8px",
-                        margin: 0,
-                        fontSize: "12.5px",
-                      }}
-                    >
-                      {code}
-                    </SyntaxHighlighter>
+                    <div className="relative group/code">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleCopyCode(code);
+                        }}
+                        className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded bg-black/35 text-xs text-white/90 transition hover:bg-black/50 hover:text-white"
+                        aria-label={isCopied ? "已复制" : "复制代码"}
+                        title={isCopied ? "已复制" : "复制代码"}
+                      >
+                        {isCopied ? "✓" : "⧉"}
+                      </button>
+                      <SyntaxHighlighter
+                        style={oneDark}
+                        language={match[1]}
+                        PreTag="div"
+                        wrapLongLines
+                        customStyle={{
+                          borderRadius: "8px",
+                          margin: 0,
+                          fontSize: "12.5px",
+                          paddingTop: "28px",
+                        }}
+                      >
+                        {code}
+                      </SyntaxHighlighter>
+                    </div>
                   );
                 }
                 return (
@@ -163,6 +479,28 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                     {children}
                   </code>
                 );
+              },
+              a({ href, children }) {
+                if (isUser) {
+                  return (
+                    <a href={href} target="_blank" rel="noopener noreferrer" className="underline decoration-white/70">
+                      {children}
+                    </a>
+                  );
+                }
+                const rawText = getNodeText(children).trim();
+                const trailingNote = splitUrlTrailingNote(rawText);
+                if (trailingNote) {
+                  return (
+                    <>
+                      <LinkPreviewAnchor href={trailingNote.url}>
+                        {trailingNote.url}
+                      </LinkPreviewAnchor>
+                      <span>{trailingNote.note}</span>
+                    </>
+                  );
+                }
+                return <LinkPreviewAnchor href={href}>{children}</LinkPreviewAnchor>;
               },
             }}
           >
