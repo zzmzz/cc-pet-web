@@ -5,7 +5,7 @@ import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
 import { LoginGate } from "./components/LoginGate.js";
-import { useUIStore } from "./lib/store/ui.js";
+import { useUIStore, type PetState } from "./lib/store/ui.js";
 import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
 import { useSessionStore } from "./lib/store/session.js";
@@ -14,6 +14,28 @@ import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
+
+function pickMostRecentlyMessagedConnection(connectionIds: string[]): string | null {
+  const messagesByChat = useMessageStore.getState().messagesByChat;
+  let bestConnectionId: string | null = null;
+  let bestTimestamp = -1;
+
+  for (const connectionId of connectionIds) {
+    let latest = -1;
+    const prefix = `${connectionId}::`;
+    for (const [chatKey, messages] of Object.entries(messagesByChat)) {
+      if (!chatKey.startsWith(prefix) || !Array.isArray(messages) || messages.length === 0) continue;
+      const ts = Math.max(...messages.map((m) => m.timestamp));
+      if (ts > latest) latest = ts;
+    }
+    if (latest > bestTimestamp) {
+      bestTimestamp = latest;
+      bestConnectionId = connectionId;
+    }
+  }
+
+  return bestConnectionId ?? connectionIds[0] ?? null;
+}
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -92,21 +114,24 @@ export default function App() {
 
     const subscribeWs = (): void => {
       unsub = adapter.onWsEvent((type, payload) => {
+        const setPetStateSafely = (state: PetState): void => {
+          const shouldForceThinking = useSessionStore.getState().hasProcessingSessions();
+          useUIStore.getState().setPetState(shouldForceThinking ? "thinking" : state);
+        };
+
         if (type === WS_EVENTS.BRIDGE_MANIFEST) {
           const bridges = (payload as { bridges?: { id: string; name: string }[] }).bridges ?? [];
           const connections = bridges.map((b) => ({ id: b.id, name: b.name, connected: false }));
           useConnectionStore.getState().setConnections(connections);
-          if (connections.length > 0) {
-            useConnectionStore.getState().setActiveConnection(connections[0].id);
-          } else {
-            useConnectionStore.getState().setActiveConnection(null);
-          }
+          useConnectionStore.getState().setActiveConnection(connections[0]?.id ?? null);
           void (async () => {
             try {
               await hydrateSessionsAndHistory(
                 adapter,
                 bridges.map((b) => b.id),
               );
+              const bestConnectionId = pickMostRecentlyMessagedConnection(bridges.map((b) => b.id));
+              useConnectionStore.getState().setActiveConnection(bestConnectionId);
             } finally {
               if (!cancelled) setReady(true);
             }
@@ -187,11 +212,11 @@ export default function App() {
                 clearTimeout(happyAfterConnectTimer);
                 happyAfterConnectTimer = null;
               }
-              useUIStore.getState().setPetState("happy");
+              setPetStateSafely("happy");
               happyAfterConnectTimer = setTimeout(() => {
                 happyAfterConnectTimer = null;
                 if (useUIStore.getState().petState === "happy") {
-                  useUIStore.getState().setPetState("idle");
+                  setPetStateSafely("idle");
                 }
               }, PET_HAPPY_AFTER_CONNECT_MS);
             } else if (happyAfterConnectTimer != null) {
@@ -214,7 +239,7 @@ export default function App() {
             });
             setTaskPhase(isTypingActiveForSession() ? "working" : "completed");
             if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              useUIStore.getState().setPetState("idle");
+              setPetStateSafely("idle");
             }
             break;
           case WS_EVENTS.BRIDGE_STREAM_DELTA: {
@@ -232,16 +257,16 @@ export default function App() {
             }
             useMessageStore.getState().appendStreamDelta(chatKey, payload.delta);
             setTaskPhase("working");
-            useUIStore.getState().setPetState("talking");
+            setPetStateSafely("talking");
             break;
           }
           case WS_EVENTS.BRIDGE_STREAM_DONE:
             useMessageStore.getState().finalizeStream(chatKey, payload.fullText);
             setTaskPhase(isTypingActiveForSession() ? "working" : "completed");
             if (useSessionStore.getState().hasAnyUnread()) {
-              useUIStore.getState().setPetState("talking");
+              setPetStateSafely("talking");
             } else {
-              useUIStore.getState().setPetState("idle");
+              setPetStateSafely("idle");
             }
             break;
           case WS_EVENTS.BRIDGE_BUTTONS:
@@ -261,14 +286,14 @@ export default function App() {
               isTypingActiveForSession() ? "working" : "awaiting_confirmation",
             );
             if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              useUIStore.getState().setPetState("idle");
+              setPetStateSafely("idle");
             }
             break;
           case WS_EVENTS.BRIDGE_FILE_RECEIVED:
             if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
               useSessionStore.getState().incrementUnread(chatKey);
             } else if (connectionId && resolvedSessionKey) {
-              useUIStore.getState().setPetState("happy");
+              setPetStateSafely("happy");
             }
             useMessageStore.getState().addMessage(chatKey, {
               id: `msg-${Date.now()}`,
@@ -290,7 +315,7 @@ export default function App() {
           case WS_EVENTS.BRIDGE_TYPING_START:
             if (chatKey) typingActiveByChatKey[chatKey] = true;
             setTaskPhase("working");
-            useUIStore.getState().setPetState("thinking");
+            setPetStateSafely("thinking");
             break;
           case WS_EVENTS.BRIDGE_TYPING_STOP:
             // Ignore stray/misaligned typing_stop to avoid premature completed state.
@@ -299,7 +324,7 @@ export default function App() {
             }
             typingActiveByChatKey[chatKey] = false;
             setTaskPhase("completed");
-            useUIStore.getState().setPetState("idle");
+            setPetStateSafely("idle");
             break;
           case WS_EVENTS.BRIDGE_SKILLS_UPDATED: {
             const cid = payload.connectionId as string;
@@ -324,7 +349,7 @@ export default function App() {
                 sessionKey: fallbackSessionKey,
               });
             }
-            useUIStore.getState().setPetState("error");
+            setPetStateSafely("error");
             break;
         }
       });

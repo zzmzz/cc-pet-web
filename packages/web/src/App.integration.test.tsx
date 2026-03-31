@@ -224,6 +224,7 @@ describe("App integration", () => {
     await waitFor(() => {
       const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
       expect(phase).toBe("working");
+      expect(useUIStore.getState().petState).toBe("thinking");
     });
 
     adapter.emit(WS_EVENTS.BRIDGE_STREAM_DONE, {
@@ -234,6 +235,7 @@ describe("App integration", () => {
     await waitFor(() => {
       const phase = useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
       expect(phase).toBe("working");
+      expect(useUIStore.getState().petState).toBe("thinking");
     });
 
     adapter.emit(WS_EVENTS.BRIDGE_TYPING_STOP, {
@@ -432,6 +434,67 @@ describe("App integration", () => {
 
     expect(await screen.findByText("from server history")).toBeInTheDocument();
     expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("sess-restored");
+  });
+
+  it("defaults active connection to the one with newest message after hydrate", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return {
+          sessions: [{ key: "s1", connectionId: "cc-connect", createdAt: 100, lastActiveAt: 100 }],
+        };
+      }
+      if (path.includes("connectionId=cs-connect")) {
+        return {
+          sessions: [{ key: "s2", connectionId: "cs-connect", createdAt: 100, lastActiveAt: 100 }],
+        };
+      }
+      if (path.startsWith("/api/history/")) {
+        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
+        if (chatKey === makeChatKey("cc-connect", "s1")) {
+          return {
+            messages: [
+              {
+                id: "cc-old",
+                role: "assistant",
+                content: "older",
+                timestamp: 1000,
+                connectionId: "cc-connect",
+                sessionKey: "s1",
+              },
+            ],
+          };
+        }
+        if (chatKey === makeChatKey("cs-connect", "s2")) {
+          return {
+            messages: [
+              {
+                id: "cs-new",
+                role: "assistant",
+                content: "newer",
+                timestamp: 2000,
+                connectionId: "cs-connect",
+                sessionKey: "s2",
+              },
+            ],
+          };
+        }
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    await waitFor(() => {
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cs-connect");
+    });
   });
 
   it("sends message to websocket and renders incoming bridge reply", async () => {

@@ -8,6 +8,14 @@ function hasAnyUnread(unread: Record<string, number>): boolean {
   return Object.values(unread).some((n) => (n ?? 0) > 0);
 }
 
+function hasProcessingSessions(
+  taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
+): boolean {
+  return Object.values(taskStateByConnection).some((sessions) =>
+    Object.values(sessions).some((task) => task.phase === "working" || task.phase === "processing"),
+  );
+}
+
 function maybeIdlePetWhenNoUnread(unread: Record<string, number>): void {
   if (hasAnyUnread(unread)) return;
   if (useUIStore.getState().petState === "talking") {
@@ -51,6 +59,8 @@ interface SessionState {
   clearSessionUnread: (connectionId: string, sessionKey: string) => void;
   /** True if any chatKey has unread count > 0. */
   hasAnyUnread: () => boolean;
+  /** True if any session is in processing/working phase. */
+  hasProcessingSessions: () => boolean;
   removeSession: (connectionId: string, sessionKey: string) => void;
   /** First non-empty user message (trimmed, first N chars) becomes label when title still default. */
   touchSessionAutoTitle: (connectionId: string, sessionKey: string, userText: string) => void;
@@ -150,6 +160,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     get().clearUnread(makeChatKey(connectionId, sessionKey));
   },
   hasAnyUnread: () => hasAnyUnread(get().unread),
+  hasProcessingSessions: () => hasProcessingSessions(get().taskStateByConnection),
   removeSession: (connectionId, sessionKey) =>
     set((s) => {
       const chatKey = makeChatKey(connectionId, sessionKey);

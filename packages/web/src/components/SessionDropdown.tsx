@@ -64,6 +64,19 @@ function phaseForSession(
   return formatSessionPhase(p ?? "idle");
 }
 
+function latestMessageByConnection(messagesByChat: Record<string, ChatMessage[]>): Record<string, number> {
+  const latest: Record<string, number> = {};
+  for (const [chatKey, messages] of Object.entries(messagesByChat)) {
+    if (!Array.isArray(messages) || messages.length === 0) continue;
+    const sep = chatKey.indexOf("::");
+    if (sep <= 0) continue;
+    const connectionId = chatKey.slice(0, sep);
+    const lastTs = Math.max(...messages.map((m) => m.timestamp));
+    latest[connectionId] = Math.max(latest[connectionId] ?? 0, lastTs);
+  }
+  return latest;
+}
+
 export type SessionDropdownProps = {
   /** When true, session delete controls stay visible (for tests; JSDOM cannot emulate group-hover). */
   testShowDeleteButtons?: boolean;
@@ -114,7 +127,13 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     if (!open) setConfirmDeleteId(null);
   }, [open]);
 
-  const bridgeList = connections;
+  const connectionActivity = latestMessageByConnection(messagesByChat);
+  const bridgeList = [...connections].sort((a, b) => {
+    const ta = connectionActivity[a.id] ?? 0;
+    const tb = connectionActivity[b.id] ?? 0;
+    if (tb !== ta) return tb - ta;
+    return connections.findIndex((c) => c.id === a.id) - connections.findIndex((c) => c.id === b.id);
+  });
 
   if (!activeConnectionId || bridgeList.length === 0) {
     return <span className="text-[12px] font-semibold text-gray-300 px-2">CC Pet</span>;

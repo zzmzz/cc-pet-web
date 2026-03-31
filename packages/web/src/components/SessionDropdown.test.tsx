@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { makeChatKey } from "@cc-pet/shared";
 import { SessionDropdown, formatSessionPhase } from "./SessionDropdown.js";
 import { useConnectionStore } from "../lib/store/connection.js";
+import { useMessageStore } from "../lib/store/message.js";
 import { useSessionStore } from "../lib/store/session.js";
 
 const fetchApi = vi.fn().mockResolvedValue({ ok: true });
@@ -14,6 +15,7 @@ vi.mock("../lib/platform.js", () => ({
 
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
+  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
   useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
 }
 
@@ -149,7 +151,7 @@ describe("SessionDropdown", () => {
     expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
   });
 
-  it("keeps connection order stable after switching", async () => {
+  it("sorts connections by latest message time", async () => {
     const user = userEvent.setup();
     useConnectionStore.setState({
       connections: [
@@ -164,23 +166,42 @@ describe("SessionDropdown", () => {
       },
       activeSessionKey: { c1: "x" },
     });
+    useMessageStore.setState({
+      messagesByChat: {
+        [makeChatKey("c2", "default")]: [
+          {
+            id: "m2",
+            role: "assistant",
+            content: "newest",
+            timestamp: 2_000,
+            connectionId: "c2",
+            sessionKey: "default",
+          },
+        ],
+        [makeChatKey("c1", "x")]: [
+          {
+            id: "m1",
+            role: "assistant",
+            content: "older",
+            timestamp: 1_000,
+            connectionId: "c1",
+            sessionKey: "x",
+          },
+        ],
+      },
+      streamingContent: {},
+    });
 
     render(<SessionDropdown variant="panel" />);
 
-    const beforeSwitch = screen
+    const ordered = screen
       .getAllByRole("button")
       .map((el) => el.textContent ?? "")
       .filter((text) => text.includes("First") || text.includes("Second"));
-    expect(beforeSwitch).toEqual(["First", "Second"]);
+    expect(ordered).toEqual(["Second", "First"]);
 
-    await user.click(screen.getByRole("button", { name: /Second/ }));
-    expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
-
-    const afterSwitch = screen
-      .getAllByRole("button")
-      .map((el) => el.textContent ?? "")
-      .filter((text) => text.includes("First") || text.includes("Second"));
-    expect(afterSwitch).toEqual(["First", "Second"]);
+    await user.click(screen.getByRole("button", { name: /First/ }));
+    expect(useConnectionStore.getState().activeConnectionId).toBe("c1");
   });
 
   it("uses shared theme classes for opened dropdown menu surface", async () => {

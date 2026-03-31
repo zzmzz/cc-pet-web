@@ -140,6 +140,26 @@ describe("session store behavior", () => {
     expect(next?.firstTokenAt).toBe(120);
   });
 
+  it("hasProcessingSessions is true only when any session is working/processing", () => {
+    expect(useSessionStore.getState().hasProcessingSessions()).toBe(false);
+
+    useSessionStore.getState().setSessionTaskState(conn, sid, {
+      activeRequestId: "r1",
+      phase: "awaiting_confirmation",
+      startedAt: 100,
+      lastActivityAt: 100,
+      firstTokenAt: null,
+      stalledReason: null,
+    });
+    expect(useSessionStore.getState().hasProcessingSessions()).toBe(false);
+
+    useSessionStore.getState().patchSessionTaskState(conn, sid, { phase: "working" });
+    expect(useSessionStore.getState().hasProcessingSessions()).toBe(true);
+
+    useSessionStore.getState().patchSessionTaskState(conn, sid, { phase: "completed" });
+    expect(useSessionStore.getState().hasProcessingSessions()).toBe(false);
+  });
+
   it("touchSessionLastActive bumps lastActiveAt", () => {
     const t = 1_000_000;
     useSessionStore.setState({

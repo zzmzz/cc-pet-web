@@ -15,9 +15,37 @@ const DEFAULT_PET_IMAGES: Record<PetState, string> = {
 
 const petImageOverrideCache = new Map<string, string>();
 const petImageOverrideMissCache = new Set<string>();
+const PET_IMAGE_STORAGE_PREFIX = "cc-pet-image::";
 
 function cacheKey(token: string, state: PetState): string {
   return `${token}::${state}`;
+}
+
+function storageKey(token: string, state: PetState): string {
+  return `${PET_IMAGE_STORAGE_PREFIX}${cacheKey(token, state)}`;
+}
+
+function readPersistedPetImage(token: string, state: PetState): string | null {
+  try {
+    const value = localStorage.getItem(storageKey(token, state));
+    return value && value.startsWith("data:image/") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistPetImage(token: string, state: PetState, blob: Blob): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = reader.result;
+    if (typeof result !== "string" || !result.startsWith("data:image/")) return;
+    try {
+      localStorage.setItem(storageKey(token, state), result);
+    } catch {
+      // Ignore quota and storage errors, runtime cache still works.
+    }
+  };
+  reader.readAsDataURL(blob);
 }
 
 function usePetImage(state: PetState): string {
@@ -26,13 +54,13 @@ function usePetImage(state: PetState): string {
   useEffect(() => {
     const token = localStorage.getItem("cc-pet-token")?.trim() ?? "";
     const fallback = DEFAULT_PET_IMAGES[state];
-    setSrc(fallback);
+    const key = cacheKey(token, state);
+    const cached = token ? petImageOverrideCache.get(key) : undefined;
+    const persisted = token ? readPersistedPetImage(token, state) : null;
+    setSrc(cached ?? persisted ?? fallback);
     if (!token) return;
 
-    const key = cacheKey(token, state);
-    const cached = petImageOverrideCache.get(key);
     if (cached) {
-      setSrc(cached);
       return;
     }
     if (petImageOverrideMissCache.has(key)) return;
@@ -44,12 +72,13 @@ function usePetImage(state: PetState): string {
       .then(async (res) => {
         if (!res.ok) throw new Error(`pet image not found (${res.status})`);
         const blob = await res.blob();
-        return URL.createObjectURL(blob);
+        return { blob, objectUrl: URL.createObjectURL(blob) };
       })
-      .then((url) => {
+      .then(({ blob, objectUrl }) => {
         if (cancelled) return;
-        petImageOverrideCache.set(key, url);
-        setSrc(url);
+        petImageOverrideCache.set(key, objectUrl);
+        persistPetImage(token, state, blob);
+        setSrc(objectUrl);
       })
       .catch(() => {
         if (cancelled) return;
@@ -100,7 +129,6 @@ export function PetFull() {
           e.currentTarget.src = DEFAULT_PET_IMAGES[petState];
         }}
       />
-      <div className="text-center text-xs text-gray-400 mt-1">{petState}</div>
     </motion.div>
   );
 }
