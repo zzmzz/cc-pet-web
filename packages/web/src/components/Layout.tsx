@@ -1,8 +1,6 @@
 import { Fragment, useEffect } from "react";
 import { useUIStore } from "../lib/store/ui.js";
-import { useConnectionStore } from "../lib/store/connection.js";
 import { PetFull, PetMini } from "./Pet.js";
-import { ConnectionStatus } from "./ConnectionStatus.js";
 import { SessionDropdown } from "./SessionDropdown.js";
 
 const TOP_BAR_CLASS =
@@ -11,7 +9,6 @@ const TOP_BAR_CLASS =
 export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
   const setIsMobile = useUIStore((s) => s.setIsMobile);
-  const connectionCount = useConnectionStore((s) => s.connections.length);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -26,7 +23,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <header className={TOP_BAR_CLASS}>
           <PetMini />
           <div className="flex-1 min-w-0">
-            {connectionCount > 1 ? <SessionDropdown /> : <ConnectionStatus />}
+            <SessionDropdown />
           </div>
         </header>
         <main className="flex-1 overflow-hidden">{children}</main>
@@ -42,7 +39,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </header>
         <div className="flex min-h-0 flex-1">
           <aside className="flex w-72 flex-col gap-4 border-r border-border bg-surface-secondary p-3">
-            {connectionCount > 1 ? <SessionDropdown variant="panel" /> : <ConnectionStatus />}
+            <SessionDropdown variant="panel" />
             <div className="flex-1 overflow-y-auto" />
           </aside>
           <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
