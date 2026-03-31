@@ -52,11 +52,33 @@ describe("session store behavior", () => {
     expect(sess.activeSessionKey[conn]).toBe("session-b");
   });
 
-  it("incrementUnread sets pet to talking", () => {
+  it("incrementUnread sets pet to talking when no session is processing", () => {
     useUIStore.getState().setPetState("idle");
     useSessionStore.getState().incrementUnread(chatKey);
     expect(useSessionStore.getState().unread[chatKey]).toBe(1);
     expect(useUIStore.getState().petState).toBe("talking");
+  });
+
+  it("incrementUnread keeps pet thinking when another session is still processing", () => {
+    useUIStore.getState().setPetState("thinking");
+    useSessionStore.setState({
+      taskStateByConnection: {
+        [conn]: {
+          [sid]: {
+            activeRequestId: "r1",
+            phase: "working",
+            startedAt: 1,
+            lastActivityAt: 1,
+            firstTokenAt: 1,
+            stalledReason: null,
+          },
+        },
+      },
+    });
+    const otherKey = makeChatKey(conn, "session-b");
+    useSessionStore.getState().incrementUnread(otherKey);
+    expect(useSessionStore.getState().unread[otherKey]).toBe(1);
+    expect(useUIStore.getState().petState).toBe("thinking");
   });
 
   it("clearSessionUnread sets pet to idle when no unread remains and pet was talking", () => {
@@ -67,6 +89,30 @@ describe("session store behavior", () => {
 
     expect(useSessionStore.getState().unread[chatKey]).toBe(0);
     expect(useUIStore.getState().petState).toBe("idle");
+  });
+
+  it("clearSessionUnread sets pet to thinking when no unread remains but a session is still processing", () => {
+    useUIStore.getState().setPetState("talking");
+    useSessionStore.setState({
+      unread: { [chatKey]: 1 },
+      taskStateByConnection: {
+        [conn]: {
+          [sid]: {
+            activeRequestId: "r1",
+            phase: "working",
+            startedAt: 1,
+            lastActivityAt: 1,
+            firstTokenAt: 1,
+            stalledReason: null,
+          },
+        },
+      },
+    });
+
+    useSessionStore.getState().clearSessionUnread(conn, sid);
+
+    expect(useSessionStore.getState().unread[chatKey]).toBe(0);
+    expect(useUIStore.getState().petState).toBe("thinking");
   });
 
   it("clearSessionUnread does not set idle when another chat still has unread", () => {

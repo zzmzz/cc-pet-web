@@ -6,7 +6,7 @@ import { useSessionStore } from "../lib/store/session.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
-import { getPlatform } from "../lib/platform.js";
+import { getPlatform, isTauri } from "../lib/platform.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -52,7 +52,8 @@ export function ChatWindow() {
   const clearSessionUnread = useSessionStore((s) => s.clearSessionUnread);
 
   useEffect(() => {
-    if (!chatOpen || !activeConnectionId || !activeSessionKey) return;
+    if (!activeConnectionId || !activeSessionKey) return;
+    if (isTauri() && !chatOpen) return;
     clearSessionUnread(activeConnectionId, activeSessionKey);
   }, [chatOpen, activeConnectionId, activeSessionKey, clearSessionUnread]);
   const messages = chatKey ? (messagesByChat[chatKey] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;

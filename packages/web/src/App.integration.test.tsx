@@ -334,6 +334,30 @@ describe("App integration", () => {
     });
   });
 
+  it("does not increment unread for active session when chatOpen is false on web", async () => {
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-a", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-a" },
+    });
+    useUIStore.setState({ chatOpen: false });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "session-a",
+      content: "reply while pet toggled",
+    });
+
+    await waitFor(() => {
+      const keyA = makeChatKey("cc-connect", "session-a");
+      expect(useSessionStore.getState().unread[keyA] ?? 0).toBe(0);
+    });
+  });
+
   it("routes incoming text by replyCtx when payload sessionKey is missing", async () => {
     useSessionStore.setState({
       sessions: {

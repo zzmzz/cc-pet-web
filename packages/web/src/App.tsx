@@ -12,6 +12,7 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
+import { isTauri } from "./lib/platform.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
@@ -196,10 +197,15 @@ export default function App() {
           }
         };
 
+        /** Web 主界面始终展示当前会话内容，chatOpen 仅表示宠物「展开」状态，不能用来判断用户是否在看当前会话。 */
         const shouldMarkUnread = (cid: string, sessionKey: string): boolean => {
-          const chatOpen = useUIStore.getState().chatOpen;
           const active = useSessionStore.getState().activeSessionKey[cid] ?? "default";
-          return !chatOpen || active !== sessionKey;
+          if (active !== sessionKey) return true;
+          if (isTauri()) {
+            const chatOpen = useUIStore.getState().chatOpen;
+            return !chatOpen;
+          }
+          return false;
         };
 
         switch (type) {

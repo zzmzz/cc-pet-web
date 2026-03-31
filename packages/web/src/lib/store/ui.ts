@@ -13,7 +13,7 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  /** Web 主界面聊天区默认可见；与 cc-pet 一致用 chatOpen 表示「展开关注聊天」以便未读判断。 */
+  /** Web 主界面聊天区始终在主区域展示；chatOpen 主要表示宠物交互状态。未读是否计入在 App 中对 Web/Tauri 分别处理。 */
   chatOpen: true,
   petState: "idle",
   isMobile: false,

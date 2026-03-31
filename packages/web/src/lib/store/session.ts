@@ -16,8 +16,15 @@ function hasProcessingSessions(
   );
 }
 
-function maybeIdlePetWhenNoUnread(unread: Record<string, number>): void {
+function maybeAdjustPetWhenUnreadCleared(
+  unread: Record<string, number>,
+  taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
+): void {
   if (hasAnyUnread(unread)) return;
+  if (hasProcessingSessions(taskStateByConnection)) {
+    useUIStore.getState().setPetState("thinking");
+    return;
+  }
   if (useUIStore.getState().petState === "talking") {
     useUIStore.getState().setPetState("idle");
   }
@@ -147,13 +154,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: { ...s.sessions, [connectionId]: next } };
     }),
   incrementUnread: (chatKey) => {
-    useUIStore.getState().setPetState("talking");
     set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } }));
+    const processing = get().hasProcessingSessions();
+    useUIStore.getState().setPetState(processing ? "thinking" : "talking");
   },
   clearUnread: (chatKey) =>
     set((s) => {
       const nextUnread = { ...s.unread, [chatKey]: 0 };
-      maybeIdlePetWhenNoUnread(nextUnread);
+      maybeAdjustPetWhenUnreadCleared(nextUnread, s.taskStateByConnection);
       return { unread: nextUnread };
     }),
   clearSessionUnread: (connectionId, sessionKey) => {
@@ -169,7 +177,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const list = s.sessions[connectionId] ?? [];
       const nextList = list.filter((x) => x.key !== sessionKey);
       const { [chatKey]: _removed, ...restUnread } = s.unread;
-      maybeIdlePetWhenNoUnread(restUnread);
+      const prevTasks = s.taskStateByConnection[connectionId] ?? {};
+      const { [sessionKey]: _removedTask, ...restTasks } = prevTasks;
+      const nextTaskState = { ...s.taskStateByConnection };
+      if (Object.keys(restTasks).length === 0) {
+        delete nextTaskState[connectionId];
+      } else {
+        nextTaskState[connectionId] = restTasks;
+      }
+      maybeAdjustPetWhenUnreadCleared(restUnread, nextTaskState);
 
       const nextActive = { ...s.activeSessionKey };
       if (nextActive[connectionId] === sessionKey) {
@@ -178,15 +194,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         } else {
           delete nextActive[connectionId];
         }
-      }
-
-      const prevTasks = s.taskStateByConnection[connectionId] ?? {};
-      const { [sessionKey]: _removedTask, ...restTasks } = prevTasks;
-      const nextTaskState = { ...s.taskStateByConnection };
-      if (Object.keys(restTasks).length === 0) {
-        delete nextTaskState[connectionId];
-      } else {
-        nextTaskState[connectionId] = restTasks;
       }
 
       return {
