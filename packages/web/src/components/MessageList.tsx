@@ -5,8 +5,10 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
 import type { ChatMessage } from "@cc-pet/shared";
 import type { ReactNode } from "react";
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { getPlatform } from "../lib/platform.js";
+import { groupMessages } from "../lib/group-messages.js";
+import { ActivityBlock } from "./ActivityBlock.js";
 
 interface Props {
   messages: ChatMessage[];
@@ -315,6 +317,11 @@ export function MessageList({ messages, streamingContent, sessionKey }: Props) {
     setShowBackToLatest(!shouldStick);
   }, [isNearBottom]);
 
+  const renderItems = useMemo(
+    () => groupMessages(messages, streamingContent),
+    [messages, streamingContent],
+  );
+
   useEffect(() => {
     if (!sessionKey) return;
     scrollToLatest("auto");
@@ -336,9 +343,13 @@ export function MessageList({ messages, streamingContent, sessionKey }: Props) {
   return (
     <div className="relative flex-1 min-h-0">
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto py-3 space-y-1">
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {renderItems.map((item) =>
+          item.kind === "tool-group" ? (
+            <ActivityBlock key={item.messages[0].id} messages={item.messages} done={item.done} />
+          ) : (
+            <MessageBubble key={item.message.id} message={item.message} />
+          ),
+        )}
         {streamingContent && (
           <MessageBubble
             message={{ id: "streaming", role: "assistant", content: streamingContent, timestamp: Date.now() }}
