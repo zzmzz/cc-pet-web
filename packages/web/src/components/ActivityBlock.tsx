@@ -64,18 +64,25 @@ export function ActivityBlock({ messages, done }: ActivityBlockProps) {
           </span>
         </div>
         {expanded && (
-          <div className="mt-1.5 pt-1.5 border-t border-green-100 space-y-1">
+          <div className="mt-1.5 pt-1.5 border-t border-green-100 space-y-0.5">
             {messages.map((msg) => {
               const label = getToolCallLabel(msg.content);
+              const detail = getToolCallDetail(msg.content);
               const fullDetail = getToolCallFullDetail(msg.content);
+              const hasMore = fullDetail && fullDetail !== detail;
               return (
-                <div key={msg.id} className="py-0.5">
+                <div key={msg.id} className="group/step py-0.5">
                   <div className="flex items-center gap-1.5 text-xs text-gray-500">
                     <span className="w-4 text-center shrink-0 text-gray-300">✓</span>
                     <span>{label}</span>
+                    {detail && (
+                      <span className="truncate text-gray-300">
+                        — <code className="text-[11px]">{detail}</code>
+                      </span>
+                    )}
                   </div>
-                  {fullDetail && (
-                    <pre className="mt-0.5 ml-5.5 text-[11px] leading-relaxed text-gray-400 bg-green-50 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-words">
+                  {hasMore && (
+                    <pre className="hidden group-hover/step:block mt-0.5 ml-5.5 text-[11px] leading-relaxed text-gray-400 bg-white/60 rounded px-2 py-1 whitespace-pre-wrap break-words border border-green-100">
                       {fullDetail}
                     </pre>
                   )}
