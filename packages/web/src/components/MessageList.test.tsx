@@ -260,4 +260,47 @@ describe("MessageList", () => {
 
     expect(writeText).toHaveBeenCalledWith("https://t.cn/A6abc");
   });
+
+  it("collapses consecutive tool call messages into an ActivityBlock", () => {
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", content: "shorten this link", timestamp: 1 },
+      { id: "t1", role: "assistant", content: "💭\nthinking...", timestamp: 2 },
+      { id: "t2", role: "assistant", content: '🔧 **工具 #1: Bash**\n---\ncurl ...', timestamp: 3 },
+      { id: "a1", role: "assistant", content: "短链已生成：https://ziiimo.cn/u/3849", timestamp: 4 },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    expect(screen.getByText(/已执行 2 个操作/)).toBeInTheDocument();
+    expect(screen.getByText(/短链已生成/)).toBeInTheDocument();
+    expect(screen.queryByText("💭")).not.toBeInTheDocument();
+  });
+
+  it("shows in-progress ActivityBlock when tool calls are at the end", () => {
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", content: "do something", timestamp: 1 },
+      { id: "t1", role: "assistant", content: '🔧 **工具 #1: Read**\n---\n`file.md`', timestamp: 2 },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    expect(screen.getByText("工具调用中…")).toBeInTheDocument();
+  });
+
+  it("expands collapsed ActivityBlock on click", () => {
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", content: "hello", timestamp: 1 },
+      { id: "t1", role: "assistant", content: "💭\nthinking...", timestamp: 2 },
+      { id: "t2", role: "assistant", content: '🔧 **工具 #1: Bash**\n---\ncurl ...', timestamp: 3 },
+      { id: "a1", role: "assistant", content: "done!", timestamp: 4 },
+    ];
+
+    render(<MessageList messages={messages} />);
+
+    const summary = screen.getByText(/已执行 2 个操作/);
+    fireEvent.click(summary);
+
+    expect(screen.getByText(/🔧 Bash/)).toBeInTheDocument();
+    expect(screen.getByText(/💭 思考/)).toBeInTheDocument();
+  });
 });
