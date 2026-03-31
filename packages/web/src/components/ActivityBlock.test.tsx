@@ -33,7 +33,7 @@ describe("ActivityBlock", () => {
     expect(screen.queryByText(/🔧 Read/)).not.toBeInTheDocument();
   });
 
-  it("expands on click to show all items", () => {
+  it("expands on click to show full details", () => {
     render(<ActivityBlock messages={TOOL_MSGS} done={true} />);
 
     fireEvent.click(screen.getByText(/已执行 4 个操作/));
@@ -41,6 +41,9 @@ describe("ActivityBlock", () => {
     expect(screen.getByText(/🔧 Read/)).toBeInTheDocument();
     expect(screen.getByText(/🔧 Bash/)).toBeInTheDocument();
     expect(screen.getAllByText(/💭 思考/)).toHaveLength(2);
+    expect(screen.getByText(/\/path\/to\/skill\.md/)).toBeInTheDocument();
+    expect(screen.getByText(/curl -sG/)).toBeInTheDocument();
+    expect(screen.getByText(/Analyzing request/)).toBeInTheDocument();
   });
 
   it("collapses again on second click", () => {

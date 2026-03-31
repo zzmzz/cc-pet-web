@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isToolCallContent, getToolCallLabel, getToolCallDetail } from "./tool-call.js";
+import { isToolCallContent, getToolCallLabel, getToolCallDetail, getToolCallFullDetail } from "./tool-call.js";
 
 describe("isToolCallContent", () => {
   it("detects wrench emoji tool call", () => {
@@ -75,5 +75,36 @@ describe("getToolCallDetail", () => {
 
   it("returns empty string for thinking messages", () => {
     expect(getToolCallDetail('💭\nThe user wants...')).toBe("");
+  });
+});
+
+describe("getToolCallFullDetail", () => {
+  it("returns full path without truncation", () => {
+    const path = "/very/long/path/that/exceeds/forty/characters/and/should/not/be/truncated.md";
+    expect(getToolCallFullDetail(`🔧 **工具 #1: Read**\n---\n\`${path}\``)).toBe(path);
+  });
+
+  it("returns full command from bash code block", () => {
+    const cmd = 'curl -sG "https://ziiimo.cn/api/v2/action/shorten" --data-urlencode "key=abc123"';
+    expect(getToolCallFullDetail(`🔧 **工具 #1: Bash**\n---\n\`\`\`bash\n${cmd}\n\`\`\``)).toBe(cmd);
+  });
+
+  it("returns multiline code block content", () => {
+    const content = '🔧 **工具 #1: Bash**\n---\n```bash\nline1\nline2\nline3\n```';
+    expect(getToolCallFullDetail(content)).toBe("line1\nline2\nline3");
+  });
+
+  it("returns thinking text for thought bubble", () => {
+    expect(getToolCallFullDetail("💭\nThe user wants a short link for a GitHub URL.")).toBe(
+      "The user wants a short link for a GitHub URL.",
+    );
+  });
+
+  it("returns empty string for thinking without text", () => {
+    expect(getToolCallFullDetail("💭")).toBe("");
+  });
+
+  it("returns empty string when no --- separator", () => {
+    expect(getToolCallFullDetail("🔧 **工具 #1: Read**\nno separator")).toBe("");
   });
 });

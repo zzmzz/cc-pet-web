@@ -11,25 +11,40 @@ export function getToolCallLabel(content: string): string {
   return "🔧 工具调用";
 }
 
+const DETAIL_MAX_LEN = 40;
+
 export function getToolCallDetail(content: string): string {
+  if (content.trimStart().startsWith("💭")) return "";
+  const full = getToolCallFullDetail(content);
+  if (full.length <= DETAIL_MAX_LEN) return full;
+  return full.slice(0, DETAIL_MAX_LEN) + "…";
+}
+
+export function getToolCallFullDetail(content: string): string {
   const trimmed = content.trimStart();
-  if (trimmed.startsWith("💭")) return "";
+  if (trimmed.startsWith("💭")) {
+    const firstNewline = trimmed.indexOf("\n");
+    if (firstNewline < 0) return "";
+    return trimmed.slice(firstNewline + 1).trim();
+  }
 
   const sepIdx = trimmed.indexOf("\n---\n");
   if (sepIdx < 0) return "";
 
   const afterSep = trimmed.slice(sepIdx + 5).trimStart();
-  let firstLine = afterSep.split("\n")[0] ?? "";
+  const lines = afterSep.split("\n");
+  let result = afterSep;
 
-  // Strip markdown code fence
-  if (firstLine.startsWith("```")) {
-    const secondLine = afterSep.split("\n")[1] ?? "";
-    firstLine = secondLine;
+  if (lines[0]?.startsWith("```")) {
+    const endFenceIdx = lines.findIndex((l, i) => i > 0 && l.trimEnd() === "```");
+    if (endFenceIdx > 0) {
+      result = lines.slice(1, endFenceIdx).join("\n");
+    } else {
+      result = lines.slice(1).join("\n");
+    }
+  } else {
+    result = lines[0]?.replace(/^`+|`+$/g, "").trim() ?? "";
   }
 
-  // Strip backtick wrapping
-  firstLine = firstLine.replace(/^`+|`+$/g, "").trim();
-
-  if (firstLine.length <= 40) return firstLine;
-  return firstLine.slice(0, 40) + "…";
+  return result.trim();
 }
