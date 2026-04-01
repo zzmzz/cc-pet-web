@@ -9,6 +9,9 @@ export default {
         border: { DEFAULT: "#30363d" },
         accent: { DEFAULT: "#58a6ff" },
       },
+      fontFamily: {
+        sans: ["Monaco", "PingFang SC", "Microsoft YaHei", "Source Han Sans CN", "Noto Sans CJK SC", "Consolas", "Courier New", "monospace"],
+      },
     },
   },
   plugins: [],

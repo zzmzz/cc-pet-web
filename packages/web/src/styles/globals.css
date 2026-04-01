@@ -11,6 +11,10 @@
   --color-text-secondary: #6b7280;
 }
 
+body {
+  font-family: Monaco, "PingFang SC", "Microsoft YaHei", "Source Han Sans CN", "Noto Sans CJK SC", Consolas, "Courier New", monospace;
+}
+
 .link-preview-card {
   position: relative;
   display: block;
