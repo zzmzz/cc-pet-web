@@ -77,6 +77,17 @@ function latestMessageByConnection(messagesByChat: Record<string, ChatMessage[]>
   return latest;
 }
 
+function unreadByConnection(unreadMap: Record<string, number>): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const [chatKey, unread] of Object.entries(unreadMap)) {
+    const sep = chatKey.indexOf("::");
+    if (sep <= 0) continue;
+    const connectionId = chatKey.slice(0, sep);
+    totals[connectionId] = (totals[connectionId] ?? 0) + (unread ?? 0);
+  }
+  return totals;
+}
+
 export type SessionDropdownProps = {
   /** When true, session delete controls stay visible (for tests; JSDOM cannot emulate group-hover). */
   testShowDeleteButtons?: boolean;
@@ -128,6 +139,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   }, [open]);
 
   const connectionActivity = latestMessageByConnection(messagesByChat);
+  const unreadTotalsByConnection = unreadByConnection(unreadMap);
   const bridgeList = [...connections].sort((a, b) => {
     const ta = connectionActivity[a.id] ?? 0;
     const tb = connectionActivity[b.id] ?? 0;
@@ -297,6 +309,11 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     >
                       {conn.name}
                     </span>
+                    {(unreadTotalsByConnection[conn.id] ?? 0) > 0 && (
+                      <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
+                        {formatUnread(unreadTotalsByConnection[conn.id] ?? 0)}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>

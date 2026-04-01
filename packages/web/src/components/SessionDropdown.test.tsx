@@ -151,6 +151,42 @@ describe("SessionDropdown", () => {
     expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
   });
 
+  it("shows unread badge per connection as sum of its session unread counts", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [
+        { id: "c1", name: "First", connected: true },
+        { id: "c2", name: "Second", connected: true },
+      ],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [{ key: "a", connectionId: "c1", createdAt: 1, lastActiveAt: 1 }],
+        c2: [{ key: "b", connectionId: "c2", createdAt: 2, lastActiveAt: 2 }],
+      },
+      activeSessionKey: { c1: "a", c2: "b" },
+      unread: {
+        [makeChatKey("c1", "a")]: 2,
+        [makeChatKey("c1", "x")]: 3,
+        [makeChatKey("c2", "b")]: 4,
+      },
+      taskStateByConnection: {},
+    });
+
+    render(<SessionDropdown />);
+    await user.click(screen.getByRole("button", { name: /First/ }));
+
+    const connectionSection = screen.getByText("连接").parentElement;
+    expect(connectionSection).toBeTruthy();
+    const connectionButtons = connectionSection?.querySelectorAll("button");
+    expect(connectionButtons).toHaveLength(2);
+    expect(connectionButtons?.[0]).toHaveTextContent("First");
+    expect(connectionButtons?.[0]).toHaveTextContent("5");
+    expect(connectionButtons?.[1]).toHaveTextContent("Second");
+    expect(connectionButtons?.[1]).toHaveTextContent("4");
+  });
+
   it("sorts connections by latest message time", async () => {
     const user = userEvent.setup();
     useConnectionStore.setState({
