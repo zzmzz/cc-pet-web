@@ -12,7 +12,6 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
-import { isTauri } from "./lib/platform.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
