@@ -16,6 +16,33 @@ describe("groupMessages", () => {
     ]);
   });
 
+  it("ignores whitespace-only assistant between tool calls (keeps one tool-group)", () => {
+    const msgs = [
+      msg("1", "user", "run tools"),
+      msg("2", "assistant", '🔧 **工具 #1: Read**\n---\n`a`'),
+      msg("3", "assistant", "\n\n\n"),
+      msg("4", "assistant", '🔧 **工具 #2: Bash**\n---\n`b`'),
+      msg("5", "assistant", "完成"),
+    ];
+    const items = groupMessages(msgs);
+    expect(items).toHaveLength(3);
+    expect(items[1]).toMatchObject({ kind: "tool-group", done: true });
+    expect((items[1] as Extract<RenderItem, { kind: "tool-group" }>).messages).toHaveLength(2);
+    expect(items[2]).toEqual({ kind: "message", message: msgs[4] });
+  });
+
+  it("drops whitespace-only assistant between user and text reply", () => {
+    const msgs = [
+      msg("1", "user", "hi"),
+      msg("2", "assistant", "  \n  "),
+      msg("3", "assistant", "hello"),
+    ];
+    const items = groupMessages(msgs);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toEqual({ kind: "message", message: msgs[0] });
+    expect(items[1]).toEqual({ kind: "message", message: msgs[2] });
+  });
+
   it("groups consecutive tool call messages", () => {
     const msgs = [
       msg("1", "user", "shorten this link"),
