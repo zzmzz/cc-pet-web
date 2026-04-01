@@ -37,14 +37,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   if (isMobile) {
     return (
-      <div className="flex flex-col h-screen bg-surface">
-        <header className={TOP_BAR_CLASS}>
+      <div className="flex h-[100dvh] flex-col bg-surface">
+        <header className={`${TOP_BAR_CLASS} sticky top-0 z-20`}>
           <PetMini />
           <div className="flex-1 min-w-0">
             <SessionDropdown />
           </div>
         </header>
-        <main className="flex-1 overflow-hidden">{children}</main>
+        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
     );
   }

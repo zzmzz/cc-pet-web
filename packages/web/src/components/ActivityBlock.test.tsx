@@ -26,6 +26,23 @@ describe("ActivityBlock", () => {
     expect(screen.getByText("工具调用中…")).toBeInTheDocument();
   });
 
+  it("supports click toggle raw detail in progress state", () => {
+    const longRaw = "curl -sG https://example.com/api/with/a/very/long/path/and/query?x=1&y=2";
+    const toolWithLongDetail = toolMsg("t-long", `🔧 **工具 #9: Bash**\n---\n\`\`\`bash\n${longRaw}\n\`\`\``);
+    render(<ActivityBlock messages={[toolWithLongDetail]} done={false} />);
+
+    expect(screen.getByText("▸")).toBeInTheDocument();
+    const detailPre = screen.getByText(longRaw);
+    expect(detailPre.className).toContain("hidden");
+
+    fireEvent.click(screen.getByText("▸"));
+    expect(screen.getByText("▾")).toBeInTheDocument();
+    expect(detailPre.className).toContain("block");
+
+    fireEvent.click(detailPre);
+    expect(detailPre.className).toContain("block");
+  });
+
   it("renders collapsed done state by default", () => {
     render(<ActivityBlock messages={TOOL_MSGS} done={true} />);
 
@@ -54,6 +71,39 @@ describe("ActivityBlock", () => {
 
     fireEvent.click(screen.getByText(/已执行 4 个操作/));
     expect(screen.queryByText(/🔧 Read/)).not.toBeInTheDocument();
+  });
+
+  it("supports click toggle for long raw detail", () => {
+    const longRaw = "curl -sG https://example.com/api/with/a/very/long/path/and/query?x=1&y=2";
+    const toolWithLongDetail = toolMsg("t-long", `🔧 **工具 #9: Bash**\n---\n\`\`\`bash\n${longRaw}\n\`\`\``);
+    render(<ActivityBlock messages={[toolWithLongDetail]} done={true} />);
+
+    fireEvent.click(screen.getByText(/已执行 1 个操作/));
+    expect(screen.getByText("▸")).toBeInTheDocument();
+    const detailPre = screen.getByText(longRaw);
+    expect(detailPre.className).toContain("hidden");
+
+    fireEvent.click(screen.getByText("▸"));
+    expect(screen.getByText("▾")).toBeInTheDocument();
+    expect(detailPre.className).toContain("block");
+
+    fireEvent.click(screen.getByText("▾"));
+    expect(detailPre.className).toContain("hidden");
+  });
+
+  it("keeps detail expanded when clicking on raw content", () => {
+    const longRaw = "curl -sG https://example.com/api/with/a/very/long/path/and/query?x=1&y=2";
+    const toolWithLongDetail = toolMsg("t-long", `🔧 **工具 #9: Bash**\n---\n\`\`\`bash\n${longRaw}\n\`\`\``);
+    render(<ActivityBlock messages={[toolWithLongDetail]} done={true} />);
+
+    fireEvent.click(screen.getByText(/已执行 1 个操作/));
+    fireEvent.click(screen.getByText("▸"));
+
+    const detailPre = screen.getByText(longRaw);
+    expect(detailPre.className).toContain("block");
+
+    fireEvent.click(detailPre);
+    expect(detailPre.className).toContain("block");
   });
 
   it("shows single item without count text in progress", () => {

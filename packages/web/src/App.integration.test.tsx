@@ -35,6 +35,7 @@ class FakeAdapter implements PlatformAPI {
 
 const adapter = new FakeAdapter();
 const fetchMock = vi.fn();
+const requestPermissionMock = vi.fn<() => Promise<NotificationPermission>>();
 
 vi.mock("./lib/web-adapter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/web-adapter.js")>();
@@ -65,6 +66,18 @@ const INPUT_PLACEHOLDER = "输入消息，Enter 发送，Shift+Enter 换行";
 
 describe("App integration", () => {
   beforeEach(() => {
+    requestPermissionMock.mockReset();
+    requestPermissionMock.mockResolvedValue("granted");
+    class MockNotification {
+      static permission: NotificationPermission = "default";
+      static requestPermission = requestPermissionMock;
+      onclick: ((this: Notification, ev: Event) => any) | null = null;
+      onerror: ((this: Notification, ev: Event) => any) | null = null;
+      close = vi.fn();
+      constructor(_title: string, _options?: NotificationOptions) {}
+    }
+    vi.stubGlobal("Notification", MockNotification);
+
     vi.stubGlobal("fetch", fetchMock);
     cleanup();
     resetStores();
@@ -138,6 +151,28 @@ describe("App integration", () => {
     });
   });
 
+  it("defers notification permission request on iOS until user interaction", async () => {
+    const userAgentSpy = vi
+      .spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+      );
+    try {
+      render(<App />);
+      await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(requestPermissionMock).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => {
+        expect(requestPermissionMock).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      userAgentSpy.mockRestore();
+    }
+  });
+
   it("shows switchable connection list in desktop sidebar when multiple bridges are configured", async () => {
     const user = userEvent.setup();
     adapter.connectWs.mockImplementation(() => {
@@ -155,6 +190,37 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(useConnectionStore.getState().activeConnectionId).toBe("cs-connect");
     });
+  });
+
+  it("keeps mobile session bar visible with sticky top layout", async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 390,
+    });
+    window.dispatchEvent(new Event("resize"));
+    try {
+      render(<App />);
+      await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+      await waitFor(() => {
+        const banner = document.querySelector("header");
+        const mobileRoot = banner?.parentElement;
+        expect(banner).not.toBeNull();
+        expect(mobileRoot).not.toBeNull();
+        expect(banner?.className).toContain("sticky");
+        expect(banner?.className).toContain("top-0");
+        expect(mobileRoot?.className).toContain("h-[100dvh]");
+      });
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: originalWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
   });
 
   it("routes incoming text to payload session when active session differs (no cross-session mix)", async () => {

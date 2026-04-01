@@ -18,6 +18,7 @@ import {
   requestNotificationPermission,
   shouldShowNotification,
   sendTaskCompletionNotification,
+  shouldRequestPermissionOnUserGesture,
 } from "./lib/notification.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
@@ -97,6 +98,7 @@ export default function App() {
     let activeAdapter: PlatformAPI | null = null;
     let isPageHidden = typeof document !== "undefined" && document.hidden;
     let permissionRequestTimer: ReturnType<typeof setTimeout> | null = null;
+    let detachPermissionGestureListeners: (() => void) | null = null;
 
     const subscribeWs = (adapter: PlatformAPI): void => {
       unsub = adapter.onWsEvent((type, payload) => {
@@ -402,11 +404,27 @@ export default function App() {
     if (!isTauri() && checkNotificationSupport()) {
       const permission = getNotificationPermission();
       if (permission === "default") {
-        permissionRequestTimer = setTimeout(() => {
-          if (!cancelled) {
+        if (shouldRequestPermissionOnUserGesture() && typeof document !== "undefined") {
+          const requestOnFirstInteraction = (): void => {
+            if (cancelled) return;
+            detachPermissionGestureListeners?.();
+            detachPermissionGestureListeners = null;
             void requestNotificationPermission();
-          }
-        }, 3000);
+          };
+          const options: AddEventListenerOptions = { once: true, passive: true };
+          document.addEventListener("pointerdown", requestOnFirstInteraction, options);
+          document.addEventListener("keydown", requestOnFirstInteraction, options);
+          detachPermissionGestureListeners = () => {
+            document.removeEventListener("pointerdown", requestOnFirstInteraction);
+            document.removeEventListener("keydown", requestOnFirstInteraction);
+          };
+        } else {
+          permissionRequestTimer = setTimeout(() => {
+            if (!cancelled) {
+              void requestNotificationPermission();
+            }
+          }, 3000);
+        }
       }
     }
 
@@ -442,6 +460,8 @@ export default function App() {
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibilityChange);
       }
+      detachPermissionGestureListeners?.();
+      detachPermissionGestureListeners = null;
       unsub?.();
       activeAdapter?.disconnectWs();
     };

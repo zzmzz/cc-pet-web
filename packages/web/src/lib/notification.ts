@@ -21,6 +21,25 @@ export function checkNotificationSupport(): boolean {
 }
 
 /**
+ * iOS Safari and iOS-based browsers are stricter about permission prompts.
+ * We delay permission requests until a user gesture is captured.
+ */
+export function isIOSBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  const maxTouchPoints = navigator.maxTouchPoints || 0;
+  const isIOSUA = /\b(iPad|iPhone|iPod)\b/i.test(ua);
+  // iPadOS 13+ may identify as MacIntel while still being touch-first.
+  const isIPadOS = platform === "MacIntel" && maxTouchPoints > 1;
+  return isIOSUA || isIPadOS;
+}
+
+export function shouldRequestPermissionOnUserGesture(): boolean {
+  return isIOSBrowser();
+}
+
+/**
  * Get current notification permission status
  */
 export function getNotificationPermission(): NotificationPermission {
