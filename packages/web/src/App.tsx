@@ -11,31 +11,9 @@ import { useMessageStore } from "./lib/store/message.js";
 import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
-import { hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
+import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
-
-function pickMostRecentlyMessagedConnection(connectionIds: string[]): string | null {
-  const messagesByChat = useMessageStore.getState().messagesByChat;
-  let bestConnectionId: string | null = null;
-  let bestTimestamp = -1;
-
-  for (const connectionId of connectionIds) {
-    let latest = -1;
-    const prefix = `${connectionId}::`;
-    for (const [chatKey, messages] of Object.entries(messagesByChat)) {
-      if (!chatKey.startsWith(prefix) || !Array.isArray(messages) || messages.length === 0) continue;
-      const ts = Math.max(...messages.map((m) => m.timestamp));
-      if (ts > latest) latest = ts;
-    }
-    if (latest > bestTimestamp) {
-      bestTimestamp = latest;
-      bestConnectionId = connectionId;
-    }
-  }
-
-  return bestConnectionId ?? connectionIds[0] ?? null;
-}
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -129,8 +107,7 @@ export default function App() {
                 adapter,
                 bridges.map((b) => b.id),
               );
-              const bestConnectionId = pickMostRecentlyMessagedConnection(bridges.map((b) => b.id));
-              useConnectionStore.getState().setActiveConnection(bestConnectionId);
+              applyDefaultFocusAfterHydrate(bridges.map((b) => b.id));
             } finally {
               if (!cancelled) setReady(true);
             }

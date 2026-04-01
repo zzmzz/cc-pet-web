@@ -521,6 +521,63 @@ describe("App integration", () => {
     });
   });
 
+  it("defaults active session to newest message in connection, not API lastActiveAt order", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
+    });
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return {
+          sessions: [
+            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 },
+            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 100 },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) {
+        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
+        if (chatKey === makeChatKey("cc-connect", "s-old")) {
+          return {
+            messages: [
+              {
+                id: "a",
+                role: "user",
+                content: "older",
+                timestamp: 1000,
+                connectionId: "cc-connect",
+                sessionKey: "s-old",
+              },
+            ],
+          };
+        }
+        if (chatKey === makeChatKey("cc-connect", "s-new")) {
+          return {
+            messages: [
+              {
+                id: "b",
+                role: "user",
+                content: "newer",
+                timestamp: 5000,
+                connectionId: "cc-connect",
+                sessionKey: "s-new",
+              },
+            ],
+          };
+        }
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("s-new");
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
+    });
+  });
+
   it("sends message to websocket and renders incoming bridge reply", async () => {
     const user = userEvent.setup();
     render(<App />);

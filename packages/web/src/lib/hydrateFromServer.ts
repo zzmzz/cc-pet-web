@@ -1,8 +1,78 @@
-import { makeChatKey } from "@cc-pet/shared";
+import { makeChatKey, parseChatKey } from "@cc-pet/shared";
 import type { ChatMessage, Session } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
+import { useConnectionStore } from "./store/connection.js";
 import { useMessageStore } from "./store/message.js";
 import { useSessionStore } from "./store/session.js";
+
+function latestMessageTimestamp(messages: ChatMessage[]): number {
+  return Math.max(...messages.map((m) => m.timestamp));
+}
+
+/** 该连接下任意 chat 中最新消息时间最晚的 sessionKey；无消息则 null。 */
+function pickLatestMessagedSessionForConnection(connectionId: string): string | null {
+  const messagesByChat = useMessageStore.getState().messagesByChat;
+  const prefix = `${connectionId}::`;
+  let bestSession: string | null = null;
+  let bestTs = -1;
+  for (const [chatKey, messages] of Object.entries(messagesByChat)) {
+    if (!chatKey.startsWith(prefix) || !Array.isArray(messages) || messages.length === 0) continue;
+    const sessionKey = chatKey.slice(prefix.length);
+    const ts = latestMessageTimestamp(messages);
+    if (ts > bestTs) {
+      bestTs = ts;
+      bestSession = sessionKey;
+    }
+  }
+  return bestSession;
+}
+
+/** 在若干连接中，全局最新消息所在的 connection + session；无消息则 null。 */
+function pickLatestMessagedChat(connectionIds: string[]): { connectionId: string; sessionKey: string } | null {
+  const idSet = new Set(connectionIds);
+  const messagesByChat = useMessageStore.getState().messagesByChat;
+  let best: { connectionId: string; sessionKey: string } | null = null;
+  let bestTs = -1;
+  for (const [chatKey, messages] of Object.entries(messagesByChat)) {
+    if (!Array.isArray(messages) || messages.length === 0) continue;
+    let parsed: { connectionId: string; sessionKey: string };
+    try {
+      parsed = parseChatKey(chatKey);
+    } catch {
+      continue;
+    }
+    if (!idSet.has(parsed.connectionId)) continue;
+    const ts = latestMessageTimestamp(messages);
+    if (ts > bestTs) {
+      bestTs = ts;
+      best = parsed;
+    }
+  }
+  return best;
+}
+
+/**
+ * Hydrate 写入消息后：每个连接默认选中「该连接下最后有消息的会话」；
+ * 当前展示连接选「全局最新消息」所在连接。
+ */
+export function applyDefaultFocusAfterHydrate(connectionIds: string[]): void {
+  if (connectionIds.length === 0) {
+    useConnectionStore.getState().setActiveConnection(null);
+    return;
+  }
+  const sessionStore = useSessionStore.getState();
+  for (const cid of connectionIds) {
+    const fromMessages = pickLatestMessagedSessionForConnection(cid);
+    if (fromMessages) {
+      sessionStore.setActiveSession(cid, fromMessages);
+    } else {
+      const list = sessionStore.sessions[cid] ?? [];
+      sessionStore.setActiveSession(cid, list[0]?.key ?? "default");
+    }
+  }
+  const global = pickLatestMessagedChat(connectionIds);
+  useConnectionStore.getState().setActiveConnection(global?.connectionId ?? connectionIds[0] ?? null);
+}
 
 /**
  * After bridge manifest (connection ids), pull sessions + per-chat history from the server.
@@ -56,7 +126,6 @@ export async function hydrateSessionsAndHistory(adapter: PlatformAPI, connection
       }
 
       useSessionStore.getState().setSessions(connectionId, sessions);
-      useSessionStore.getState().setActiveSession(connectionId, sessions[0]!.key);
 
       for (const sess of sessions) {
         const ck = makeChatKey(connectionId, sess.key);
