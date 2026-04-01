@@ -12,6 +12,13 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
+import {
+  checkNotificationSupport,
+  getNotificationPermission,
+  requestNotificationPermission,
+  shouldShowNotification,
+  sendTaskCompletionNotification,
+} from "./lib/notification.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
@@ -88,6 +95,8 @@ export default function App() {
     const typingActiveByChatKey: Record<string, boolean> = {};
     const stickySessionByConnection: Record<string, string> = {};
     let activeAdapter: PlatformAPI | null = null;
+    let isPageHidden = typeof document !== "undefined" && document.hidden;
+    let permissionRequestTimer: ReturnType<typeof setTimeout> | null = null;
 
     const subscribeWs = (adapter: PlatformAPI): void => {
       unsub = adapter.onWsEvent((type, payload) => {
@@ -183,6 +192,36 @@ export default function App() {
           return false;
         };
 
+        /** Get last message content for notification */
+        const getLastMessageContent = (chatKey: string): string => {
+          const messageStore = useMessageStore.getState();
+          // Check streaming content first
+          const streaming = messageStore.streamingContent[chatKey];
+          if (streaming && streaming.trim().length > 0) {
+            return streaming;
+          }
+          // Otherwise get last assistant message
+          const messages = messageStore.messages[chatKey] ?? [];
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "assistant") {
+              return messages[i].content;
+            }
+          }
+          return "";
+        };
+
+        /** Send notification if conditions are met */
+        const trySendNotification = (cid: string, sKey: string): void => {
+          if (!cid || !sKey) return;
+          if (isTauri()) return; // Skip for Tauri desktop app
+
+          if (shouldShowNotification(cid, sKey, isPageHidden)) {
+            const ck = makeChatKey(cid, sKey);
+            const content = getLastMessageContent(ck);
+            sendTaskCompletionNotification(content, cid, sKey);
+          }
+        };
+
         switch (type) {
           case WS_EVENTS.BRIDGE_CONNECTED:
             if (connectionId) {
@@ -218,7 +257,11 @@ export default function App() {
               connectionId,
               sessionKey: resolvedSessionKey,
             });
-            setTaskPhase(isTypingActiveForSession() ? "working" : "completed");
+            const isCompleted = !isTypingActiveForSession();
+            setTaskPhase(isCompleted ? "completed" : "working");
+            if (isCompleted && connectionId && resolvedSessionKey) {
+              trySendNotification(connectionId, resolvedSessionKey);
+            }
             if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
               setPetStateSafely("idle");
             }
@@ -243,7 +286,11 @@ export default function App() {
           }
           case WS_EVENTS.BRIDGE_STREAM_DONE:
             useMessageStore.getState().finalizeStream(chatKey, payload.fullText);
-            setTaskPhase(isTypingActiveForSession() ? "working" : "completed");
+            const isStreamCompleted = !isTypingActiveForSession();
+            setTaskPhase(isStreamCompleted ? "completed" : "working");
+            if (isStreamCompleted && connectionId && resolvedSessionKey) {
+              trySendNotification(connectionId, resolvedSessionKey);
+            }
             if (useSessionStore.getState().hasAnyUnread()) {
               setPetStateSafely("talking");
             } else {
@@ -291,7 +338,11 @@ export default function App() {
                 },
               ],
             });
-            setTaskPhase(isTypingActiveForSession() ? "working" : "completed");
+            const isFileCompleted = !isTypingActiveForSession();
+            setTaskPhase(isFileCompleted ? "completed" : "working");
+            if (isFileCompleted && connectionId && resolvedSessionKey) {
+              trySendNotification(connectionId, resolvedSessionKey);
+            }
             break;
           case WS_EVENTS.BRIDGE_TYPING_START:
             if (chatKey) typingActiveByChatKey[chatKey] = true;
@@ -305,6 +356,9 @@ export default function App() {
             }
             typingActiveByChatKey[chatKey] = false;
             setTaskPhase("completed");
+            if (connectionId && resolvedSessionKey) {
+              trySendNotification(connectionId, resolvedSessionKey);
+            }
             setPetStateSafely("idle");
             break;
           case WS_EVENTS.BRIDGE_SKILLS_UPDATED: {
@@ -336,6 +390,26 @@ export default function App() {
       });
     };
 
+    // Initialize visibility tracking
+    const handleVisibilityChange = () => {
+      isPageHidden = document.hidden;
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    // Request notification permission (delayed, non-blocking)
+    if (!isTauri() && checkNotificationSupport()) {
+      const permission = getNotificationPermission();
+      if (permission === "default") {
+        permissionRequestTimer = setTimeout(() => {
+          if (!cancelled) {
+            void requestNotificationPermission();
+          }
+        }, 3000);
+      }
+    }
+
     const boot = async () => {
       const adapter = isTauri()
         ? (await import("./lib/tauri-adapter.js")).createTauriAdapter("", authToken)
@@ -360,6 +434,13 @@ export default function App() {
       if (happyAfterConnectTimer != null) {
         clearTimeout(happyAfterConnectTimer);
         happyAfterConnectTimer = null;
+      }
+      if (permissionRequestTimer != null) {
+        clearTimeout(permissionRequestTimer);
+        permissionRequestTimer = null;
+      }
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
       }
       unsub?.();
       activeAdapter?.disconnectWs();
