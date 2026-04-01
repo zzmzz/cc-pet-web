@@ -57,7 +57,7 @@ function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
   useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
-  useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false });
+  useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false, windowMode: "chat" });
   useCommandStore.setState({ agentCommandsByConnection: {} });
 }
 

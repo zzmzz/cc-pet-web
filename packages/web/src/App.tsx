@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
-import { setPlatform } from "./lib/platform.js";
+import { setPlatform, isTauri, type PlatformAPI } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
@@ -110,10 +110,9 @@ export default function App() {
     let unsub: (() => void) | null = null;
     const typingActiveByChatKey: Record<string, boolean> = {};
     const stickySessionByConnection: Record<string, string> = {};
-    const adapter = createWebAdapter("", authToken);
-    setPlatform(adapter);
+    let activeAdapter: PlatformAPI | null = null;
 
-    const subscribeWs = (): void => {
+    const subscribeWs = (adapter: PlatformAPI): void => {
       unsub = adapter.onWsEvent((type, payload) => {
         const setPetStateSafely = (state: PetState): void => {
           const shouldForceThinking = useSessionStore.getState().hasProcessingSessions();
@@ -361,8 +360,24 @@ export default function App() {
       });
     };
 
-    subscribeWs();
-    adapter.connectWs();
+    const boot = async () => {
+      const adapter = isTauri()
+        ? (await import("./lib/tauri-adapter.js")).createTauriAdapter("", authToken)
+        : createWebAdapter("", authToken);
+      if (cancelled) return;
+      activeAdapter = adapter;
+      setPlatform(adapter);
+
+      if (isTauri()) {
+        useUIStore.getState().setWindowMode("pet");
+        adapter.setWindowMode?.("pet");
+      }
+
+      subscribeWs(adapter);
+      adapter.connectWs();
+    };
+
+    void boot();
 
     return () => {
       cancelled = true;
@@ -371,7 +386,7 @@ export default function App() {
         happyAfterConnectTimer = null;
       }
       unsub?.();
-      adapter.disconnectWs();
+      activeAdapter?.disconnectWs();
     };
   }, [authToken]);
 

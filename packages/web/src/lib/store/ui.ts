@@ -1,15 +1,18 @@
 import { create } from "zustand";
 
 export type PetState = "idle" | "thinking" | "talking" | "happy" | "error";
+export type WindowMode = "pet" | "chat";
 
 interface UIState {
   chatOpen: boolean;
   petState: PetState;
   isMobile: boolean;
+  windowMode: WindowMode;
 
   setChatOpen: (open: boolean) => void;
   setPetState: (state: PetState) => void;
   setIsMobile: (mobile: boolean) => void;
+  setWindowMode: (mode: WindowMode) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -17,8 +20,10 @@ export const useUIStore = create<UIState>((set) => ({
   chatOpen: true,
   petState: "idle",
   isMobile: false,
+  windowMode: "chat",
 
   setChatOpen: (open) => set({ chatOpen: open }),
   setPetState: (petState) => set({ petState }),
   setIsMobile: (isMobile) => set({ isMobile }),
+  setWindowMode: (mode) => set({ windowMode: mode, chatOpen: mode === "chat" }),
 }));

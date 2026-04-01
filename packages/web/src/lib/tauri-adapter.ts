@@ -1,31 +1,47 @@
 import type { PlatformAPI } from "./platform.js";
 import { createWebAdapter } from "./web-adapter.js";
 
-/** Desktop entry: wraps `createWebAdapter` (inbound session routing lives in the web adapter). */
-export async function createTauriAdapter(serverUrl: string, token: string): Promise<PlatformAPI> {
+/** Desktop entry: wraps `createWebAdapter` with Tauri window control commands (soft-degrading). */
+export function createTauriAdapter(serverUrl: string, token: string): PlatformAPI {
   const base = createWebAdapter(serverUrl, token);
 
   return {
     ...base,
 
     async setWindowMode(mode) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("set_window_mode", { mode });
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_window_mode", { mode });
+      } catch (e) {
+        console.warn("[cc-pet] setWindowMode failed:", e);
+      }
     },
 
     async setAlwaysOnTop(value) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("set_always_on_top", { value });
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_always_on_top", { value });
+      } catch (e) {
+        console.warn("[cc-pet] setAlwaysOnTop failed:", e);
+      }
     },
 
     async setOpacity(value) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("set_opacity", { value });
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_opacity", { value });
+      } catch (e) {
+        console.warn("[cc-pet] setOpacity failed:", e);
+      }
     },
 
     async startDrag() {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("start_drag");
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("start_drag");
+      } catch (e) {
+        console.warn("[cc-pet] startDrag failed:", e);
+      }
     },
   };
 }

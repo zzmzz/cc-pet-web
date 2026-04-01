@@ -1,7 +1,7 @@
 import { motion, type TargetAndTransition } from "framer-motion";
 import { useEffect, useState } from "react";
-import { useUIStore, type PetState } from "../lib/store/ui.js";
-import { isTauri } from "../lib/platform.js";
+import { useUIStore, type PetState, type WindowMode } from "../lib/store/ui.js";
+import { isTauri, getPlatform } from "../lib/platform.js";
 
 import idleImg from "../assets/pet/idle.png";
 import thinkingImg from "../assets/pet/thinking.png";
@@ -111,14 +111,35 @@ export function PetFull() {
   const petState = useUIStore((s) => s.petState);
   const chatOpen = useUIStore((s) => s.chatOpen);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
+  const windowMode = useUIStore((s) => s.windowMode);
+  const setWindowMode = useUIStore((s) => s.setWindowMode);
   const petImage = usePetImage(petState);
+
+  const handleDesktopToggle = () => {
+    const newMode: WindowMode = windowMode === "pet" ? "chat" : "pet";
+    setWindowMode(newMode);
+    getPlatform().setWindowMode?.(newMode);
+  };
 
   return (
     <motion.div
       className="cursor-pointer select-none"
       animate={STATE_ANIMATIONS[petState]}
-      onClick={() => !isTauri() && setChatOpen(!chatOpen)}
-      onDoubleClick={() => isTauri() && setChatOpen(!chatOpen)}
+      onClick={() => {
+        if (isTauri()) {
+          if (windowMode === "chat") handleDesktopToggle();
+        } else {
+          setChatOpen(!chatOpen);
+        }
+      }}
+      onDoubleClick={() => {
+        if (isTauri() && windowMode === "pet") handleDesktopToggle();
+      }}
+      onMouseDown={() => {
+        if (isTauri() && windowMode === "pet") {
+          void getPlatform().startDrag?.();
+        }
+      }}
     >
       <img
         src={petImage}
@@ -137,13 +158,21 @@ export function PetMini() {
   const petState = useUIStore((s) => s.petState);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const chatOpen = useUIStore((s) => s.chatOpen);
+  const setWindowMode = useUIStore((s) => s.setWindowMode);
   const petImage = usePetImage(petState);
 
   return (
     <motion.button
       className={`w-8 h-8 rounded-full border-2 ${STATE_COLORS[petState]} overflow-hidden flex-shrink-0 bg-surface-tertiary`}
       animate={STATE_ANIMATIONS[petState]}
-      onClick={() => setChatOpen(!chatOpen)}
+      onClick={() => {
+        if (isTauri()) {
+          setWindowMode("pet");
+          getPlatform().setWindowMode?.("pet");
+        } else {
+          setChatOpen(!chatOpen);
+        }
+      }}
     >
       <img
         src={petImage}

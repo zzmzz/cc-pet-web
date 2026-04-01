@@ -1,5 +1,6 @@
 import { Fragment, useEffect } from "react";
 import { useUIStore } from "../lib/store/ui.js";
+import { isTauri } from "../lib/platform.js";
 import { PetFull, PetMini } from "./Pet.js";
 import { SessionDropdown } from "./SessionDropdown.js";
 
@@ -9,6 +10,7 @@ const TOP_BAR_CLASS =
 export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
   const setIsMobile = useUIStore((s) => s.setIsMobile);
+  const windowMode = useUIStore((s) => s.windowMode);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -16,6 +18,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
     window.addEventListener("resize", check);
     return () => window.removeEventListener("resize", check);
   }, [setIsMobile]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    document.body.style.background = windowMode === "pet" ? "transparent" : "";
+    return () => {
+      document.body.style.background = "";
+    };
+  }, [windowMode]);
+
+  if (isTauri() && windowMode === "pet") {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center">
+        <PetFull />
+      </div>
+    );
+  }
 
   if (isMobile) {
     return (

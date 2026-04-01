@@ -5,7 +5,7 @@ import { useUIStore } from "../lib/store/ui.js";
 
 describe("Pet", () => {
   beforeEach(() => {
-    useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false });
+    useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false, windowMode: "chat" });
     localStorage.clear();
     localStorage.setItem("cc-pet-token", "pet-token");
     vi.restoreAllMocks();

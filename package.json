@@ -5,6 +5,7 @@
     "dev:server": "CC_PET_DATA_DIR=\"$INIT_CWD/.data\" pnpm --filter @cc-pet/server dev",
     "dev:web": "pnpm --filter @cc-pet/web dev",
     "dev": "pnpm run dev:server & pnpm run dev:web",
+    "dev:desktop": "pnpm run dev:server & pnpm run dev:web & pnpm --filter @cc-pet/desktop dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @cc-pet/server test -- tests/e2e-connect-regression.test.ts && pnpm --filter @cc-pet/web test -- src/App.integration.test.tsx",

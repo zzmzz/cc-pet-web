@@ -11,8 +11,8 @@
     "windows": [
       {
         "title": "CC Pet",
-        "width": 360,
-        "height": 500,
+        "width": 200,
+        "height": 220,
         "resizable": true,
         "transparent": true,
         "decorations": false,
