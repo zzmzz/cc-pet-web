@@ -3,11 +3,6 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  build: {
-    rollupOptions: {
-      external: ["@tauri-apps/api/core", "@tauri-apps/api/event"],
-    },
-  },
   server: {
     port: 1420,
     proxy: {
