@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
-import { PetFull } from "./Pet.js";
+import { PetFull, PetMini } from "./Pet.js";
 import { useUIStore } from "../lib/store/ui.js";
 
 describe("Pet", () => {
@@ -31,5 +31,21 @@ describe("Pet", () => {
         headers: { Authorization: "Bearer pet-token" },
       });
     });
+  });
+
+  it("renders mini pet with transparent background", () => {
+    const { getByRole } = render(<PetMini />);
+    const button = getByRole("button");
+
+    expect(button.className).toContain("bg-transparent");
+    expect(button.className).not.toContain("bg-surface-tertiary");
+  });
+
+  it("renders full pet image with transparent background", () => {
+    const { container } = render(<PetFull />);
+    const image = container.querySelector("img[alt='pet']");
+
+    expect(image).not.toBeNull();
+    expect(image.className).toContain("bg-transparent");
   });
 });

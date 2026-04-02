@@ -6,6 +6,7 @@
     "dev:web": "pnpm --filter @cc-pet/web dev",
     "dev": "pnpm run dev:server & pnpm run dev:web",
     "dev:desktop": "pnpm run dev:server & pnpm run dev:web & pnpm --filter @cc-pet/desktop dev",
+    "start:desktop": "bash scripts/start-desktop.sh",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @cc-pet/server test -- tests/e2e-connect-regression.test.ts && pnpm --filter @cc-pet/web test -- src/App.integration.test.tsx",

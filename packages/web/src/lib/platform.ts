@@ -6,10 +6,15 @@ export interface PlatformAPI {
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
 
-  setWindowMode?(mode: "pet" | "chat" | "settings"): void;
+  setWindowMode?(
+    mode: "pet" | "chat" | "settings",
+    opts?: { preserveSize?: boolean },
+  ): void | Promise<void>;
   setAlwaysOnTop?(value: boolean): void;
   setOpacity?(value: number): void;
   startDrag?(): void;
+  toggleVisibility?(): void;
+  quit?(): void;
 }
 
 let _platform: PlatformAPI | null = null;

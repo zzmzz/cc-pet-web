@@ -8,10 +8,13 @@ export function createTauriAdapter(serverUrl: string, token: string): PlatformAP
   return {
     ...base,
 
-    async setWindowMode(mode) {
+    async setWindowMode(mode, opts) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("set_window_mode", { mode });
+        await invoke("set_window_mode", {
+          mode,
+          preserveSize: opts?.preserveSize === true,
+        });
       } catch (e) {
         console.warn("[cc-pet] setWindowMode failed:", e);
       }
@@ -41,6 +44,24 @@ export function createTauriAdapter(serverUrl: string, token: string): PlatformAP
         await invoke("start_drag");
       } catch (e) {
         console.warn("[cc-pet] startDrag failed:", e);
+      }
+    },
+
+    async toggleVisibility() {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("toggle_window_visibility");
+      } catch (e) {
+        console.warn("[cc-pet] toggleVisibility failed:", e);
+      }
+    },
+
+    async quit() {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("quit_app");
+      } catch (e) {
+        console.warn("[cc-pet] quit failed:", e);
       }
     },
   };
