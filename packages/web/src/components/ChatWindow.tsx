@@ -84,8 +84,16 @@ export function ChatWindow() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!activeConnectionId) return;
     if (!text && pendingAttachments.length === 0) return;
+
+    if (pendingAttachments.length === 0 && text === "/settings") {
+      useUIStore.getState().setDesktopConfigOpen(true);
+      setInput("");
+      inputRef.current?.focus();
+      return;
+    }
+
+    if (!activeConnectionId) return;
 
     const runLocalCommand = async (): Promise<boolean> => {
       switch (text) {

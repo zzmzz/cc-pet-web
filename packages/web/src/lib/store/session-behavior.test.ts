@@ -11,7 +11,12 @@ const chatKey = makeChatKey(conn, sid);
 function resetStores() {
   useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
   useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
-  useUIStore.setState({ chatOpen: false, petState: "idle", isMobile: false });
+  useUIStore.setState({
+    chatOpen: false,
+    petState: "idle",
+    isMobile: false,
+    desktopConfigOpen: false,
+  });
 }
 
 describe("session store behavior", () => {

@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
-      external: ["@tauri-apps/api/core"],
+      external: ["@tauri-apps/api/core", "@tauri-apps/api/event"],
     },
   },
   server: {

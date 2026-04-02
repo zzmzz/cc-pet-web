@@ -121,7 +121,11 @@ export function PetFull() {
   const handleDesktopToggle = () => {
     const newMode: WindowMode = windowMode === "pet" ? "chat" : "pet";
     setWindowMode(newMode);
-    getPlatform().setWindowMode?.(newMode);
+    if (newMode === "chat") {
+      getPlatform().setWindowMode?.("chat", { anchorFromPet: true });
+    } else {
+      getPlatform().setWindowMode?.("pet");
+    }
   };
 
   useEffect(() => {
@@ -195,7 +199,7 @@ export function PetFull() {
             onClick={() => {
               setContextMenuOpen(false);
               setWindowMode("chat");
-              getPlatform().setWindowMode?.("chat");
+              getPlatform().setWindowMode?.("chat", { anchorFromPet: true });
             }}
           >
             打开聊天
@@ -209,7 +213,7 @@ export function PetFull() {
               setDesktopConfigOpen(true);
             }}
           >
-            连接配置
+            设置
           </button>
           <button
             className="block w-full rounded px-2 py-1 text-left text-xs text-text-primary hover:bg-surface"

@@ -183,7 +183,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface"
                 onClick={() => setDesktopConfigOpen(true)}
               >
-                连接配置
+                设置
               </button>
             </>
           ) : (
@@ -203,15 +203,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <header className={TOP_BAR_CLASS}>
           <PetMini />
           <TauriDragStrip className="ml-2 h-6 min-h-6 min-w-0 flex-1 cursor-move touch-none rounded-sm hover:bg-surface-tertiary/70 active:bg-surface-tertiary" />
-          {isTauri() ? (
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface"
-              onClick={() => setDesktopConfigOpen(true)}
-            >
-              连接配置
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface"
+            onClick={() => setDesktopConfigOpen(true)}
+          >
+            设置
+          </button>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside className="flex w-72 shrink-0 flex-col gap-4 border-r border-border bg-surface-secondary p-3">

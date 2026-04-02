@@ -5,6 +5,7 @@ import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
 import { LoginGate } from "./components/LoginGate.js";
+import { SettingsPanel } from "./components/SettingsPanel.js";
 import { useUIStore, type PetState } from "./lib/store/ui.js";
 import { useConnectionStore } from "./lib/store/connection.js";
 import { useMessageStore } from "./lib/store/message.js";
@@ -20,10 +21,31 @@ import {
   sendTaskCompletionNotification,
   shouldRequestPermissionOnUserGesture,
 } from "./lib/notification.js";
+import { getTauriServerBaseUrl } from "./lib/server-url.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
 export default function App() {
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const u = await listen("cc-pet-open-settings", () => {
+        useUIStore.getState().setDesktopConfigOpen(true);
+      });
+      if (cancelled) {
+        u();
+        return;
+      }
+      unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const [ready, setReady] = useState(false);
   const [authBooting, setAuthBooting] = useState(true);
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -429,8 +451,9 @@ export default function App() {
     }
 
     const boot = async () => {
+      const serverBase = isTauri() ? getTauriServerBaseUrl() : "";
       const adapter = isTauri()
-        ? (await import("./lib/tauri-adapter.js")).createTauriAdapter("", authToken)
+        ? (await import("./lib/tauri-adapter.js")).createTauriAdapter(serverBase, authToken)
         : createWebAdapter("", authToken);
       if (cancelled) return;
       activeAdapter = adapter;
@@ -472,8 +495,11 @@ export default function App() {
   if (!ready) return null;
 
   return (
-    <Layout>
-      <ChatWindow />
-    </Layout>
+    <>
+      <Layout>
+        <ChatWindow />
+      </Layout>
+      <SettingsPanel />
+    </>
   );
 }

@@ -8,7 +8,7 @@ export interface PlatformAPI {
 
   setWindowMode?(
     mode: "pet" | "chat" | "settings",
-    opts?: { preserveSize?: boolean },
+    opts?: { preserveSize?: boolean; anchorFromPet?: boolean },
   ): void | Promise<void>;
   setAlwaysOnTop?(value: boolean): void;
   setOpacity?(value: number): void;

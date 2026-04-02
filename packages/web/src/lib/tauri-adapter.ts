@@ -14,6 +14,7 @@ export function createTauriAdapter(serverUrl: string, token: string): PlatformAP
         await invoke("set_window_mode", {
           mode,
           preserveSize: opts?.preserveSize === true,
+          anchorFromPet: opts?.anchorFromPet === true,
         });
       } catch (e) {
         console.warn("[cc-pet] setWindowMode failed:", e);

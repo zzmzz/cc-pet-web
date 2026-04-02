@@ -8,11 +8,13 @@ interface UIState {
   petState: PetState;
   isMobile: boolean;
   windowMode: WindowMode;
+  desktopConfigOpen: boolean;
 
   setChatOpen: (open: boolean) => void;
   setPetState: (state: PetState) => void;
   setIsMobile: (mobile: boolean) => void;
   setWindowMode: (mode: WindowMode) => void;
+  setDesktopConfigOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -21,9 +23,11 @@ export const useUIStore = create<UIState>((set) => ({
   petState: "idle",
   isMobile: false,
   windowMode: "chat",
+  desktopConfigOpen: false,
 
   setChatOpen: (open) => set({ chatOpen: open }),
   setPetState: (petState) => set({ petState }),
   setIsMobile: (isMobile) => set({ isMobile }),
   setWindowMode: (mode) => set({ windowMode: mode, chatOpen: mode === "chat" }),
+  setDesktopConfigOpen: (open) => set({ desktopConfigOpen: open }),
 }));
