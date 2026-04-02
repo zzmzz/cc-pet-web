@@ -48,6 +48,15 @@ export function createTauriAdapter(serverUrl: string, token: string): PlatformAP
       }
     },
 
+    async savePetPosition() {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("save_pet_position");
+      } catch (e) {
+        console.warn("[cc-pet] savePetPosition failed:", e);
+      }
+    },
+
     async toggleVisibility() {
       try {
         const { invoke } = await import("@tauri-apps/api/core");

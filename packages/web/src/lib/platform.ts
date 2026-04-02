@@ -13,6 +13,7 @@ export interface PlatformAPI {
   setAlwaysOnTop?(value: boolean): void;
   setOpacity?(value: number): void;
   startDrag?(): void;
+  savePetPosition?(): void;
   toggleVisibility?(): void;
   quit?(): void;
 }

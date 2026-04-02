@@ -7,6 +7,7 @@ import { useMessageStore } from "../lib/store/message.js";
 import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform, isTauri } from "../lib/platform.js";
+import { closeDesktopChat } from "../lib/desktop-chat.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -264,7 +265,11 @@ export function ChatWindow() {
       }
 
       if (e.key === "Escape") {
-        useUIStore.getState().setChatOpen(false);
+        if (isTauri()) {
+          closeDesktopChat();
+        } else {
+          useUIStore.getState().setChatOpen(false);
+        }
       }
     },
     [slashMenuVisible, slashQuery, slashIndex, agentCommands, handleSlashSelect],

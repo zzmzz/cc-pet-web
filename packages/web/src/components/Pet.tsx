@@ -2,6 +2,7 @@ import { motion, type TargetAndTransition } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { useUIStore, type PetState, type WindowMode } from "../lib/store/ui.js";
 import { isTauri, getPlatform } from "../lib/platform.js";
+import { closeDesktopChat } from "../lib/desktop-chat.js";
 
 import idleImg from "../assets/pet/idle.png";
 import thinkingImg from "../assets/pet/thinking.png";
@@ -120,11 +121,11 @@ export function PetFull() {
 
   const handleDesktopToggle = () => {
     const newMode: WindowMode = windowMode === "pet" ? "chat" : "pet";
-    setWindowMode(newMode);
     if (newMode === "chat") {
+      setWindowMode("chat");
       getPlatform().setWindowMode?.("chat", { anchorFromPet: true });
     } else {
-      getPlatform().setWindowMode?.("pet");
+      closeDesktopChat();
     }
   };
 
@@ -138,6 +139,33 @@ export function PetFull() {
     document.addEventListener("mousedown", onDocDown);
     return () => document.removeEventListener("mousedown", onDocDown);
   }, [contextMenuOpen]);
+
+  useEffect(() => {
+    if (!isTauri() || windowMode !== "pet") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen("tauri://move", () => {
+          if (cancelled) return;
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => {
+            void getPlatform().savePetPosition?.();
+          }, 300);
+        }),
+      )
+      .then((u) => {
+        if (cancelled) { u(); return; }
+        unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [windowMode]);
 
   useEffect(() => {
     if (!isTauri() || windowMode !== "pet" || !contextMenuOpen) return;
@@ -243,7 +271,6 @@ export function PetMini() {
   const petState = useUIStore((s) => s.petState);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const chatOpen = useUIStore((s) => s.chatOpen);
-  const setWindowMode = useUIStore((s) => s.setWindowMode);
   const petImage = usePetImage(petState);
 
   return (
@@ -252,8 +279,7 @@ export function PetMini() {
       animate={STATE_ANIMATIONS[petState]}
       onClick={() => {
         if (isTauri()) {
-          setWindowMode("pet");
-          getPlatform().setWindowMode?.("pet");
+          closeDesktopChat();
         } else {
           setChatOpen(!chatOpen);
         }
