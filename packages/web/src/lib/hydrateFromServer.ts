@@ -62,13 +62,22 @@ export function applyDefaultFocusAfterHydrate(connectionIds: string[]): void {
   }
   const sessionStore = useSessionStore.getState();
   for (const cid of connectionIds) {
-    const fromMessages = pickLatestMessagedSessionForConnection(cid);
-    if (fromMessages) {
-      sessionStore.setActiveSession(cid, fromMessages);
-    } else {
-      const list = sessionStore.sessions[cid] ?? [];
-      sessionStore.setActiveSession(cid, list[0]?.key ?? "default");
+    const list = sessionStore.sessions[cid] ?? [];
+    const persistedActive = sessionStore.activeSessionKey[cid];
+    const hasPersistedActive = Boolean(
+      persistedActive && list.some((session) => session.key === persistedActive),
+    );
+    if (hasPersistedActive) {
+      sessionStore.setActiveSession(cid, persistedActive as string);
+      continue;
     }
+    const fromMessages = pickLatestMessagedSessionForConnection(cid);
+    sessionStore.setActiveSession(cid, fromMessages ?? list[0]?.key ?? "default");
+  }
+  const activeConnectionId = useConnectionStore.getState().activeConnectionId;
+  if (activeConnectionId && connectionIds.includes(activeConnectionId)) {
+    useConnectionStore.getState().setActiveConnection(activeConnectionId);
+    return;
   }
   const global = pickLatestMessagedChat(connectionIds);
   useConnectionStore.getState().setActiveConnection(global?.connectionId ?? connectionIds[0] ?? null);

@@ -4,6 +4,36 @@ import type { Session, SessionTaskState, TaskPhase } from "@cc-pet/shared";
 import { useMessageStore } from "./message.js";
 import { useUIStore } from "./ui.js";
 
+const ACTIVE_SESSION_STORAGE_KEY = "cc-pet-active-session-map";
+
+function readPersistedActiveSessionMap(): Record<string, string> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const result: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string" && v.length > 0) {
+        result[k] = v;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistActiveSessionMap(activeSessionKey: Record<string, string>): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(activeSessionKey));
+  } catch {
+    // Ignore storage errors; state still works in memory.
+  }
+}
+
 function hasAnyUnread(unread: Record<string, number>): boolean {
   return Object.values(unread).some((n) => (n ?? 0) > 0);
 }
@@ -81,14 +111,18 @@ interface SessionState {
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: {},
-  activeSessionKey: {},
+  activeSessionKey: readPersistedActiveSessionMap(),
   unread: {},
   taskStateByConnection: {},
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
   setActiveSession: (connectionId, key) =>
-    set((s) => ({ activeSessionKey: { ...s.activeSessionKey, [connectionId]: key } })),
+    set((s) => {
+      const next = { ...s.activeSessionKey, [connectionId]: key };
+      persistActiveSessionMap(next);
+      return { activeSessionKey: next };
+    }),
   setSessionTaskState: (connectionId, sessionKey, taskState) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
@@ -195,6 +229,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           delete nextActive[connectionId];
         }
       }
+      persistActiveSessionMap(nextActive);
 
       return {
         sessions: { ...s.sessions, [connectionId]: nextList },

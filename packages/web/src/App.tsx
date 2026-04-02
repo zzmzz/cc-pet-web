@@ -133,7 +133,6 @@ export default function App() {
           const bridges = (payload as { bridges?: { id: string; name: string }[] }).bridges ?? [];
           const connections = bridges.map((b) => ({ id: b.id, name: b.name, connected: false }));
           useConnectionStore.getState().setConnections(connections);
-          useConnectionStore.getState().setActiveConnection(connections[0]?.id ?? null);
           void (async () => {
             try {
               await hydrateSessionsAndHistory(
