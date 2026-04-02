@@ -1,5 +1,6 @@
-# 在 macOS / Windows 上分别打出当前平台的安装包（.dmg / .msi / .exe 等），并上传为 Artifact。
-# 触发：打 v* tag，或在 Actions 里手动运行 workflow。
+# 在 macOS / Windows 上分别打出当前平台的安装包（.dmg / .msi / .exe 等），
+# 上传为 Artifact；推送 v* tag 时还会创建 GitHub Release，并把安装包挂到 Release 资产里。
+# 触发：打 v* tag，或在 Actions 里手动运行 workflow（手动运行不会发 Release，仅 Artifact）。
 
 name: Desktop installers
 
@@ -62,3 +63,46 @@ jobs:
           name: cc-pet-${{ matrix.label }}-${{ github.ref_name }}
           path: packages/desktop/src-tauri/target/release/bundle/
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: tauri-bundle
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cc-pet-macos-${{ github.ref_name }}
+          path: dist/macos
+
+      - name: Download Windows bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cc-pet-windows-${{ github.ref_name }}
+          path: dist/windows
+
+      - name: Collect installer files for Release
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find dist -type f \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) -exec cp -f {} release-assets/ \;
+          count="$(find release-assets -type f | wc -l | tr -d ' ')"
+          if [ "$count" -eq 0 ]; then
+            echo "No .dmg/.msi/.exe found under dist"
+            exit 1
+          fi
+          ls -la release-assets
+
+      - name: Create Release and upload installers
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CC Pet ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
