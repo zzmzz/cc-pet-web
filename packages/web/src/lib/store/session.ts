@@ -5,6 +5,10 @@ import { useMessageStore } from "./message.js";
 import { useUIStore } from "./ui.js";
 
 const ACTIVE_SESSION_STORAGE_KEY = "cc-pet-active-session-map";
+const TASK_STATE_STORAGE_KEY = "cc-pet-task-state";
+
+/** Max age (ms) for a persisted task state entry to be considered valid after reload. */
+export const TASK_STATE_STALE_MS = 5 * 60 * 1000;
 
 function readPersistedActiveSessionMap(): Record<string, string> {
   if (typeof localStorage === "undefined") return {};
@@ -29,6 +33,49 @@ function persistActiveSessionMap(activeSessionKey: Record<string, string>): void
   if (typeof localStorage === "undefined") return;
   try {
     localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(activeSessionKey));
+  } catch {
+    // Ignore storage errors; state still works in memory.
+  }
+}
+
+function isValidTaskState(v: unknown): v is SessionTaskState {
+  if (!v || typeof v !== "object") return false;
+  const obj = v as Record<string, unknown>;
+  return typeof obj.phase === "string" && typeof obj.lastActivityAt === "number";
+}
+
+function readPersistedTaskState(): Record<string, Record<string, SessionTaskState>> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(TASK_STATE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const now = Date.now();
+    const result: Record<string, Record<string, SessionTaskState>> = {};
+    for (const [connId, sessions] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!sessions || typeof sessions !== "object") continue;
+      const validSessions: Record<string, SessionTaskState> = {};
+      for (const [sessKey, task] of Object.entries(sessions as Record<string, unknown>)) {
+        if (!isValidTaskState(task)) continue;
+        if (task.phase === "idle" || task.phase === "completed" || task.phase === "failed") continue;
+        if (task.lastActivityAt != null && now - task.lastActivityAt > TASK_STATE_STALE_MS) continue;
+        validSessions[sessKey] = task;
+      }
+      if (Object.keys(validSessions).length > 0) {
+        result[connId] = validSessions;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function persistTaskState(taskState: Record<string, Record<string, SessionTaskState>>): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(TASK_STATE_STORAGE_KEY, JSON.stringify(taskState));
   } catch {
     // Ignore storage errors; state still works in memory.
   }
@@ -113,7 +160,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: {},
   activeSessionKey: readPersistedActiveSessionMap(),
   unread: {},
-  taskStateByConnection: {},
+  taskStateByConnection: readPersistedTaskState(),
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
@@ -126,23 +173,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setSessionTaskState: (connectionId, sessionKey, taskState) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
-      return {
-        taskStateByConnection: {
-          ...s.taskStateByConnection,
-          [connectionId]: { ...prevConn, [sessionKey]: taskState },
-        },
+      const next = {
+        ...s.taskStateByConnection,
+        [connectionId]: { ...prevConn, [sessionKey]: taskState },
       };
+      persistTaskState(next);
+      return { taskStateByConnection: next };
     }),
   patchSessionTaskState: (connectionId, sessionKey, partial) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
       const prevTask = prevConn[sessionKey] ?? DEFAULT_SESSION_TASK_STATE;
-      return {
-        taskStateByConnection: {
-          ...s.taskStateByConnection,
-          [connectionId]: { ...prevConn, [sessionKey]: { ...prevTask, ...partial } },
-        },
+      const next = {
+        ...s.taskStateByConnection,
+        [connectionId]: { ...prevConn, [sessionKey]: { ...prevTask, ...partial } },
       };
+      persistTaskState(next);
+      return { taskStateByConnection: next };
     }),
   clearSessionTaskState: (connectionId, sessionKey) =>
     set((s) => {
@@ -155,27 +202,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       } else {
         nextByConnection[connectionId] = restTasks;
       }
+      persistTaskState(nextByConnection);
       return { taskStateByConnection: nextByConnection };
     }),
   setSessionTaskPhase: (connectionId, sessionKey, phase) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
       const prevTask = prevConn[sessionKey] ?? DEFAULT_SESSION_TASK_STATE;
-      return {
-        taskStateByConnection: {
-          ...s.taskStateByConnection,
-          [connectionId]: {
-            ...prevConn,
-            [sessionKey]: {
-              ...prevTask,
-              phase,
-              lastActivityAt: Date.now(),
-              activeRequestId:
-                phase === "completed" || phase === "failed" || phase === "idle" ? null : prevTask.activeRequestId,
-            },
+      const next = {
+        ...s.taskStateByConnection,
+        [connectionId]: {
+          ...prevConn,
+          [sessionKey]: {
+            ...prevTask,
+            phase,
+            lastActivityAt: Date.now(),
+            activeRequestId:
+              phase === "completed" || phase === "failed" || phase === "idle" ? null : prevTask.activeRequestId,
           },
         },
       };
+      persistTaskState(next);
+      return { taskStateByConnection: next };
     }),
   touchSessionLastActive: (connectionId, sessionKey) =>
     set((s) => {
@@ -219,6 +267,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       } else {
         nextTaskState[connectionId] = restTasks;
       }
+      persistTaskState(nextTaskState);
       maybeAdjustPetWhenUnreadCleared(restUnread, nextTaskState);
 
       const nextActive = { ...s.activeSessionKey };

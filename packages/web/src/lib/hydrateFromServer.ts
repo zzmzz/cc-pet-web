@@ -4,6 +4,7 @@ import type { PlatformAPI } from "./platform.js";
 import { useConnectionStore } from "./store/connection.js";
 import { useMessageStore } from "./store/message.js";
 import { useSessionStore } from "./store/session.js";
+import { useUIStore } from "./store/ui.js";
 
 function latestMessageTimestamp(messages: ChatMessage[]): number {
   return Math.max(...messages.map((m) => m.timestamp));
@@ -81,6 +82,18 @@ export function applyDefaultFocusAfterHydrate(connectionIds: string[]): void {
   }
   const global = pickLatestMessagedChat(connectionIds);
   useConnectionStore.getState().setActiveConnection(global?.connectionId ?? connectionIds[0] ?? null);
+
+  reconcilePetStateWithTaskState();
+}
+
+/**
+ * After hydrate, if restored task state shows active processing sessions,
+ * ensure petState reflects that (thinking). Otherwise leave it as-is.
+ */
+function reconcilePetStateWithTaskState(): void {
+  if (useSessionStore.getState().hasProcessingSessions()) {
+    useUIStore.getState().setPetState("thinking");
+  }
 }
 
 /**
