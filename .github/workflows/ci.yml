@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Web / Server (Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: E2E regression (server + web integration)
+        run: pnpm test:e2e
+
+      - name: Build web
+        run: pnpm --filter @cc-pet/web build
+
+      - name: Typecheck server
+        run: pnpm --filter @cc-pet/server run typecheck
+
+      - name: Typecheck shared
+        run: pnpm --filter @cc-pet/shared run typecheck
+
+  desktop-rust-check:
+    name: Desktop (Rust check, macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo check (Tauri uses macOS-only APIs)
+        working-directory: packages/desktop/src-tauri
+        run: cargo check
