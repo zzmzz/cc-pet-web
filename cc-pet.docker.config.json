@@ -16,7 +16,6 @@
       "bridgeIds": ["cc-connect"]
     }
   ],
-  "corsOrigins": [],
   "pet": {
     "opacity": 1,
     "size": 120

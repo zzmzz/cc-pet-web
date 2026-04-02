@@ -102,10 +102,7 @@ const app = Fastify({
       }
     : { level: process.env.LOG_LEVEL ?? "info" },
 });
-const corsOrigins = initialConfig.corsOrigins ?? [];
-await app.register(cors, {
-  origin: corsOrigins.length > 0 ? corsOrigins : false,
-});
+await app.register(cors, { origin: true });
 await app.register(multipart);
 
 const webDistPath = path.resolve(__dirname, "../../web/dist");

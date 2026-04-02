@@ -6,7 +6,6 @@ import type { AppConfig, BridgeConfig, TokenConfig, TokenPetImages } from "@cc-p
 const DEFAULT_CONFIG: AppConfig = {
   bridges: [],
   tokens: [],
-  corsOrigins: [],
   pet: { opacity: 1, size: 120 },
   server: { port: 3000, dataDir: "./data" },
 };
@@ -77,11 +76,6 @@ function normalizeAppConfig(raw: unknown): AppConfig {
   const tokens = Array.isArray(tokensRaw)
     ? (tokensRaw.map(normalizeToken).filter(Boolean) as TokenConfig[])
     : DEFAULT_CONFIG.tokens;
-  const corsOriginsRaw = o.corsOrigins;
-  const corsOrigins = Array.isArray(corsOriginsRaw)
-    ? corsOriginsRaw.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-    : DEFAULT_CONFIG.corsOrigins;
-
   const pet =
     o.pet && typeof o.pet === "object"
       ? { ...DEFAULT_CONFIG.pet, ...(o.pet as AppConfig["pet"]) }
@@ -92,7 +86,7 @@ function normalizeAppConfig(raw: unknown): AppConfig {
       ? { ...DEFAULT_CONFIG.server, ...(o.server as AppConfig["server"]) }
       : { ...DEFAULT_CONFIG.server };
 
-  return { bridges, tokens, corsOrigins, pet, server };
+  return { bridges, tokens, pet, server };
 }
 
 export interface ConfigStoreOptions {

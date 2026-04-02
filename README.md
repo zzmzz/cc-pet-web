@@ -54,7 +54,6 @@ pnpm install
 |------|------|
 | `bridges` | 上游 Bridge 列表：`id`、`host`、`port`、连接 Bridge 用的 `token`、`enabled` |
 | `tokens` | 浏览器 / 客户端访问本服务用的 Token；`bridgeIds` 声明该 Token 可使用哪些 Bridge |
-| `corsOrigins` | 非空时启用 CORS 白名单；空数组表示不启用（本地 Vite 代理可不改） |
 | `pet` | 宠物展示相关，如 `opacity`、`size` |
 | `server` | `port`、`dataDir`（与运行环境一致即可） |
 
@@ -79,7 +78,6 @@ pnpm install
       "bridgeIds": ["my-bridge"]
     }
   ],
-  "corsOrigins": [],
   "pet": { "opacity": 1, "size": 120 },
   "server": { "port": 3000, "dataDir": ".data" }
 }

@@ -100,7 +100,6 @@ describe("Storage", () => {
       const cfg = {
         bridges: [],
         tokens: [],
-        corsOrigins: [],
         pet: { opacity: 1, size: 120 },
         server: { port: 3000, dataDir: "./data" },
       };

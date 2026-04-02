@@ -107,7 +107,6 @@ async function startServerAndBridge() {
           talking: talkingPetPath,
         },
       }],
-      corsOrigins: [],
       pet: { opacity: 1, size: 120 },
       server: { port: serverPort, dataDir: "./data" },
     }),
