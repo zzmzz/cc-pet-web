@@ -1,4 +1,5 @@
 import type { PlatformAPI } from "./platform.js";
+import { getDesktopWindowPrefs } from "./desktop-window-prefs.js";
 import { createWebAdapter } from "./web-adapter.js";
 
 /** Desktop entry: wraps `createWebAdapter` with Tauri window control commands (soft-degrading). */
@@ -11,10 +12,13 @@ export function createTauriAdapter(serverUrl: string, token: string): PlatformAP
     async setWindowMode(mode, opts) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
+        const w = getDesktopWindowPrefs();
         await invoke("set_window_mode", {
           mode,
           preserveSize: opts?.preserveSize === true,
           anchorFromPet: opts?.anchorFromPet === true,
+          petAlwaysOnTop: w.petAlwaysOnTop,
+          chatAlwaysOnTop: w.chatAlwaysOnTop,
         });
       } catch (e) {
         console.warn("[cc-pet] setWindowMode failed:", e);

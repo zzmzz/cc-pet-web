@@ -21,7 +21,7 @@ import {
   sendTaskCompletionNotification,
   shouldRequestPermissionOnUserGesture,
 } from "./lib/notification.js";
-import { getTauriServerBaseUrl } from "./lib/server-url.js";
+import { getTauriServerBaseUrl, resolveApiUrl } from "./lib/server-url.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
@@ -60,7 +60,7 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch("/api/auth/verify", {
+        const res = await fetch(resolveApiUrl("/api/auth/verify"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: storedToken }),
@@ -90,7 +90,7 @@ export default function App() {
       return false;
     }
     try {
-      const res = await fetch("/api/auth/verify", {
+      const res = await fetch(resolveApiUrl("/api/auth/verify"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),

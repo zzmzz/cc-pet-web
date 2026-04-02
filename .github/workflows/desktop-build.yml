@@ -1,0 +1,64 @@
+# 在 macOS / Windows 上分别打出当前平台的安装包（.dmg / .msi / .exe 等），并上传为 Artifact。
+# 触发：打 v* tag，或在 Actions 里手动运行 workflow。
+
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tauri-bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web (frontendDist)
+        run: pnpm --filter @cc-pet/web build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri
+
+      - name: Tauri build (bundle for ${{ matrix.label }})
+        run: pnpm --filter @cc-pet/desktop build
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-pet-${{ matrix.label }}-${{ github.ref_name }}
+          path: packages/desktop/src-tauri/target/release/bundle/
+          if-no-files-found: error

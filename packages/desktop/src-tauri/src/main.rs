@@ -192,12 +192,51 @@ pub(crate) fn apply_settings_window_layout(window: &WebviewWindow) -> Result<(),
     Ok(())
 }
 
+/// 登录页（URL + Token）：宠物默认窗口过小，放大并置于工作区居中。
+const LOGIN_WINDOW_LOGICAL_W: f64 = 520.0;
+const LOGIN_WINDOW_LOGICAL_H: f64 = 680.0;
+
+fn apply_login_window_layout(window: &WebviewWindow) -> Result<(), String> {
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: LOGIN_WINDOW_LOGICAL_W,
+            height: LOGIN_WINDOW_LOGICAL_H,
+        }))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_background_color(Some(Color(248, 250, 252, 255)))
+        .map_err(|e| e.to_string())?;
+    if let Some(mon) = primary_or_current_monitor(window) {
+        let work = mon.work_area();
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let inner_w = (LOGIN_WINDOW_LOGICAL_W * scale).round() as i32;
+        let inner_h = (LOGIN_WINDOW_LOGICAL_H * scale).round() as i32;
+        let wx = work.position.x;
+        let wy = work.position.y;
+        let ww = work.size.width as i32;
+        let wh = work.size.height as i32;
+        let nx = wx + (ww - inner_w).max(0) / 2;
+        let ny = wy + (wh - inner_h).max(0) / 2;
+        window
+            .set_position(Position::Physical(PhysicalPosition::new(nx, ny)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn prepare_login_window(window: WebviewWindow) -> Result<(), String> {
+    apply_login_window_layout(&window)
+}
+
 #[tauri::command]
 fn set_window_mode(
     window: WebviewWindow,
     mode: String,
     preserve_size: bool,
     anchor_from_pet: bool,
+    pet_always_on_top: bool,
+    chat_always_on_top: bool,
 ) -> Result<(), String> {
     let mode = mode.as_str();
     let _ = preserve_size;
@@ -250,7 +289,9 @@ fn set_window_mode(
             window
                 .set_background_color(Some(Color(0, 0, 0, 0)))
                 .map_err(|e| e.to_string())?;
-            window.set_always_on_top(true).map_err(|e| e.to_string())?;
+            window
+                .set_always_on_top(pet_always_on_top)
+                .map_err(|e| e.to_string())?;
             restore_pet_position(&window, &app)?;
         }
         "chat" => {
@@ -263,7 +304,9 @@ fn set_window_mode(
                 window
                     .set_background_color(Some(Color(248, 250, 252, 255)))
                     .map_err(|e| e.to_string())?;
-                window.set_always_on_top(true).map_err(|e| e.to_string())?;
+                window
+                    .set_always_on_top(chat_always_on_top)
+                    .map_err(|e| e.to_string())?;
                 window
                     .set_position(Position::Physical(PhysicalPosition::new(b.inner_x, b.inner_y)))
                     .map_err(|e| e.to_string())?;
@@ -277,7 +320,9 @@ fn set_window_mode(
                 window
                     .set_background_color(Some(Color(248, 250, 252, 255)))
                     .map_err(|e| e.to_string())?;
-                window.set_always_on_top(true).map_err(|e| e.to_string())?;
+                window
+                    .set_always_on_top(chat_always_on_top)
+                    .map_err(|e| e.to_string())?;
                 if let Some((ax, ay, scale)) = pet_anchor_physical {
                     let nx = ax.round() as i32;
                     let ny = (ay - CHAT_LOGICAL_H * scale).round() as i32;
@@ -352,6 +397,7 @@ fn main() {
             save_pet_position,
             toggle_window_visibility,
             quit_app,
+            prepare_login_window,
             set_pet_hit_through_enabled,
             update_pet_hit_rect,
         ])

@@ -14,6 +14,10 @@ import {
   getNotificationSettings,
   updateNotificationSettings,
 } from "../lib/notification.js";
+import {
+  getDesktopWindowPrefs,
+  setDesktopWindowPrefs,
+} from "../lib/desktop-window-prefs.js";
 
 export function SettingsPanel() {
   const open = useUIStore((s) => s.desktopConfigOpen);
@@ -27,6 +31,8 @@ export function SettingsPanel() {
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [tokenSaving, setTokenSaving] = useState(false);
   const [notifyEnabled, setNotifyEnabled] = useState(true);
+  const [petAlwaysOnTop, setPetAlwaysOnTop] = useState(true);
+  const [chatAlwaysOnTop, setChatAlwaysOnTop] = useState(true);
 
   useEffect(() => {
     if (!open) return;
@@ -34,6 +40,9 @@ export function SettingsPanel() {
     setTokenDraft(localStorage.getItem(CC_PET_TOKEN_KEY)?.trim() ?? "");
     setTokenError(null);
     setNotifyEnabled(getNotificationSettings().enabled);
+    const w = getDesktopWindowPrefs();
+    setPetAlwaysOnTop(w.petAlwaysOnTop);
+    setChatAlwaysOnTop(w.chatAlwaysOnTop);
     if (isTauri()) {
       void getPlatform().setWindowMode?.("settings");
     }
@@ -171,6 +180,39 @@ export function SettingsPanel() {
             <p className="text-xs text-text-secondary">暂无可用 Bridge，请检查服务端配置。</p>
           )}
         </section>
+
+        {isTauri() ? (
+          <section className="mb-5 border-b border-border pb-5">
+            <h3 className="mb-2 text-sm font-medium text-text-primary">窗口置顶</h3>
+            <p className="mb-2 text-xs text-text-secondary">
+              关闭后对应模式下的窗口可被其他应用遮挡。关闭设置后将按当前模式重新应用。
+            </p>
+            <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                checked={petAlwaysOnTop}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setPetAlwaysOnTop(on);
+                  setDesktopWindowPrefs({ petAlwaysOnTop: on });
+                }}
+              />
+              宠物窗口始终置顶
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+              <input
+                type="checkbox"
+                checked={chatAlwaysOnTop}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setChatAlwaysOnTop(on);
+                  setDesktopWindowPrefs({ chatAlwaysOnTop: on });
+                }}
+              />
+              聊天窗口始终置顶
+            </label>
+          </section>
+        ) : null}
 
         {isTauri() ? (
           <section className="mb-5 border-b border-border pb-5">
