@@ -30,7 +30,7 @@ function computeYTicks(maxVal: number): number[] {
   const niceSteps = [1, 2, 2.5, 5, 10];
   const step = niceSteps.find(s => s * magnitude >= rawStep)! * magnitude;
   const ticks: number[] = [];
-  for (let v = 0; v <= maxVal + step * 0.1; v += step) {
+  for (let v = 0; v <= maxVal + step; v += step) {
     ticks.push(Math.round(v * 100) / 100);
   }
   if (ticks.length < 2) ticks.push(step);

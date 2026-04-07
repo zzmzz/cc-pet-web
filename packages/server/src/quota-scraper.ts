@@ -195,6 +195,16 @@ export class QuotaScraper {
       totalCost = this.parseDollar(glowValue);
     }
 
+    // 合理性校验：防止解析错误产生异常大的值
+    if (used > 10000) {
+      console.warn(`Suspicious used value: $${used}, resetting to 0`);
+      used = 0;
+    }
+    if (cursorCost > 10000) {
+      console.warn(`Suspicious cursorCost value: $${cursorCost}, resetting to 0`);
+      cursorCost = 0;
+    }
+
     // 如果结构化解析未获取到 totalCost，用 used + cursorCost 推算
     if (totalCost === 0 && (used > 0 || cursorCost > 0)) {
       totalCost = used + cursorCost;

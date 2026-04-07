@@ -22,7 +22,8 @@
     "start": "node --import tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "cleanup-sessions": "tsx src/scripts/run-session-cleanup.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

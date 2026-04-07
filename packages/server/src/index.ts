@@ -23,6 +23,7 @@ import { SessionStore } from "./storage/sessions.js";
 import { ConfigStore } from "./storage/config.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { ClientHub } from "./ws/hub.js";
+import { SessionsCleanup } from "./cleanup/sessions-cleanup.js";
 import { registerConfigRoutes } from "./api/config.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
@@ -488,5 +489,9 @@ for (const bridge of config.bridges) {
     bridgeManager.connect(bridge);
   }
 }
+
+// 启动会话清理定时任务，每天清理10天没有交互的会话
+const sessionsCleanup = new SessionsCleanup(sessionStore, db);
+sessionsCleanup.startCleanupSchedule(10);
 
 console.log(`CC Pet Server running on http://localhost:${PORT}`);

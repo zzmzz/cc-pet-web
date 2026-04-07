@@ -151,13 +151,13 @@ const AIVolumeDisplay: React.FC = () => {
         )}
       </div>
 
-      {/* Manual Controls */}
-      <QuotaControls onManualScrape={handleManualScrape} />
-
       {/* Historical Chart */}
       <div className="bg-surface rounded-lg p-4 border border-border">
         <QuotaChart />
       </div>
+
+      {/* Manual Controls */}
+      <QuotaControls onManualScrape={handleManualScrape} />
 
       {/* Info */}
       <div className="text-xs text-text-secondary">
