@@ -38,5 +38,13 @@ export function initSchema(db: Database.Database): void {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       data TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS ai_quota_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      usage_data TEXT NOT NULL,
+      raw_content TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_quota_timestamp ON ai_quota_history(timestamp);
   `);
 }

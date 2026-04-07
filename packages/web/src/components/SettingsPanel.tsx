@@ -18,6 +18,7 @@ import {
   getDesktopWindowPrefs,
   setDesktopWindowPrefs,
 } from "../lib/desktop-window-prefs.js";
+import { AIVolumeDisplay } from "./AIVolumeDisplay.js";
 
 export function SettingsPanel() {
   const open = useUIStore((s) => s.desktopConfigOpen);
@@ -33,6 +34,7 @@ export function SettingsPanel() {
   const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [petAlwaysOnTop, setPetAlwaysOnTop] = useState(true);
   const [chatAlwaysOnTop, setChatAlwaysOnTop] = useState(true);
+  const [activeTab, setActiveTab] = useState("general"); // Add state for active tab
 
   useEffect(() => {
     if (!open) return;
@@ -151,147 +153,186 @@ export function SettingsPanel() {
           </button>
         </div>
 
-        <section className="mb-5 border-b border-border pb-5">
-          <h3 className="mb-2 text-sm font-medium text-text-primary">cc-connect Bridge</h3>
-          {activeConnectionId ? (
-            <>
-              <p className="mb-2 text-xs text-text-secondary">
-                当前：{active?.name ?? activeConnectionId}
-                {active ? `（${active.connected ? "已连接" : "未连接"}）` : null}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-                  onClick={() => void bridgeAction("connect")}
-                >
-                  连接
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-primary hover:bg-surface"
-                  onClick={() => void bridgeAction("disconnect")}
-                >
-                  断开
-                </button>
-              </div>
-            </>
-          ) : (
-            <p className="text-xs text-text-secondary">暂无可用 Bridge，请检查服务端配置。</p>
-          )}
-        </section>
-
-        {isTauri() ? (
-          <section className="mb-5 border-b border-border pb-5">
-            <h3 className="mb-2 text-sm font-medium text-text-primary">窗口置顶</h3>
-            <p className="mb-2 text-xs text-text-secondary">
-              关闭后对应模式下的窗口可被其他应用遮挡。关闭设置后将按当前模式重新应用。
-            </p>
-            <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-              <input
-                type="checkbox"
-                checked={petAlwaysOnTop}
-                onChange={(e) => {
-                  const on = e.target.checked;
-                  setPetAlwaysOnTop(on);
-                  setDesktopWindowPrefs({ petAlwaysOnTop: on });
-                }}
-              />
-              宠物窗口始终置顶
-            </label>
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-              <input
-                type="checkbox"
-                checked={chatAlwaysOnTop}
-                onChange={(e) => {
-                  const on = e.target.checked;
-                  setChatAlwaysOnTop(on);
-                  setDesktopWindowPrefs({ chatAlwaysOnTop: on });
-                }}
-              />
-              聊天窗口始终置顶
-            </label>
-          </section>
-        ) : null}
-
-        {isTauri() ? (
-          <section className="mb-5 border-b border-border pb-5">
-            <h3 className="mb-2 text-sm font-medium text-text-primary">服务地址</h3>
-            <p className="mb-2 text-xs text-text-secondary">
-              留空表示使用内置页面同源。修改后需重新加载应用。
-            </p>
-            <input
-              className="mb-2 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-primary"
-              placeholder="https://example.com"
-              value={serverUrlDraft}
-              onChange={(e) => setServerUrlDraft(e.target.value)}
-            />
+        {/* Tab Navigation */}
+        <div className="mb-4 border-b border-border">
+          <nav className="flex space-x-2">
             <button
-              type="button"
-              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-              onClick={saveServerUrl}
+              className={`px-3 py-2 text-sm font-medium rounded-t-md ${
+                activeTab === "general"
+                  ? "text-text-primary border-b-2 border-primary bg-surface"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+              onClick={() => setActiveTab("general")}
             >
-              保存并重新加载
+              通用
             </button>
-          </section>
-        ) : null}
+            <button
+              className={`px-3 py-2 text-sm font-medium rounded-t-md ${
+                activeTab === "ai-usage"
+                  ? "text-text-primary border-b-2 border-primary bg-surface"
+                  : "text-text-secondary hover:text-text-primary"
+              }`}
+              onClick={() => setActiveTab("ai-usage")}
+            >
+              AI用量
+            </button>
+          </nav>
+        </div>
 
-        {!isTauri() && checkNotificationSupport() ? (
-          <section className="mb-5 border-b border-border pb-5">
-            <h3 className="mb-2 text-sm font-medium text-text-primary">通知</h3>
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-              <input
-                type="checkbox"
-                checked={notifyEnabled}
-                onChange={(e) => {
-                  const on = e.target.checked;
-                  setNotifyEnabled(on);
-                  updateNotificationSettings({ enabled: on });
-                }}
-              />
-              任务完成时在后台显示浏览器通知
-            </label>
-          </section>
-        ) : null}
+        {/* Tab Content */}
+        <div className="overflow-y-auto max-h-[calc(90dvh-150px)]">
+          {activeTab === "general" && (
+            <div>
+              <section className="mb-5 border-b border-border pb-5">
+                <h3 className="mb-2 text-sm font-medium text-text-primary">cc-connect Bridge</h3>
+                {activeConnectionId ? (
+                  <>
+                    <p className="mb-2 text-xs text-text-secondary">
+                      当前：{active?.name ?? activeConnectionId}
+                      {active ? `（${active.connected ? "已连接" : "未连接"}）` : null}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+                        onClick={() => void bridgeAction("connect")}
+                      >
+                        连接
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md border border-border px-3 py-1.5 text-xs text-text-primary hover:bg-surface"
+                        onClick={() => void bridgeAction("disconnect")}
+                      >
+                        断开
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-text-secondary">暂无可用 Bridge，请检查服务端配置。</p>
+                )}
+              </section>
 
-        <section className="mb-5 border-b border-border pb-5">
-          <h3 className="mb-2 text-sm font-medium text-text-primary">访问 Token</h3>
-          <p className="mb-2 text-xs text-text-secondary">
-            与登录页相同，用于 API / WebSocket 认证。修改后需重新加载以生效。
-          </p>
-          <input
-            type="password"
-            autoComplete="off"
-            className="mb-2 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-primary"
-            placeholder="输入新的 Token"
-            value={tokenDraft}
-            onChange={(e) => {
-              setTokenDraft(e.target.value);
-              setTokenError(null);
-            }}
-            disabled={tokenSaving}
-          />
-          {tokenError ? <p className="mb-2 text-xs text-red-500">{tokenError}</p> : null}
-          <button
-            type="button"
-            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={tokenSaving}
-            onClick={() => void saveToken()}
-          >
-            {tokenSaving ? "校验中…" : "保存 Token 并重新加载"}
-          </button>
-        </section>
+              {isTauri() ? (
+                <section className="mb-5 border-b border-border pb-5">
+                  <h3 className="mb-2 text-sm font-medium text-text-primary">窗口置顶</h3>
+                  <p className="mb-2 text-xs text-text-secondary">
+                    关闭后对应模式下的窗口可被其他应用遮挡。关闭设置后将按当前模式重新应用。
+                  </p>
+                  <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={petAlwaysOnTop}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setPetAlwaysOnTop(on);
+                        setDesktopWindowPrefs({ petAlwaysOnTop: on });
+                      }}
+                    />
+                    宠物窗口始终置顶
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={chatAlwaysOnTop}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setChatAlwaysOnTop(on);
+                        setDesktopWindowPrefs({ chatAlwaysOnTop: on });
+                      }}
+                    />
+                    聊天窗口始终置顶
+                  </label>
+                </section>
+              ) : null}
 
-        <section>
-          <h3 className="mb-2 text-sm font-medium text-text-primary">账号</h3>
-          <button
-            type="button"
-            className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
-            onClick={logout}
-          >
-            退出登录
-          </button>
-        </section>
+              {isTauri() ? (
+                <section className="mb-5 border-b border-border pb-5">
+                  <h3 className="mb-2 text-sm font-medium text-text-primary">服务地址</h3>
+                  <p className="mb-2 text-xs text-text-secondary">
+                    留空表示使用内置页面同源。修改后需重新加载应用。
+                  </p>
+                  <input
+                    className="mb-2 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-primary"
+                    placeholder="https://example.com"
+                    value={serverUrlDraft}
+                    onChange={(e) => setServerUrlDraft(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+                    onClick={saveServerUrl}
+                  >
+                    保存并重新加载
+                  </button>
+                </section>
+              ) : null}
+
+              {!isTauri() && checkNotificationSupport() ? (
+                <section className="mb-5 border-b border-border pb-5">
+                  <h3 className="mb-2 text-sm font-medium text-text-primary">通知</h3>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={notifyEnabled}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setNotifyEnabled(on);
+                        updateNotificationSettings({ enabled: on });
+                      }}
+                    />
+                    任务完成时在后台显示浏览器通知
+                  </label>
+                </section>
+              ) : null}
+
+              <section className="mb-5 border-b border-border pb-5">
+                <h3 className="mb-2 text-sm font-medium text-text-primary">访问 Token</h3>
+                <p className="mb-2 text-xs text-text-secondary">
+                  与登录页相同，用于 API / WebSocket 认证。修改后需重新加载以生效。
+                </p>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  className="mb-2 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-primary"
+                  placeholder="输入新的 Token"
+                  value={tokenDraft}
+                  onChange={(e) => {
+                    setTokenDraft(e.target.value);
+                    setTokenError(null);
+                  }}
+                  disabled={tokenSaving}
+                />
+                {tokenError ? <p className="mb-2 text-xs text-red-500">{tokenError}</p> : null}
+                <button
+                  type="button"
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={tokenSaving}
+                  onClick={() => void saveToken()}
+                >
+                  {tokenSaving ? "校验中…" : "保存 Token 并重新加载"}
+                </button>
+              </section>
+
+              <section>
+                <h3 className="mb-2 text-sm font-medium text-text-primary">账号</h3>
+                <button
+                  type="button"
+                  className="rounded-md border border-red-200 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50"
+                  onClick={logout}
+                >
+                  退出登录
+                </button>
+              </section>
+            </div>
+          )}
+
+          {activeTab === "ai-usage" && (
+            <div>
+              <AIVolumeDisplay />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
