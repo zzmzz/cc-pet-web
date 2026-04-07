@@ -1,14 +1,24 @@
 import { EventEmitter } from "node:events";
 import type { BridgeConfig, BridgeOutgoing } from "@cc-pet/shared";
-import { BridgeClient } from "./client.js";
+import { BridgeClient, type BridgeClientLogger } from "./client.js";
 
 export class BridgeManager extends EventEmitter {
   private clients = new Map<string, BridgeClient>();
+  private log?: BridgeClientLogger;
+
+  constructor(logger?: BridgeClientLogger) {
+    super();
+    this.log = logger;
+  }
+
+  setLogger(logger: BridgeClientLogger): void {
+    this.log = logger;
+  }
 
   connect(config: BridgeConfig): void {
     if (this.clients.has(config.id)) this.disconnect(config.id);
 
-    const client = new BridgeClient(config.id, config);
+    const client = new BridgeClient(config.id, config, this.log);
     client.on("message", (connId, msg) => this.emit("message", connId, msg));
     client.on("connected", (connId) => this.emit("connected", connId));
     client.on("disconnected", (connId, reason) => this.emit("disconnected", connId, reason));

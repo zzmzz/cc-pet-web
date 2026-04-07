@@ -102,6 +102,7 @@ const app = Fastify({
       }
     : { level: process.env.LOG_LEVEL ?? "info" },
 });
+bridgeManager.setLogger(app.log);
 await app.register(cors, { origin: true });
 await app.register(multipart);
 
@@ -211,7 +212,6 @@ bridgeManager.on("skillsProbe", (connId: string, event: Record<string, unknown>)
 bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
-  app.log.debug({ connectionId: connId, sessionKey, bridgeMessageType: msg.type }, "Received message from bridge");
 
   switch (msg.type) {
     case "register_ack":
@@ -310,6 +310,26 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         sessionKey,
       });
       hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name });
+      break;
+    case "card":
+      messageStore.save({
+        id: `msg-${Date.now()}`, role: "assistant",
+        content: msg.card?.header?.title ?? "",
+        timestamp: Date.now(), connectionId: connId, sessionKey,
+      });
+      hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
+        connectionId: connId, sessionKey, card: msg.card,
+      });
+      break;
+    case "audio":
+      messageStore.save({
+        id: `msg-${Date.now()}`, role: "assistant",
+        content: "[音频消息]",
+        timestamp: Date.now(), connectionId: connId, sessionKey,
+      });
+      hub.broadcast(WS_EVENTS.BRIDGE_AUDIO, {
+        connectionId: connId, sessionKey, data: msg.data, format: msg.format ?? "mp3",
+      });
       break;
     case "skills_updated":
       latestSkillsByConnection.set(connId, msg.commands);

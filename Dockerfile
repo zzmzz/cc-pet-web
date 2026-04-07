@@ -3,18 +3,22 @@ FROM node:22-slim AS builder
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
+
+# Copy all package.json files
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/web/package.json packages/web/
 
-RUN pnpm install --frozen-lockfile
-
+# Copy source files needed for web build (before install to fix pnpm symlinks)
 COPY tsconfig.base.json ./
 COPY packages/shared/ packages/shared/
 COPY packages/web/ packages/web/
 
-RUN cd packages/web && pnpm build
+# Install only web and shared dependencies (avoid building native deps like better-sqlite3)
+RUN pnpm install --frozen-lockfile --filter @cc-pet/web --filter @cc-pet/shared
+
+RUN pnpm --filter @cc-pet/web build
 
 FROM node:22-slim AS runner
 

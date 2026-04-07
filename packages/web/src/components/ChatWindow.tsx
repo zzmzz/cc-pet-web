@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { makeChatKey, WS_EVENTS } from "@cc-pet/shared";
 import type { ChatMessage, SlashCommand } from "@cc-pet/shared";
 import { useConnectionStore } from "../lib/store/connection.js";
@@ -42,6 +42,7 @@ export function ChatWindow() {
   const activeSessionKeyByConn = useSessionStore((s) => s.activeSessionKey);
   const messagesByChat = useMessageStore((s) => s.messagesByChat);
   const streamingByChat = useMessageStore((s) => s.streamingContent);
+  const previewMessages = useMessageStore((s) => s.previewMessages);
   const agentCommandsByConnection = useCommandStore((s) => s.agentCommandsByConnection);
   const taskStateByConnection = useSessionStore((s) => s.taskStateByConnection);
 
@@ -59,6 +60,13 @@ export function ChatWindow() {
   }, [chatOpen, activeConnectionId, activeSessionKey, clearSessionUnread]);
   const messages = chatKey ? (messagesByChat[chatKey] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const streaming = chatKey ? streamingByChat[chatKey] : undefined;
+  const chatPreviews = useMemo(
+    () =>
+      Object.entries(previewMessages)
+        .filter(([, pv]) => pv.chatKey === chatKey)
+        .map(([previewId, pv]) => ({ previewId, content: pv.content })),
+    [previewMessages, chatKey],
+  );
   const activePhase = activeConnectionId ? taskStateByConnection[activeConnectionId]?.[activeSessionKey]?.phase : "idle";
   const showStopButton = activePhase === "working" || activePhase === "processing";
 
@@ -297,7 +305,7 @@ export function ChatWindow() {
 
   return (
     <div className="flex flex-col h-full">
-      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} />
+      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} />
       <MessageInput
         ref={inputRef}
         value={input}

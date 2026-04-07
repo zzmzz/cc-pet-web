@@ -14,6 +14,8 @@ export const WS_EVENTS = {
   BRIDGE_PREVIEW_START: "bridge:preview-start",
   BRIDGE_PREVIEW_UPDATE: "bridge:preview-update",
   BRIDGE_PREVIEW_DELETE: "bridge:preview-delete",
+  BRIDGE_CARD: "bridge:card",
+  BRIDGE_AUDIO: "bridge:audio",
 
   SEND_MESSAGE: "send-message",
   SEND_BUTTON: "send-button",

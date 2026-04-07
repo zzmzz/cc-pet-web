@@ -384,6 +384,73 @@ export default function App() {
             }
             setPetStateSafely("idle");
             break;
+          case WS_EVENTS.BRIDGE_CARD:
+            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              useSessionStore.getState().incrementUnread(chatKey);
+            }
+            setTaskPhase("working");
+            useMessageStore.getState().addMessage(chatKey, {
+              id: `msg-${Date.now()}`,
+              role: "assistant",
+              content: payload.card?.header?.title ?? "",
+              timestamp: Date.now(),
+              connectionId,
+              sessionKey: resolvedSessionKey,
+              card: payload.card,
+            });
+            {
+              const cardCompleted = !isTypingActiveForSession();
+              setTaskPhase(cardCompleted ? "completed" : "working");
+              if (cardCompleted && connectionId && resolvedSessionKey) {
+                trySendNotification(connectionId, resolvedSessionKey);
+              }
+            }
+            if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              setPetStateSafely("idle");
+            }
+            break;
+          case WS_EVENTS.BRIDGE_AUDIO:
+            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              useSessionStore.getState().incrementUnread(chatKey);
+            }
+            setTaskPhase("working");
+            useMessageStore.getState().addMessage(chatKey, {
+              id: `msg-${Date.now()}`,
+              role: "assistant",
+              content: "[音频消息]",
+              timestamp: Date.now(),
+              connectionId,
+              sessionKey: resolvedSessionKey,
+              audio: { data: payload.data, format: payload.format ?? "mp3" },
+            });
+            {
+              const audioCompleted = !isTypingActiveForSession();
+              setTaskPhase(audioCompleted ? "completed" : "working");
+              if (audioCompleted && connectionId && resolvedSessionKey) {
+                trySendNotification(connectionId, resolvedSessionKey);
+              }
+            }
+            if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              setPetStateSafely("idle");
+            }
+            break;
+          case WS_EVENTS.BRIDGE_PREVIEW_START:
+            if (chatKey && payload.previewId) {
+              useMessageStore.getState().startPreview(chatKey, payload.previewId, payload.content ?? "");
+              setTaskPhase("working");
+              setPetStateSafely("talking");
+            }
+            break;
+          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
+            if (payload.previewId) {
+              useMessageStore.getState().updatePreview(payload.previewId, payload.content ?? "");
+            }
+            break;
+          case WS_EVENTS.BRIDGE_PREVIEW_DELETE:
+            if (payload.previewId) {
+              useMessageStore.getState().deletePreview(payload.previewId);
+            }
+            break;
           case WS_EVENTS.BRIDGE_SKILLS_UPDATED: {
             const cid = payload.connectionId as string;
             if (!cid) break;

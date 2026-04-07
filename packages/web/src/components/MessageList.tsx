@@ -9,11 +9,19 @@ import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { getPlatform } from "../lib/platform.js";
 import { groupMessages } from "../lib/group-messages.js";
 import { ActivityBlock } from "./ActivityBlock.js";
+import { CardMessage } from "./CardMessage.js";
+import { AudioMessage } from "./AudioMessage.js";
+
+interface PreviewEntry {
+  previewId: string;
+  content: string;
+}
 
 interface Props {
   messages: ChatMessage[];
   streamingContent?: string;
   sessionKey?: string;
+  previews?: PreviewEntry[];
 }
 
 interface LinkPreviewData {
@@ -290,7 +298,7 @@ function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactN
   );
 }
 
-export function MessageList({ messages, streamingContent, sessionKey }: Props) {
+export function MessageList({ messages, streamingContent, sessionKey, previews }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
@@ -338,7 +346,7 @@ export function MessageList({ messages, streamingContent, sessionKey }: Props) {
       return;
     }
     setShowBackToLatest(true);
-  }, [messages, streamingContent, scrollToLatest]);
+  }, [messages, streamingContent, previews, scrollToLatest]);
 
   return (
     <div className="relative flex-1 min-h-0">
@@ -350,6 +358,12 @@ export function MessageList({ messages, streamingContent, sessionKey }: Props) {
             <MessageBubble key={item.message.id} message={item.message} />
           ),
         )}
+        {previews?.map((pv) => (
+          <MessageBubble
+            key={`preview-${pv.previewId}`}
+            message={{ id: `preview-${pv.previewId}`, role: "assistant", content: pv.content, timestamp: Date.now() }}
+          />
+        ))}
         {streamingContent && (
           <MessageBubble
             message={{ id: "streaming", role: "assistant", content: streamingContent, timestamp: Date.now() }}
@@ -399,6 +413,22 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       }
     };
   }, []);
+
+  if (message.card) {
+    return (
+      <div className="flex justify-start px-3 py-1">
+        <CardMessage card={message.card} />
+      </div>
+    );
+  }
+
+  if (message.audio) {
+    return (
+      <div className="flex justify-start px-3 py-1">
+        <AudioMessage audio={message.audio} timestamp={message.timestamp} />
+      </div>
+    );
+  }
 
   if (hasFiles) {
     const caption = message.content.trim();

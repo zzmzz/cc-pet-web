@@ -5,6 +5,10 @@ import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX } from "@cc-pet/shared
 import { bridgeReplyCtx, registerAckSessionKey } from "./incoming-fields.js";
 import { parseBridgeMessage } from "./protocol.js";
 
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + "…" : s;
+}
+
 export interface BridgeClientEvents {
   message: [connectionId: string, msg: BridgeIncoming];
   connected: [connectionId: string];
@@ -23,6 +27,11 @@ export interface BridgeClientEvents {
   ];
 }
 
+export interface BridgeClientLogger {
+  info(obj: Record<string, unknown>, msg: string): void;
+  debug(obj: Record<string, unknown>, msg: string): void;
+}
+
 export class BridgeClient extends EventEmitter<BridgeClientEvents> {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -38,11 +47,15 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
   private static readonly SKILLS_PROBE_MAX_RETRIES = 2;
   private static readonly SKILLS_PROBE_RETRY_MS = 1_500;
 
+  private log?: BridgeClientLogger;
+
   constructor(
     public readonly connectionId: string,
     private config: BridgeConfig,
+    logger?: BridgeClientLogger,
   ) {
     super();
+    this.log = logger;
   }
 
   get connected(): boolean {
@@ -72,6 +85,15 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       } catch {
         /* parseBridgeMessage will surface error */
       }
+      this.log?.info(
+        {
+          connectionId: this.connectionId,
+          type: envelope.type,
+          contentPreview: truncate(typeof envelope.content === "string" ? envelope.content : "", 200),
+          rawLength: raw.length,
+        },
+        "⬇ Bridge incoming",
+      );
       if (envelope.type === "register_ack") {
         const sessionKey = registerAckSessionKey(envelope) ?? "default";
         this.emit("skillsProbe", this.connectionId, {
@@ -138,11 +160,21 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
   }
 
   send(msg: BridgeOutgoing): void {
+    const outContent = "content" in msg && typeof msg.content === "string" ? msg.content : "";
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       if (this.pendingMessages.length >= 100) {
         this.pendingMessages.shift();
       }
       this.pendingMessages.push(msg);
+      this.log?.info(
+        {
+          connectionId: this.connectionId,
+          type: msg.type,
+          contentPreview: truncate(outContent, 200),
+          queueSize: this.pendingMessages.length,
+        },
+        "⬆ Bridge outgoing queued (not connected)",
+      );
       if (
         !this.ws ||
         this.ws.readyState === WebSocket.CLOSED ||
@@ -150,13 +182,21 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       ) {
         this.connect();
       } else if (!this._connected) {
-        // CONNECTING state can get stuck on transient network issues.
-        // Ensure there is an eventual retry path.
         this.scheduleReconnect();
       }
       return;
     }
-    this.ws.send(JSON.stringify(msg));
+    const payload = JSON.stringify(msg);
+    this.log?.info(
+      {
+        connectionId: this.connectionId,
+        type: msg.type,
+        contentPreview: truncate(outContent, 200),
+        payloadLength: payload.length,
+      },
+      "⬆ Bridge outgoing sent",
+    );
+    this.ws.send(payload);
   }
 
   private scheduleReconnect(): void {
@@ -206,7 +246,7 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       JSON.stringify({
         type: "register",
         platform: this.connectionId,
-        capabilities: ["text", "buttons", "typing", "update_message", "preview", "delete_message", "file"],
+        capabilities: ["text", "buttons", "typing", "update_message", "preview", "delete_message", "file", "card", "audio"],
         metadata: { protocol_version: 1, source: "cc-pet-web" },
       })
     );

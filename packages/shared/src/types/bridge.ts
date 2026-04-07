@@ -9,8 +9,36 @@ export type BridgeIncoming =
   | { type: "update_message"; session_key: string; preview_id: string; content: string }
   | { type: "delete_message"; session_key: string; preview_id: string }
   | { type: "file"; session_key: string; name: string; data: string }
+  | { type: "card"; session_key: string; reply_ctx?: string; card: BridgeCard }
+  | { type: "audio"; session_key: string; reply_ctx?: string; data: string; format?: string }
   | { type: "skills_updated"; commands: SlashCommand[] }
   | { type: "error"; message: string; code?: string };
+
+// ── Card types ──
+
+export interface BridgeCard {
+  header?: { title: string; color?: string };
+  elements: BridgeCardElement[];
+}
+
+export type BridgeCardElement =
+  | { type: "markdown"; content: string }
+  | { type: "divider" }
+  | { type: "actions"; buttons: BridgeCardButton[]; layout?: "row" | "column" }
+  | { type: "list_item"; text: string; btn_text?: string; btn_type?: string; btn_value?: string }
+  | { type: "select"; placeholder?: string; options: BridgeCardSelectOption[]; init_value?: string }
+  | { type: "note"; text: string; tag?: string };
+
+export interface BridgeCardButton {
+  text: string;
+  btn_type?: "primary" | "default" | "danger";
+  value: string;
+}
+
+export interface BridgeCardSelectOption {
+  text: string;
+  value: string;
+}
 
 export interface BridgeButton {
   id: string;
