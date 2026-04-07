@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx skills:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm run:*)",
+      "Bash(npx pnpm:*)",
+      "Bash(corepack enable:*)",
+      "Bash(pnpm -r build)",
+      "Bash(npx tsc:*)",
+      "Bash(./node_modules/.bin/tsc --noEmit -p packages/shared/tsconfig.json)",
+      "Bash(packages/shared/node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json)",
+      "Bash(packages/shared/node_modules/.bin/tsc --noEmit -p packages/web/tsconfig.json)",
+      "Bash(packages/shared/node_modules/.bin/tsc --noEmit -p packages/web/tsconfig.json --rootDir packages/web)"
+    ]
+  }
+}

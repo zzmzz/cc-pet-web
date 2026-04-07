@@ -29,6 +29,8 @@ import { registerHistoryRoutes } from "./api/history.js";
 import { registerFileRoutes } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
+import { registerQuotaRoutes } from "./api/quota.js";
+import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
@@ -130,6 +132,16 @@ registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
 registerMiscRoutes(app);
+// Initialize AI quota scraper if credentials are provided
+const quotaCookie = process.env.AI_QUOTA_COOKIE;
+let quotaScraper: QuotaScraper | null = null;
+if (quotaCookie) {
+  quotaScraper = new QuotaScraper(db, quotaCookie);
+  void quotaScraper.scheduleScraping(); // Start scraping service
+} else {
+  app.log.warn("AI quota cookie not provided via environment variable AI_QUOTA_COOKIE - skipping quota scraping service");
+}
+registerQuotaRoutes(app, { db, scraper: quotaScraper });
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
   const auth = getRequestAuthIdentity(req);
@@ -469,6 +481,7 @@ hub.onMessage = (msg: any, client) => {
 };
 
 const config = configStore.load();
+
 for (const bridge of config.bridges) {
   if (bridge.enabled) {
     app.log.info({ bridgeId: bridge.id, host: bridge.host, port: bridge.port }, "Auto connecting enabled bridge");

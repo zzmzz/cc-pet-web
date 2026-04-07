@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import Database from "better-sqlite3";
+import { QuotaScraper } from "../quota-scraper.js";
 
 interface QuotaRecord {
   id: number;
@@ -10,10 +11,11 @@ interface QuotaRecord {
 
 interface QuotaAPIOptions {
   db: Database.Database;
+  scraper?: QuotaScraper | null; // Add scraper instance to API options (optional)
 }
 
 export function registerQuotaRoutes(fastify: FastifyInstance, options: QuotaAPIOptions): void {
-  const { db } = options;
+  const { db, scraper } = options;
 
   // 获取最新用量数据
   fastify.get('/api/quota/current', async (req, reply) => {
@@ -83,7 +85,7 @@ export function registerQuotaRoutes(fastify: FastifyInstance, options: QuotaAPIO
         }
 
         const stmt = db.prepare(query);
-        const results = stmt.all() as QuotaRecord[];
+        const results = stmt.all(...params) as QuotaRecord[];
 
         return results.map(row => ({
           ...row,
@@ -130,6 +132,45 @@ export function registerQuotaRoutes(fastify: FastifyInstance, options: QuotaAPIO
       };
     } catch (error) {
       req.log.error(error, 'Error fetching quota stats');
+      return reply.status(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  // 手动触发爬取
+  fastify.post('/api/quota/manual-scrape', async (req, reply) => {
+    try {
+      if (!scraper) {
+        return { success: false, message: 'Quota scraper not configured - please set AI_QUOTA_COOKIE environment variable' };
+      }
+
+      const result = await scraper.manualScrape();
+
+      if (result.success) {
+        req.log.info('Manual scrape completed successfully');
+      } else {
+        req.log.warn(`Manual scrape failed: ${result.message}`);
+      }
+
+      return result;
+    } catch (error) {
+      req.log.error(error, 'Error during manual scrape');
+      return { success: false, message: 'Manual scrape failed due to internal error' };
+    }
+  });
+
+  // 获取爬取日志
+  fastify.get<{ Querystring: { limit?: number } }>('/api/quota/logs', async (req, reply) => {
+    try {
+      if (!scraper) {
+        return { logs: [], message: 'Quota scraper not configured - please set AI_QUOTA_COOKIE environment variable' };
+      }
+
+      const limit = req.query.limit ? Math.min(parseInt(req.query.limit.toString()), 100) : 20;
+      const logs = await scraper.getScrapeLogs(limit);
+
+      return { logs };
+    } catch (error) {
+      req.log.error(error, 'Error fetching scrape logs');
       return reply.status(500).send({ error: 'Internal server error' });
     }
   });

@@ -3,13 +3,22 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 
 interface QuotaData {
-  // 定义从页面抓取的数据结构
-  // 根据实际页面结构可能会有所不同
-  used: number;
-  total: number;
-  percentage: number;
+  used: number;        // Claude 费用
+  total: number;       // Claude 额度
+  percentage: number;  // Claude 使用率
+  cursorCost: number;  // Cursor 费用
+  totalCost: number;   // 合计费用
   updateTime: string;
-  [key: string]: any; // 支持额外字段
+  [key: string]: any;
+}
+
+interface ScrapeLog {
+  id: number;
+  timestamp: string;
+  status: 'success' | 'failure';
+  message: string;
+  response_code?: number;
+  response_size?: number;
 }
 
 export class QuotaScraper {
@@ -19,11 +28,38 @@ export class QuotaScraper {
   constructor(db: Database.Database, cookie: string) {
     this.db = db;
     this.cookie = cookie;
+
+    // 初始化爬取日志表
+    this.initLogTable();
+  }
+
+  private initLogTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS quota_scrape_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL,
+        message TEXT,
+        response_code INTEGER,
+        response_size INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_quota_scrape_logs_timestamp ON quota_scrape_logs(timestamp);
+    `);
+  }
+
+  private async logScrapeAttempt(status: 'success' | 'failure', message: string, response_code?: number, response_size?: number): Promise<void> {
+    const stmt = this.db.prepare(`
+      INSERT INTO quota_scrape_logs (status, message, response_code, response_size)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    stmt.run(status, message, response_code, response_size);
   }
 
   async scrape(): Promise<QuotaData | null> {
     try {
       // 使用提供的cookie访问页面
+      const startTime = Date.now();
       const response = await axios.get('https://ai-quota.fintopia.tech/users/27', {
         headers: {
           'Cookie': `remember_token=${this.cookie};`,
@@ -33,11 +69,15 @@ export class QuotaScraper {
           'Accept-Encoding': 'gzip, deflate',
           'Connection': 'keep-alive',
         },
-        timeout: 10000 // 10秒超时
+        timeout: 15000 // 增加到15秒超时
       });
 
+      const duration = Date.now() - startTime;
+
       if (response.status !== 200) {
-        console.error(`Failed to fetch quota page: ${response.status} ${response.statusText}`);
+        const errorMsg = `Failed to fetch quota page: ${response.status} ${response.statusText}`;
+        await this.logScrapeAttempt('failure', errorMsg, response.status, response.data?.length);
+        console.error(errorMsg);
         return null;
       }
 
@@ -45,73 +85,128 @@ export class QuotaScraper {
       const $ = cheerio.load(response.data);
 
       // 解析页面数据 - 需要根据实际页面结构调整
-      // 这里是通用的解析逻辑，可能需要根据实际页面元素进行调整
       const quotaData: QuotaData = this.parseQuotaPage($);
+
+      if (!quotaData || Object.keys(quotaData).length === 0) {
+        const errorMsg = 'Could not parse quota data from response';
+        await this.logScrapeAttempt('failure', errorMsg, response.status, response.data?.length);
+        console.error(errorMsg);
+        return null;
+      }
 
       // 存储抓取的原始内容（可选，用于调试）
       await this.storeRawContent(response.data, quotaData);
 
+      // 记录成功日志
+      await this.logScrapeAttempt('success', `Successfully scraped quota data in ${duration}ms`, response.status, response.data?.length);
+
+      console.log(`Successfully scraped quota data: Claude=$${quotaData.used}/$${quotaData.total} (${quotaData.percentage}%), Cursor=$${quotaData.cursorCost}, Total=$${quotaData.totalCost}`);
+
       return quotaData;
-    } catch (error) {
-      console.error('Error scraping quota data:', error);
+    } catch (error: any) {
+      const errorMsg = `Error scraping quota data: ${error.message || error}`;
+      await this.logScrapeAttempt('failure', errorMsg);
+      console.error(errorMsg);
+      if (error.response) {
+        console.error(`Response status: ${error.response.status}`);
+        console.error(`Response data: ${error.response.data?.substring(0, 500)}`);
+      }
       return null;
     }
   }
 
-  private parseQuotaPage($: cheerio.CheerioAPI): QuotaData {
-    // 这里的解析逻辑需要根据实际页面结构进行调整
-    // 目前是通用的解析模式，需要根据真实页面元素进行适配
+  async manualScrape(): Promise<{ success: boolean; message: string; data?: any }> {
+    console.log('Manual scrape triggered');
+    try {
+      const result = await this.scrape();
+      if (result) {
+        return {
+          success: true,
+          message: `Manual scrape successful. Claude: $${result.used}/$${result.total} (${result.percentage}%), Cursor: $${result.cursorCost}, Total: $${result.totalCost}`,
+          data: result
+        };
+      } else {
+        return {
+          success: false,
+          message: 'Manual scrape failed - no data retrieved'
+        };
+      }
+    } catch (error: any) {
+      const errorMsg = `Manual scrape failed: ${error.message || error}`;
+      console.error(errorMsg);
+      return {
+        success: false,
+        message: errorMsg
+      };
+    }
+  }
 
+  async getScrapeLogs(limit: number = 20): Promise<ScrapeLog[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM quota_scrape_logs
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+    return stmt.all([limit]) as ScrapeLog[];
+  }
+
+  private parseDollar(text: string): number {
+    const match = text.match(/\$\s*([\d,]+\.?\d*)/);
+    return match ? parseFloat(match[1].replace(/,/g, '')) : 0;
+  }
+
+  private parsePercent(text: string): number {
+    const match = text.match(/([\d.]+)\s*%/);
+    return match ? parseFloat(match[1]) : 0;
+  }
+
+  private parseQuotaPage($: cheerio.CheerioAPI): QuotaData {
     let used = 0;
     let total = 0;
     let percentage = 0;
+    let cursorCost = 0;
+    let totalCost = 0;
 
-    // 尝试多种常见的配额显示模式
-    // 方案1: 查找包含配额相关信息的元素
-    const text = $('body').text();
+    // 结构化解析：遍历卡片，根据标签文字识别
+    $('.card').each((_, el) => {
+      const card = $(el);
+      const labelText = card.find('[style*="font-weight:600"]').first().text().trim();
+      const statValues = card.find('.stat-value');
 
-    // 使用正则表达式提取配额信息 (需要根据实际页面格式调整)
-    const usedMatch = text.match(/used[:\s]+([\d,]+\.?\d*)/i) ||
-                     text.match(/已用[:\s]+([\d,]+\.?\d*)/);
-    if (usedMatch && usedMatch[1]) {
-      used = parseFloat(usedMatch[1].replace(/,/g, ''));
-    }
-
-    const totalMatch = text.match(/total[:\s]+([\d,]+\.?\d*)/i) ||
-                      text.match(/总量[:\s]+([\d,]+\.?\d*)|总额[:\s]+([\d,]+\.?\d*)/);
-    if (totalMatch && totalMatch[1]) {
-      total = parseFloat(totalMatch[1].replace(/,/g, ''));
-    }
-
-    const percentageMatch = text.match(/(\d+)%\s*(?:used|已用)/i) ||
-                           text.match(/(\d+)%/);
-    if (percentageMatch && percentageMatch[1]) {
-      percentage = parseFloat(percentageMatch[1]);
-    }
-
-    // 如果上面的方法都没有成功解析，则尝试查找数值模式
-    if (used === 0 || total === 0) {
-      const numbers = text.match(/\b\d+(?:[,.]\d+)?\b/g);
-      if (numbers && numbers.length >= 2) {
-        const numValues = numbers.map(n => parseFloat(n.replace(/,/g, '')));
-        // 尝试找出最大的两个数作为total和used（取决于页面显示顺序）
-        numValues.sort((a, b) => b - a);
-        if (numValues.length >= 2) {
-          total = numValues[0];
-          used = numValues[1];
-          if (total > 0) {
-            percentage = Math.round((used / total) * 100);
-          }
+      if (labelText.includes('ClaudeCode')) {
+        // Claude 卡片有 3 个 stat-value: 费用、额度、使用率
+        if (statValues.length >= 3) {
+          used = this.parseDollar(statValues.eq(0).text());
+          total = this.parseDollar(statValues.eq(1).text());
+          percentage = this.parsePercent(statValues.eq(2).text());
+        }
+      } else if (labelText.includes('Cursor')) {
+        // Cursor 卡片有 1 个 stat-value: 费用
+        if (statValues.length >= 1) {
+          cursorCost = this.parseDollar(statValues.eq(0).text());
         }
       }
+    });
+
+    // 合计卡片使用 card-glow class
+    const glowCard = $('.card-glow');
+    if (glowCard.length) {
+      const glowValue = glowCard.find('.stat-value').first().text();
+      totalCost = this.parseDollar(glowValue);
+    }
+
+    // 如果结构化解析未获取到 totalCost，用 used + cursorCost 推算
+    if (totalCost === 0 && (used > 0 || cursorCost > 0)) {
+      totalCost = used + cursorCost;
     }
 
     return {
       used,
       total,
       percentage,
+      cursorCost,
+      totalCost,
       updateTime: new Date().toISOString(),
-      rawTextPreview: text.substring(0, 200) // 预览原始文本的前200个字符
     };
   }
 

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { QuotaChart } from './QuotaChart';
+import { QuotaControls } from './QuotaControls';
+import { authenticatedFetch } from "../utils/api-client";
 
 interface QuotaData {
   id: number;
@@ -8,8 +10,9 @@ interface QuotaData {
     used: number;
     total: number;
     percentage: number;
+    cursorCost?: number;
+    totalCost?: number;
     updateTime: string;
-    rawTextPreview?: string;
     [key: string]: any;
   };
 }
@@ -23,7 +26,7 @@ const AIVolumeDisplay: React.FC = () => {
     const fetchCurrentQuota = async () => {
       try {
         setLoading(true);
-        const response = await fetch('/api/quota/current');
+        const response = await authenticatedFetch('/api/quota/current');
 
         if (!response.ok) {
           if (response.status === 404) {
@@ -52,6 +55,17 @@ const AIVolumeDisplay: React.FC = () => {
 
     return () => clearInterval(interval);
   }, []);
+
+  const handleManualScrape = (result: any) => {
+    // Refresh the current quota data after manual scrape
+    if (result.success && result.data) {
+      setCurrentQuota({
+        id: Date.now(), // Use timestamp as ID since we don't have a real ID
+        timestamp: new Date().toISOString(),
+        usage_data: result.data
+      });
+    }
+  };
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString('zh-CN');
@@ -83,34 +97,41 @@ const AIVolumeDisplay: React.FC = () => {
 
         {currentQuota ? (
           <>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div className="text-center">
-                <p className="text-2xl font-bold text-primary">{currentQuota.usage_data.percentage || 0}%</p>
-                <p className="text-xs text-text-secondary">使用率</p>
+                <p className="text-lg font-bold text-blue-500">
+                  ${typeof currentQuota.usage_data.used === 'number' ? currentQuota.usage_data.used.toFixed(2) : 'N/A'}
+                </p>
+                <p className="text-xs text-text-secondary">Claude / ${typeof currentQuota.usage_data.total === 'number' ? currentQuota.usage_data.total.toFixed(0) : 'N/A'}</p>
               </div>
               <div className="text-center">
-                <p className="text-lg font-semibold text-text-primary">
-                  {typeof currentQuota.usage_data.used === 'number' ? currentQuota.usage_data.used.toLocaleString() : 'N/A'} /
-                  {' '}{typeof currentQuota.usage_data.total === 'number' ? currentQuota.usage_data.total.toLocaleString() : 'N/A'}
+                <p className="text-lg font-bold text-purple-500">
+                  ${typeof currentQuota.usage_data.cursorCost === 'number' ? currentQuota.usage_data.cursorCost.toFixed(2) : 'N/A'}
                 </p>
-                <p className="text-xs text-text-secondary">已用 / 总量</p>
+                <p className="text-xs text-text-secondary">Cursor</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold text-primary">
+                  ${typeof currentQuota.usage_data.totalCost === 'number' ? currentQuota.usage_data.totalCost.toFixed(2) : 'N/A'}
+                </p>
+                <p className="text-xs text-text-secondary">合计</p>
               </div>
             </div>
 
-            {/* Progress bar */}
+            {/* Progress bar - Claude quota usage */}
             <div className="mt-4">
               <div className="w-full bg-gray-200 rounded-full h-2.5">
                 <div
                   className={`h-2.5 rounded-full ${
                     (currentQuota.usage_data.percentage || 0) > 80 ? 'bg-red-500' :
-                    (currentQuota.usage_data.percentage || 0) > 60 ? 'bg-yellow-500' : 'bg-green-500'
+                    (currentQuota.usage_data.percentage || 0) > 60 ? 'bg-yellow-500' : 'bg-blue-500'
                   }`}
                   style={{ width: `${Math.min(currentQuota.usage_data.percentage || 0, 100)}%` }}
                 ></div>
               </div>
               <div className="flex justify-between text-xs text-text-secondary mt-1">
-                <span>0%</span>
-                <span>{typeof currentQuota.usage_data.total === 'number' ? currentQuota.usage_data.total.toLocaleString() : 'N/A'}</span>
+                <span>Claude {currentQuota.usage_data.percentage || 0}%</span>
+                <span>${typeof currentQuota.usage_data.total === 'number' ? currentQuota.usage_data.total.toFixed(0) : 'N/A'}</span>
               </div>
             </div>
 
@@ -130,6 +151,9 @@ const AIVolumeDisplay: React.FC = () => {
         )}
       </div>
 
+      {/* Manual Controls */}
+      <QuotaControls onManualScrape={handleManualScrape} />
+
       {/* Historical Chart */}
       <div className="bg-surface rounded-lg p-4 border border-border">
         <QuotaChart />
@@ -137,8 +161,9 @@ const AIVolumeDisplay: React.FC = () => {
 
       {/* Info */}
       <div className="text-xs text-text-secondary">
-        <p>• 用量数据每小时自动更新</p>
-        <p>• 绿色&lt;60%, 黄色60-80%, 红色&gt;80%</p>
+        <p>• 用量数据每小时自动更新（Claude + Cursor）</p>
+        <p>• 进度条显示 Claude 额度使用率</p>
+        <p>• 手动爬取：可随时触发数据抓取并查看日志</p>
       </div>
     </div>
   );
