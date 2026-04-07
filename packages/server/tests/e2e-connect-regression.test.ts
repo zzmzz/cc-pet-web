@@ -446,6 +446,59 @@ describe("e2e bridge connection status sync", () => {
     }
   }, 30_000);
 
+  it("maps probe card reply to skills-updated without persisting card chat", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
+
+      await waitForWsMessage(
+        bridgeClient,
+        (msg: any) => msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
+        10_000,
+      );
+
+      bridgeClient.send(
+        JSON.stringify({
+          type: "card",
+          session_key: "default",
+          reply_ctx: SKILLS_PROBE_REPLY_CTX,
+          card: {
+            header: { title: "技能列表", color: "blue" },
+            elements: [
+              { type: "markdown", content: "/card-skill — from card markdown\n" },
+              { type: "actions", buttons: [{ text: "执行 another-skill", value: "cmd:/another-skill" }] },
+            ],
+          },
+        }),
+      );
+
+      const skillsEvt = await waitForWsMessage<{ type: string; commands: Array<{ name?: string; command?: string }> }>(
+        dashboardWs,
+        (msg) =>
+          msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
+          Array.isArray(msg.commands) &&
+          msg.commands.some((c) => (c.name ?? c.command) === "card-skill") &&
+          msg.commands.some((c) => (c.name ?? c.command) === "another-skill"),
+        10_000,
+      );
+      const names = skillsEvt.commands.map((c) => c.name ?? c.command?.replace(/^\//, ""));
+      expect(names).toContain("card-skill");
+      expect(names).toContain("another-skill");
+
+      await waitFor(async () => {
+        const history = await stack.fetchHistory();
+        return !history.some((m) => m.role === "assistant" && m.content.includes("技能列表"));
+      });
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
   it("after register_ack also sends /commands probe and merges parsed slash commands", async () => {
     const stack = await startServerAndBridge();
     const dashboardWs = await stack.openDashboardWs();

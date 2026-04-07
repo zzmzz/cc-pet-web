@@ -17,6 +17,7 @@ const HEADER_COLORS: Record<string, string> = {
   red: "border-red-400 bg-red-50 text-red-800",
   orange: "border-orange-400 bg-orange-50 text-orange-800",
   purple: "border-purple-400 bg-purple-50 text-purple-800",
+  white: "border-gray-300 bg-gray-100 text-gray-800",
 };
 
 function sendCardAction(value: string) {
@@ -39,8 +40,8 @@ function CardElement({ element }: { element: ChatCardElement }) {
   switch (element.type) {
     case "markdown":
       return (
-        <div className="text-sm markdown-body card-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.content}</ReactMarkdown>
+        <div className="text-sm text-gray-800 whitespace-pre-wrap break-words markdown-body card-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.content.replace(/\n/g, "  \n")}</ReactMarkdown>
         </div>
       );
     case "divider":
@@ -111,11 +112,11 @@ function CardElement({ element }: { element: ChatCardElement }) {
     }
     case "note":
       return (
-        <div className="flex items-center gap-2 text-xs text-gray-400">
+        <div className="flex items-center gap-2 text-xs text-gray-500">
           {element.tag && (
-            <span className="bg-gray-100 text-gray-500 rounded px-1.5 py-0.5">{element.tag}</span>
+            <span className="bg-gray-100 text-gray-600 rounded px-1.5 py-0.5">{element.tag}</span>
           )}
-          <span>{element.text}</span>
+          <span className="whitespace-pre-wrap break-words">{element.text}</span>
         </div>
       );
     default:
@@ -128,9 +129,9 @@ export function CardMessage({ card }: Props) {
   const headerClass = HEADER_COLORS[headerColor] ?? HEADER_COLORS.blue;
 
   return (
-    <div className="rounded-lg border border-gray-200 overflow-hidden bg-white shadow-sm max-w-[85%]">
+    <div className="rounded-lg border border-gray-300 overflow-hidden bg-gray-50 text-gray-800 shadow-sm max-w-[85%]">
       {card.header && (
-        <div className={`border-l-4 px-3 py-2 font-medium text-sm ${headerClass}`}>
+        <div className={`border-l-4 px-3 py-2 font-medium text-sm whitespace-pre-wrap break-words ${headerClass}`}>
           {card.header.title}
         </div>
       )}

@@ -8,7 +8,7 @@ import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc
 import type { BridgeIncoming } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
 import { findTokenIdentity } from "./auth/token-auth.js";
-import { parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
+import { parseSlashCommandsFromProbeCard, parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
 import {
   bridgeReplyCtx,
   bridgeReplyStreamDone,
@@ -312,6 +312,24 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name });
       break;
     case "card":
+      const cardReplyCtx = bridgeReplyCtx(raw);
+      if (cardReplyCtx === SKILLS_PROBE_REPLY_CTX || cardReplyCtx === COMMANDS_PROBE_REPLY_CTX) {
+        const probeSource = cardReplyCtx === SKILLS_PROBE_REPLY_CTX ? "skills" : "commands";
+        const commands = parseSlashCommandsFromProbeCard(msg.card);
+        const merged = setLatestProbeCommands(connId, probeSource, commands);
+        app.log.info(
+          {
+            connectionId: connId,
+            probe: probeSource,
+            commands: commands.length,
+            merged: merged.length,
+            preview: merged.slice(0, 8).map((c) => c.name),
+          },
+          "Bridge slash probe parsed card commands",
+        );
+        hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: merged });
+        break;
+      }
       messageStore.save({
         id: `msg-${Date.now()}`, role: "assistant",
         content: msg.card?.header?.title ?? "",
