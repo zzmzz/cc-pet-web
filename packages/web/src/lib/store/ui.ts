@@ -1,20 +1,17 @@
 import { create } from "zustand";
 
 export type PetState = "idle" | "thinking" | "talking" | "happy" | "error";
-export type WindowMode = "pet" | "chat";
 
 interface UIState {
   chatOpen: boolean;
   petState: PetState;
   isMobile: boolean;
-  windowMode: WindowMode;
-  desktopConfigOpen: boolean;
+  settingsOpen: boolean;
 
   setChatOpen: (open: boolean) => void;
   setPetState: (state: PetState) => void;
   setIsMobile: (mobile: boolean) => void;
-  setWindowMode: (mode: WindowMode) => void;
-  setDesktopConfigOpen: (open: boolean) => void;
+  setSettingsOpen: (open: boolean) => void;
 }
 
 const UI_STATE_STORAGE_KEY = "cc-pet-ui-state";
@@ -57,12 +54,10 @@ function persistUIState(next: PersistedUIState): void {
 const persistedUI = readPersistedUIState();
 
 export const useUIStore = create<UIState>((set) => ({
-  /** Web 主界面聊天区始终在主区域展示；chatOpen 主要表示宠物交互状态。未读是否计入在 App 中对 Web/Tauri 分别处理。 */
   chatOpen: persistedUI.chatOpen ?? true,
   petState: persistedUI.petState ?? "idle",
   isMobile: false,
-  windowMode: "chat",
-  desktopConfigOpen: false,
+  settingsOpen: false,
 
   setChatOpen: (open) =>
     set((s) => {
@@ -75,11 +70,5 @@ export const useUIStore = create<UIState>((set) => ({
       return { petState };
     }),
   setIsMobile: (isMobile) => set({ isMobile }),
-  setWindowMode: (mode) =>
-    set((s) => {
-      const chatOpen = mode === "chat";
-      persistUIState({ chatOpen, petState: s.petState });
-      return { windowMode: mode, chatOpen };
-    }),
-  setDesktopConfigOpen: (open) => set({ desktopConfigOpen: open }),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
 }));

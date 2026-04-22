@@ -5,6 +5,5 @@ packages/web/tests
 .git
 *.db
 *.db-journal
-packages/desktop
 target
 .superpowers

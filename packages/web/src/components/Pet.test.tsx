@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { PetFull, PetMini } from "./Pet.js";
 import { useUIStore } from "../lib/store/ui.js";
 import { setPlatform } from "../lib/platform.js";
@@ -19,8 +19,7 @@ describe("Pet", () => {
       chatOpen: true,
       petState: "idle",
       isMobile: false,
-      windowMode: "chat",
-      desktopConfigOpen: false,
+      settingsOpen: false,
     });
     localStorage.clear();
     localStorage.setItem("cc-pet-token", "pet-token");
@@ -67,18 +66,4 @@ describe("Pet", () => {
     expect(image!.className).toContain("bg-transparent");
   });
 
-  it("on Tauri double-click from pet mode opens chat with anchorFromPet", () => {
-    vi.stubGlobal("__TAURI__", {});
-    const setWindowMode = vi.fn();
-    setPlatform({ ...minimalPlatform, setWindowMode });
-    useUIStore.setState({ windowMode: "pet", chatOpen: false });
-
-    const { container } = render(<PetFull />);
-    const motionDiv = container.querySelector(".cursor-pointer");
-    expect(motionDiv).not.toBeNull();
-    fireEvent.doubleClick(motionDiv!);
-
-    expect(useUIStore.getState().windowMode).toBe("chat");
-    expect(setWindowMode).toHaveBeenCalledWith("chat", { anchorFromPet: true });
-  });
 });

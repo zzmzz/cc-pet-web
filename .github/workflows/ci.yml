@@ -41,15 +41,3 @@ jobs:
 
       - name: Typecheck shared
         run: pnpm --filter @cc-pet/shared run typecheck
-
-  desktop-rust-check:
-    name: Desktop (Rust check, macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cargo check (Tauri uses macOS-only APIs)
-        working-directory: packages/desktop/src-tauri
-        run: cargo check

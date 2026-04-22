@@ -1,8 +1,6 @@
 import { motion, type TargetAndTransition } from "framer-motion";
-import { useEffect, useRef, useState } from "react";
-import { useUIStore, type PetState, type WindowMode } from "../lib/store/ui.js";
-import { isTauri, getPlatform } from "../lib/platform.js";
-import { closeDesktopChat } from "../lib/desktop-chat.js";
+import { useEffect, useState } from "react";
+import { useUIStore, type PetState } from "../lib/store/ui.js";
 
 import idleImg from "../assets/pet/idle.png";
 import thinkingImg from "../assets/pet/thinking.png";
@@ -112,72 +110,7 @@ export function PetFull() {
   const petState = useUIStore((s) => s.petState);
   const chatOpen = useUIStore((s) => s.chatOpen);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
-  const windowMode = useUIStore((s) => s.windowMode);
-  const setWindowMode = useUIStore((s) => s.setWindowMode);
-  const setDesktopConfigOpen = useUIStore((s) => s.setDesktopConfigOpen);
   const petImage = usePetImage(petState);
-  const [contextMenuOpen, setContextMenuOpen] = useState(false);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-
-  const handleDesktopToggle = () => {
-    const newMode: WindowMode = windowMode === "pet" ? "chat" : "pet";
-    if (newMode === "chat") {
-      setWindowMode("chat");
-      getPlatform().setWindowMode?.("chat", { anchorFromPet: true });
-    } else {
-      closeDesktopChat();
-    }
-  };
-
-  useEffect(() => {
-    if (!contextMenuOpen) return;
-    const onDocDown = (evt: MouseEvent) => {
-      if (!contextMenuRef.current?.contains(evt.target as Node)) {
-        setContextMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
-  }, [contextMenuOpen]);
-
-  useEffect(() => {
-    if (!isTauri() || windowMode !== "pet") return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen("tauri://move", () => {
-          if (cancelled) return;
-          if (timer) clearTimeout(timer);
-          timer = setTimeout(() => {
-            void getPlatform().savePetPosition?.();
-          }, 300);
-        }),
-      )
-      .then((u) => {
-        if (cancelled) { u(); return; }
-        unlisten = u;
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-      unlisten?.();
-    };
-  }, [windowMode]);
-
-  useEffect(() => {
-    if (!isTauri() || windowMode !== "pet" || !contextMenuOpen) return;
-    void import("@tauri-apps/api/core").then(({ invoke }) => {
-      void invoke("set_pet_hit_through_enabled", { enabled: false });
-    });
-    return () => {
-      void import("@tauri-apps/api/core").then(({ invoke }) => {
-        void invoke("set_pet_hit_through_enabled", { enabled: true });
-      });
-    };
-  }, [contextMenuOpen, windowMode]);
 
   return (
     <div className="relative">
@@ -185,26 +118,7 @@ export function PetFull() {
         className="cursor-pointer select-none"
         animate={STATE_ANIMATIONS[petState]}
         onClick={() => {
-          if (isTauri()) {
-            if (windowMode === "chat") handleDesktopToggle();
-          } else {
-            setChatOpen(!chatOpen);
-          }
-        }}
-        onDoubleClick={() => {
-          if (isTauri() && windowMode === "pet") handleDesktopToggle();
-        }}
-        onMouseDown={(evt) => {
-          if (evt.button !== 0) return;
-          if (isTauri() && windowMode === "pet") {
-            evt.preventDefault();
-            void getPlatform().startDrag?.();
-          }
-        }}
-        onContextMenu={(evt) => {
-          if (!isTauri()) return;
-          evt.preventDefault();
-          setContextMenuOpen(true);
+          setChatOpen(!chatOpen);
         }}
       >
         <img
@@ -217,52 +131,6 @@ export function PetFull() {
           }}
         />
       </motion.div>
-      {isTauri() && contextMenuOpen ? (
-        <div
-          ref={contextMenuRef}
-          className="absolute left-full top-1/2 z-40 min-w-[130px] -translate-y-1/2 rounded-md border border-border bg-surface-secondary p-1 shadow-lg"
-        >
-          <button
-            className="block w-full rounded px-2 py-1 text-left text-xs text-text-primary hover:bg-surface"
-            onClick={() => {
-              setContextMenuOpen(false);
-              setWindowMode("chat");
-              getPlatform().setWindowMode?.("chat", { anchorFromPet: true });
-            }}
-          >
-            打开聊天
-          </button>
-          <button
-            className="block w-full rounded px-2 py-1 text-left text-xs text-text-primary hover:bg-surface"
-            onClick={() => {
-              setContextMenuOpen(false);
-              setWindowMode("chat");
-              getPlatform().setWindowMode?.("chat");
-              setDesktopConfigOpen(true);
-            }}
-          >
-            设置
-          </button>
-          <button
-            className="block w-full rounded px-2 py-1 text-left text-xs text-text-primary hover:bg-surface"
-            onClick={() => {
-              setContextMenuOpen(false);
-              getPlatform().toggleVisibility?.();
-            }}
-          >
-            隐藏/显示
-          </button>
-          <button
-            className="block w-full rounded px-2 py-1 text-left text-xs text-red-500 hover:bg-red-50"
-            onClick={() => {
-              setContextMenuOpen(false);
-              getPlatform().quit?.();
-            }}
-          >
-            退出
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -278,11 +146,7 @@ export function PetMini() {
       className={`w-8 h-8 rounded-full border-2 ${STATE_COLORS[petState]} overflow-hidden flex-shrink-0 bg-transparent`}
       animate={STATE_ANIMATIONS[petState]}
       onClick={() => {
-        if (isTauri()) {
-          closeDesktopChat();
-        } else {
-          setChatOpen(!chatOpen);
-        }
+        setChatOpen(!chatOpen);
       }}
     >
       <img

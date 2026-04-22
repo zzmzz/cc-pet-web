@@ -6,8 +6,7 @@ import { useSessionStore } from "../lib/store/session.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
-import { getPlatform, isTauri } from "../lib/platform.js";
-import { closeDesktopChat } from "../lib/desktop-chat.js";
+import { getPlatform } from "../lib/platform.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -55,7 +54,6 @@ export function ChatWindow() {
 
   useEffect(() => {
     if (!activeConnectionId || !activeSessionKey) return;
-    if (isTauri() && !chatOpen) return;
     clearSessionUnread(activeConnectionId, activeSessionKey);
   }, [chatOpen, activeConnectionId, activeSessionKey, clearSessionUnread]);
   const messages = chatKey ? (messagesByChat[chatKey] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
@@ -96,7 +94,7 @@ export function ChatWindow() {
     if (!text && pendingAttachments.length === 0) return;
 
     if (pendingAttachments.length === 0 && text === "/settings") {
-      useUIStore.getState().setDesktopConfigOpen(true);
+      useUIStore.getState().setSettingsOpen(true);
       setInput("");
       inputRef.current?.focus();
       return;
@@ -273,11 +271,7 @@ export function ChatWindow() {
       }
 
       if (e.key === "Escape") {
-        if (isTauri()) {
-          closeDesktopChat();
-        } else {
-          useUIStore.getState().setChatOpen(false);
-        }
+        useUIStore.getState().setChatOpen(false);
       }
     },
     [slashMenuVisible, slashQuery, slashIndex, agentCommands, handleSlashSelect],

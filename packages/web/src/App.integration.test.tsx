@@ -62,8 +62,7 @@ function resetStores() {
     chatOpen: true,
     petState: "idle",
     isMobile: false,
-    windowMode: "chat",
-    desktopConfigOpen: false,
+    settingsOpen: false,
   });
   useCommandStore.setState({ agentCommandsByConnection: {} });
 }
@@ -107,8 +106,7 @@ describe("App integration", () => {
     }
   });
 
-  it("ignores legacy localStorage server token/url and uses same-origin adapter", async () => {
-    localStorage.setItem("cc-pet-server-url", "http://127.0.0.1:3999");
+  it("uses same-origin adapter with stored token", async () => {
     localStorage.setItem("cc-pet-token", "legacy-token");
     render(<App />);
 

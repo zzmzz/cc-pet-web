@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
-import { setPlatform, isTauri, type PlatformAPI } from "./lib/platform.js";
+import { setPlatform, type PlatformAPI } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
@@ -21,31 +21,10 @@ import {
   sendTaskCompletionNotification,
   shouldRequestPermissionOnUserGesture,
 } from "./lib/notification.js";
-import { getTauriServerBaseUrl, resolveApiUrl } from "./lib/server-url.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
 export default function App() {
-  useEffect(() => {
-    if (!isTauri()) return;
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/event").then(async ({ listen }) => {
-      const u = await listen("cc-pet-open-settings", () => {
-        useUIStore.getState().setDesktopConfigOpen(true);
-      });
-      if (cancelled) {
-        u();
-        return;
-      }
-      unlisten = u;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
   const [ready, setReady] = useState(false);
   const [authBooting, setAuthBooting] = useState(true);
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -60,7 +39,7 @@ export default function App() {
         return;
       }
       try {
-        const res = await fetch(resolveApiUrl("/api/auth/verify"), {
+        const res = await fetch("/api/auth/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: storedToken }),
@@ -90,7 +69,7 @@ export default function App() {
       return false;
     }
     try {
-      const res = await fetch(resolveApiUrl("/api/auth/verify"), {
+      const res = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
@@ -204,26 +183,18 @@ export default function App() {
           }
         };
 
-        /** Web 主界面始终展示当前会话内容，chatOpen 仅表示宠物「展开」状态，不能用来判断用户是否在看当前会话。 */
         const shouldMarkUnread = (cid: string, sessionKey: string): boolean => {
           const active = useSessionStore.getState().activeSessionKey[cid] ?? "default";
           if (active !== sessionKey) return true;
-          if (isTauri()) {
-            const chatOpen = useUIStore.getState().chatOpen;
-            return !chatOpen;
-          }
           return false;
         };
 
-        /** Get last message content for notification */
         const getLastMessageContent = (chatKey: string): string => {
           const messageStore = useMessageStore.getState();
-          // Check streaming content first
           const streaming = messageStore.streamingContent[chatKey];
           if (streaming && streaming.trim().length > 0) {
             return streaming;
           }
-          // Otherwise get last assistant message
           const messages = messageStore.messagesByChat[chatKey] ?? [];
           for (let i = messages.length - 1; i >= 0; i--) {
             if (messages[i].role === "assistant") {
@@ -233,10 +204,8 @@ export default function App() {
           return "";
         };
 
-        /** Send notification if conditions are met */
         const trySendNotification = (cid: string, sKey: string): void => {
           if (!cid || !sKey) return;
-          if (isTauri()) return; // Skip for Tauri desktop app
 
           if (shouldShowNotification(cid, sKey, isPageHidden)) {
             const ck = makeChatKey(cid, sKey);
@@ -373,7 +342,6 @@ export default function App() {
             setPetStateSafely("thinking");
             break;
           case WS_EVENTS.BRIDGE_TYPING_STOP:
-            // Ignore stray/misaligned typing_stop to avoid premature completed state.
             if (!chatKey || typingActiveByChatKey[chatKey] !== true) {
               break;
             }
@@ -480,7 +448,6 @@ export default function App() {
       });
     };
 
-    // Initialize visibility tracking
     const handleVisibilityChange = () => {
       isPageHidden = document.hidden;
     };
@@ -488,8 +455,7 @@ export default function App() {
       document.addEventListener("visibilitychange", handleVisibilityChange);
     }
 
-    // Request notification permission (delayed, non-blocking)
-    if (!isTauri() && checkNotificationSupport()) {
+    if (checkNotificationSupport()) {
       const permission = getNotificationPermission();
       if (permission === "default") {
         if (shouldRequestPermissionOnUserGesture() && typeof document !== "undefined") {
@@ -517,18 +483,10 @@ export default function App() {
     }
 
     const boot = async () => {
-      const serverBase = isTauri() ? getTauriServerBaseUrl() : "";
-      const adapter = isTauri()
-        ? (await import("./lib/tauri-adapter.js")).createTauriAdapter(serverBase, authToken)
-        : createWebAdapter("", authToken);
+      const adapter = createWebAdapter("", authToken);
       if (cancelled) return;
       activeAdapter = adapter;
       setPlatform(adapter);
-
-      if (isTauri()) {
-        useUIStore.getState().setWindowMode("pet");
-        adapter.setWindowMode?.("pet");
-      }
 
       subscribeWs(adapter);
       adapter.connectWs();

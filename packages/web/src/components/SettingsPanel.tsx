@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getPlatform, isTauri } from "../lib/platform.js";
-import {
-  CC_PET_SERVER_URL_KEY,
-  getTauriServerBaseUrl,
-  resolveApiUrl,
-} from "../lib/server-url.js";
+import { getPlatform } from "../lib/platform.js";
 
 const CC_PET_TOKEN_KEY = "cc-pet-token";
 import { useConnectionStore } from "../lib/store/connection.js";
@@ -14,48 +9,31 @@ import {
   getNotificationSettings,
   updateNotificationSettings,
 } from "../lib/notification.js";
-import {
-  getDesktopWindowPrefs,
-  setDesktopWindowPrefs,
-} from "../lib/desktop-window-prefs.js";
 import { AIVolumeDisplay } from "./AIVolumeDisplay.js";
 
 export function SettingsPanel() {
-  const open = useUIStore((s) => s.desktopConfigOpen);
-  const setDesktopConfigOpen = useUIStore((s) => s.setDesktopConfigOpen);
+  const open = useUIStore((s) => s.settingsOpen);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
   const connections = useConnectionStore((s) => s.connections);
   const active = activeConnectionId ? connections.find((c) => c.id === activeConnectionId) : undefined;
 
-  const [serverUrlDraft, setServerUrlDraft] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [tokenSaving, setTokenSaving] = useState(false);
   const [notifyEnabled, setNotifyEnabled] = useState(true);
-  const [petAlwaysOnTop, setPetAlwaysOnTop] = useState(true);
-  const [chatAlwaysOnTop, setChatAlwaysOnTop] = useState(true);
-  const [activeTab, setActiveTab] = useState("general"); // Add state for active tab
+  const [activeTab, setActiveTab] = useState("general");
 
   useEffect(() => {
     if (!open) return;
-    setServerUrlDraft(getTauriServerBaseUrl());
     setTokenDraft(localStorage.getItem(CC_PET_TOKEN_KEY)?.trim() ?? "");
     setTokenError(null);
     setNotifyEnabled(getNotificationSettings().enabled);
-    const w = getDesktopWindowPrefs();
-    setPetAlwaysOnTop(w.petAlwaysOnTop);
-    setChatAlwaysOnTop(w.chatAlwaysOnTop);
-    if (isTauri()) {
-      void getPlatform().setWindowMode?.("settings");
-    }
   }, [open]);
 
   const close = useCallback(() => {
-    setDesktopConfigOpen(false);
-    if (isTauri()) {
-      void getPlatform().setWindowMode?.(useUIStore.getState().windowMode);
-    }
-  }, [setDesktopConfigOpen]);
+    setSettingsOpen(false);
+  }, [setSettingsOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -68,16 +46,6 @@ export function SettingsPanel() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, close]);
-
-  const saveServerUrl = useCallback(() => {
-    const v = serverUrlDraft.trim();
-    if (v.length === 0) {
-      localStorage.removeItem(CC_PET_SERVER_URL_KEY);
-    } else {
-      localStorage.setItem(CC_PET_SERVER_URL_KEY, v);
-    }
-    window.location.reload();
-  }, [serverUrlDraft]);
 
   const bridgeAction = useCallback(
     async (path: "connect" | "disconnect") => {
@@ -103,7 +71,7 @@ export function SettingsPanel() {
     setTokenSaving(true);
     setTokenError(null);
     try {
-      const res = await fetch(resolveApiUrl("/api/auth/verify"), {
+      const res = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
@@ -213,62 +181,7 @@ export function SettingsPanel() {
                 )}
               </section>
 
-              {isTauri() ? (
-                <section className="mb-5 border-b border-border pb-5">
-                  <h3 className="mb-2 text-sm font-medium text-text-primary">窗口置顶</h3>
-                  <p className="mb-2 text-xs text-text-secondary">
-                    关闭后对应模式下的窗口可被其他应用遮挡。关闭设置后将按当前模式重新应用。
-                  </p>
-                  <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-                    <input
-                      type="checkbox"
-                      checked={petAlwaysOnTop}
-                      onChange={(e) => {
-                        const on = e.target.checked;
-                        setPetAlwaysOnTop(on);
-                        setDesktopWindowPrefs({ petAlwaysOnTop: on });
-                      }}
-                    />
-                    宠物窗口始终置顶
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-                    <input
-                      type="checkbox"
-                      checked={chatAlwaysOnTop}
-                      onChange={(e) => {
-                        const on = e.target.checked;
-                        setChatAlwaysOnTop(on);
-                        setDesktopWindowPrefs({ chatAlwaysOnTop: on });
-                      }}
-                    />
-                    聊天窗口始终置顶
-                  </label>
-                </section>
-              ) : null}
-
-              {isTauri() ? (
-                <section className="mb-5 border-b border-border pb-5">
-                  <h3 className="mb-2 text-sm font-medium text-text-primary">服务地址</h3>
-                  <p className="mb-2 text-xs text-text-secondary">
-                    留空表示使用内置页面同源。修改后需重新加载应用。
-                  </p>
-                  <input
-                    className="mb-2 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-gray-500 outline-none focus:ring-2 focus:ring-primary"
-                    placeholder="https://example.com"
-                    value={serverUrlDraft}
-                    onChange={(e) => setServerUrlDraft(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-                    onClick={saveServerUrl}
-                  >
-                    保存并重新加载
-                  </button>
-                </section>
-              ) : null}
-
-              {!isTauri() && checkNotificationSupport() ? (
+              {checkNotificationSupport() ? (
                 <section className="mb-5 border-b border-border pb-5">
                   <h3 className="mb-2 text-sm font-medium text-text-primary">通知</h3>
                   <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">

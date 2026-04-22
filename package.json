@@ -8,10 +8,7 @@
     "dev:server": "CC_PET_DATA_DIR=\"$INIT_CWD/.data\" pnpm --filter @cc-pet/server dev",
     "dev:web": "pnpm --filter @cc-pet/web dev",
     "dev": "bash scripts/run-dev.sh",
-    "dev:desktop": "bash scripts/run-dev-desktop.sh",
-    "start:desktop": "bash scripts/start-desktop.sh",
     "build": "pnpm -r build",
-    "build:desktop": "pnpm --filter @cc-pet/web build && pnpm --filter @cc-pet/desktop build",
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter @cc-pet/server test -- tests/e2e-connect-regression.test.ts && pnpm --filter @cc-pet/web test -- src/App.integration.test.tsx",
     "lint": "pnpm -r lint"

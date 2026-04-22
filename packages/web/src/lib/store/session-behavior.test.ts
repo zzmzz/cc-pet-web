@@ -15,7 +15,7 @@ function resetStores() {
     chatOpen: false,
     petState: "idle",
     isMobile: false,
-    desktopConfigOpen: false,
+    settingsOpen: false,
   });
 }
 
