@@ -1,5 +1,14 @@
 FROM node:22-slim AS builder
 
+# 设置时区为 Asia/Shanghai
+RUN apt-get update && apt-get install -y tzdata \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Asia/Shanghai
+
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
@@ -21,6 +30,15 @@ RUN pnpm install --frozen-lockfile --filter @cc-pet/web --filter @cc-pet/shared
 RUN pnpm --filter @cc-pet/web build
 
 FROM node:22-slim AS runner
+
+# 设置时区为 Asia/Shanghai
+RUN apt-get update && apt-get install -y tzdata \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Asia/Shanghai
 
 RUN corepack enable && corepack prepare pnpm@latest --activate
 

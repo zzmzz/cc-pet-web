@@ -32,10 +32,12 @@ interface LinkPreviewData {
   image?: string;
   isFile?: boolean;
   fileName?: string;
+  contentType?: string;
 }
 
 const LINK_PREVIEW_CACHE = new Map<string, LinkPreviewData | null>();
 const LINK_PREVIEW_INFLIGHT = new Map<string, Promise<LinkPreviewData | null>>();
+const IMAGE_LINK_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"]);
 const FILE_LINK_EXTS = new Set([
   "zip", "rar", "7z", "tar", "gz", "bz2",
   "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv",
@@ -119,6 +121,12 @@ function isFileLikeLink(url: URL): boolean {
   if (FILE_LINK_EXTS.has(ext)) return true;
   const q = url.search.toLowerCase();
   return q.includes("download=") || q.includes("filename=");
+}
+
+function isImageLink(url: URL, contentType?: string): boolean {
+  if (contentType?.startsWith("image/")) return true;
+  const ext = url.pathname.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_LINK_EXTS.has(ext);
 }
 
 function getDisplayFileName(url: URL): string {
@@ -233,6 +241,32 @@ function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactN
       copyTimerRef.current = null;
     }, 1200);
   }, [normalizedHref]);
+
+  const imageUrl = preview?.finalUrl || normalizedHref;
+  const isImage = isImageLink(effectiveUrl, preview?.contentType);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
+  if (isImage && !imgError) {
+    return (
+      <a
+        href={normalizedHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="image-preview-card"
+      >
+        <img
+          src={imageUrl}
+          alt={fileName || "图片"}
+          className={`image-preview-img ${imgLoaded ? "loaded" : ""}`}
+          loading="lazy"
+          onLoad={() => setImgLoaded(true)}
+          onError={() => setImgError(true)}
+        />
+        {!imgLoaded && <span className="image-preview-loading">加载中...</span>}
+      </a>
+    );
+  }
 
   if (fileLike || previewIsFile) {
     return (

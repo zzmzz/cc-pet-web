@@ -26,6 +26,7 @@ export function registerMiscRoutes(app: FastifyInstance) {
           image: "",
           isFile: true,
           fileName: fileName || undefined,
+          contentType: contentType || undefined,
         };
       }
       const html = await res.text();
