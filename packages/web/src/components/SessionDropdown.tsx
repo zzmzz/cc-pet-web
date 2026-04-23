@@ -11,17 +11,19 @@ const EMPTY_SESSIONS: Session[] = [];
 const RECENT_VISIBLE = 2;
 
 function formatTime(ts: number): string {
-  const now = Date.now();
-  const diff = now - ts;
-  const oneDay = 86_400_000;
-  if (diff < oneDay) {
-    return new Date(ts).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  const now = new Date();
+  const target = new Date(ts);
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const daysDiff = Math.floor((todayStart - target.getTime()) / 86_400_000);
+  if (daysDiff < 0) {
+    return target.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   }
-  if (diff < oneDay * 7) {
-    const days = Math.floor(diff / oneDay);
-    return days === 1 ? "昨天" : `${days}天前`;
+  if (daysDiff === 0) {
+    return target.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   }
-  return new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+  if (daysDiff === 1) return "昨天";
+  if (daysDiff < 7) return `${daysDiff}天前`;
+  return target.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
 /** Aligns with ../cc-pet labels; accepts shared `TaskPhase` and legacy bridge strings. */
@@ -62,6 +64,23 @@ function phaseForSession(
 ): string {
   const p = taskStateByConnection[connectionId]?.[sessionKey]?.phase;
   return formatSessionPhase(p ?? "idle");
+}
+
+function isActivePhaseCss(
+  connectionId: string,
+  sessionKey: string,
+  taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
+): { dot: string; text: string } {
+  const p = taskStateByConnection[connectionId]?.[sessionKey]?.phase ?? "idle";
+  if (p === "thinking" || p === "processing" || p === "working")
+    return { dot: "bg-accent animate-pulse", text: "text-accent font-medium" };
+  if (p === "waiting_confirm" || p === "awaiting_confirmation")
+    return { dot: "bg-amber-500 animate-pulse", text: "text-amber-600 font-medium" };
+  if (p === "possibly_stuck" || p === "stalled")
+    return { dot: "bg-amber-500", text: "text-amber-600 font-medium" };
+  if (p === "failed")
+    return { dot: "bg-red-500", text: "text-red-500 font-medium" };
+  return { dot: "bg-gray-500", text: "text-gray-600" };
 }
 
 function latestMessageByConnection(messagesByChat: Record<string, ChatMessage[]>): Record<string, number> {
@@ -346,38 +365,43 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
               {inactive.length > 0 && (
                 <div className="px-3 pb-1">
                   <p className="text-xs font-semibold text-gray-700 mb-1">最近会话</p>
-                  {recentInactive.map((sess) => (
-                    <div
-                      key={sess.key}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => switchSession(sess.key)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          switchSession(sess.key);
-                        }
-                      }}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer"
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-gray-500 flex-shrink-0" />
-                      <span className="text-[13px] text-gray-800 truncate flex-1">{sessionLabelText(sess)}</span>
-                      <span className="text-xs text-gray-600 flex-shrink-0">
-                        {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}
-                      </span>
-                      {unreadFor(sess.key) > 0 && (
-                        <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
-                          {formatUnread(unreadFor(sess.key))}
+                  <div className={showAll ? "max-h-[40vh] overflow-y-auto" : ""}>
+                    {recentInactive.map((sess) => {
+                      const phaseCss = isActivePhaseCss(activeConnectionId, sess.key, taskStateByConnection);
+                      return (
+                      <div
+                        key={sess.key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => switchSession(sess.key)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            switchSession(sess.key);
+                          }
+                        }}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer"
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${phaseCss.dot}`} />
+                        <span className="text-[13px] text-gray-800 truncate flex-1">{sessionLabelText(sess)}</span>
+                        <span className={`text-xs flex-shrink-0 ${phaseCss.text}`}>
+                          {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}
                         </span>
-                      )}
-                      {confirmDeleteId !== sess.key && (
-                        <span className="text-xs text-gray-600 flex-shrink-0 group-hover/item:hidden">
-                          {formatTime(lastMessageOrCreatedAt(activeConnectionId, sess, messagesByChat))}
-                        </span>
-                      )}
-                      <DeleteBtn sid={sess.key} className="group-hover/item:flex" />
-                    </div>
-                  ))}
+                        {unreadFor(sess.key) > 0 && (
+                          <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
+                            {formatUnread(unreadFor(sess.key))}
+                          </span>
+                        )}
+                        {confirmDeleteId !== sess.key && (
+                          <span className="text-xs text-gray-600 flex-shrink-0 group-hover/item:hidden">
+                            {formatTime(lastMessageOrCreatedAt(activeConnectionId, sess, messagesByChat))}
+                          </span>
+                        )}
+                        <DeleteBtn sid={sess.key} className="group-hover/item:flex" />
+                      </div>
+                      );
+                    })}
+                  </div>
 
                   {!showAll && hiddenCount > 0 && (
                     <button
@@ -387,6 +411,16 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     >
                       <span>▶</span>
                       <span>显示 {hiddenCount} 个更旧的会话</span>
+                    </button>
+                  )}
+                  {showAll && hiddenCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAll(false)}
+                      className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-accent text-[10px]"
+                    >
+                      <span>▼</span>
+                      <span>收起更旧的会话</span>
                     </button>
                   )}
                 </div>

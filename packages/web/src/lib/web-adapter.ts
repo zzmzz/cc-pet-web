@@ -227,7 +227,7 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       const base = serverUrl.trim();
       const requestUrl = base.length > 0 ? `${base}${path}` : path;
       const headers = new Headers(options?.headers ?? {});
-      if (!headers.has("Content-Type")) {
+      if (options?.body && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
       if (token.trim().length > 0) {

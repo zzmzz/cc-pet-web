@@ -47,4 +47,37 @@ export function initSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_ai_quota_timestamp ON ai_quota_history(timestamp);
   `);
+
+  initFts(db);
+}
+
+function initFts(db: Database.Database): void {
+  const ftsExists = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+  ).get();
+
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      id,
+      content,
+      content='messages',
+      content_rowid='rowid',
+      tokenize='unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
+      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
+    END;
+  `);
+
+  if (!ftsExists) {
+    db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
+  }
 }

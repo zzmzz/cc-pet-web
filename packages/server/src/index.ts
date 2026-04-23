@@ -31,6 +31,7 @@ import { registerFileRoutes } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
+import { registerSearchRoutes } from "./api/search.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 
@@ -128,11 +129,12 @@ app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) =>
 });
 app.addHook("onRequest", authGuard(initialConfig.tokens));
 registerConfigRoutes(app, configStore);
-registerSessionRoutes(app, sessionStore);
+registerSessionRoutes(app, sessionStore, messageStore);
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
 registerMiscRoutes(app);
+registerSearchRoutes(app, db);
 // Initialize AI quota scraper if credentials are provided
 const quotaCookie = process.env.AI_QUOTA_COOKIE;
 let quotaScraper: QuotaScraper | null = null;

@@ -5,7 +5,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
 import type { ChatMessage } from "@cc-pet/shared";
 import type { ReactNode } from "react";
-import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
 import { groupMessages } from "../lib/group-messages.js";
 import { ActivityBlock } from "./ActivityBlock.js";
@@ -332,7 +332,7 @@ function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactN
   );
 }
 
-export function MessageList({ messages, streamingContent, sessionKey, previews }: Props) {
+export const MessageList = memo(function MessageList({ messages, streamingContent, sessionKey, previews }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
@@ -417,7 +417,7 @@ export function MessageList({ messages, streamingContent, sessionKey, previews }
       ) : null}
     </div>
   );
-}
+});
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
