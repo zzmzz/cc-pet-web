@@ -1,63 +1,57 @@
-# cc-pet-web
+# CC Pet Web
 
-基于 Web 的「桌面宠物 + 对话」应用：浏览器或桌面壳（Tauri）中展示宠物状态与聊天界面，由 **Node 服务端** 统一托管静态前端、REST API、WebSocket，并与后端的 **Bridge**（如 cc-connect 类服务）建立长连接，完成会话与消息流转。
+[中文](#中文) | [English](#english)
 
-## 项目做什么
+---
 
-- **前端（`@cc-pet/web`）**：React + Vite + Tailwind，宠物动效、聊天窗口、会话与连接状态、登录门禁（按服务端下发的 Token 鉴权）。
-- **服务端（`@cc-pet/server`）**：Fastify + `ws` + SQLite（`better-sqlite3`），负责配置与消息持久化、向 Bridge 出站连接、向浏览器提供 `/api` 与 WebSocket。
-- **共享（`@cc-pet/shared`）**：类型与常量（配置结构、WS 事件等）。
-- **桌面（`@cc-pet/desktop`）**：Tauri 壳，开发时依赖本仓库 web + server；镜像构建当前仅打包 **server + 已构建的 web 静态资源**。
+## 中文
 
-典型数据流：浏览器持有 **Web 客户端 Token** → 连接服务端 → 服务端按配置使用 **Bridge 列表** 与各自 **Bridge Token** 连接上游 → 消息经服务端在中转与落库。
+Web 端「桌面宠物 + 聊天」应用。浏览器中展示宠物状态与聊天界面，由 Node 服务端统一托管静态前端、REST API 和 WebSocket，与上游 Bridge（如 cc-connect）建立长连接完成会话与消息流转。支持 PWA 安装到桌面/移动端。
 
-## 仓库结构
+### 功能特性
+
+- 宠物动效展示（idle / thinking / talking / happy / error）
+- 多会话管理，会话状态实时指示
+- 全文消息搜索（基于 SQLite FTS5）
+- 图片链接内联预览
+- AI 用量监控面板
+- PWA 支持，可安装到移动设备主屏幕
+- Token 鉴权登录
+- 响应式布局，移动端 / 桌面端自适应
+
+### 项目结构
 
 ```
 packages/
-  shared/    # 共享类型与协议
-  server/    # Fastify 服务、存储、Bridge、WS Hub
-  web/       # React 前端
-  desktop/   # Tauri（可选）
+  shared/   # 共享类型与协议定义
+  server/   # Fastify 服务、SQLite 存储、Bridge 连接、WebSocket Hub
+  web/      # React + Vite + Tailwind 前端
 ```
 
-根目录还提供 **Docker / Podman** 构建与 `docker-compose` 示例。
+### 数据流
 
-## 环境要求
+```
+浏览器 (Token 鉴权) → 服务端 (REST + WS) → Bridge (长连接) → 上游服务
+```
 
-- **Node.js** ≥ 18（推荐与 CI / 镜像一致的 **22**）
-- **pnpm**（推荐通过 Corepack 启用，与 `Dockerfile` 一致）
-- 构建 `better-sqlite3` 需要本机具备 **node-gyp** 常用条件（Python、C++ 工具链等；多数 macOS/Linux 预装或一次性安装即可）
+### 环境要求
 
-## 本地安装与运行
+- **Node.js** >= 18（推荐 22）
+- **pnpm**（推荐通过 Corepack 启用）
+- 构建 `better-sqlite3` 需要 node-gyp 环境（Python、C++ 工具链）
 
-### 1. 克隆与安装依赖
+### 快速开始
 
 ```bash
-git clone <你的仓库 URL> cc-pet-web
+git clone <repo-url> cc-pet-web
 cd cc-pet-web
 corepack enable
 pnpm install
 ```
 
-### 2. 准备数据目录与配置文件（必做）
+#### 配置
 
-服务端启动时会读取数据目录下的 **`cc-pet.config.json`**。根脚本 `pnpm dev:server` 已将 `CC_PET_DATA_DIR` 设为仓库根下的 **`.data`**，因此请创建：
-
-**`.data/cc-pet.config.json`**
-
-若该文件不存在，会回退到 SQLite 内配置；但 **`tokens` 不能为空**，否则进程会报错退出（需至少配置一条 Web 端使用的 Token）。
-
-配置字段与共享类型一致，主要包含：
-
-| 区块 | 说明 |
-|------|------|
-| `bridges` | 上游 Bridge 列表：`id`、`host`、`port`、连接 Bridge 用的 `token`、`enabled` |
-| `tokens` | 浏览器 / 客户端访问本服务用的 Token；`bridgeIds` 声明该 Token 可使用哪些 Bridge |
-| `pet` | 宠物展示相关，如 `opacity`、`size` |
-| `server` | `port`、`dataDir`（与运行环境一致即可） |
-
-**示例（请把占位符换成你自己的 Bridge 地址与密钥）：**
+在 `.data/` 下创建 `cc-pet.config.json`（该目录已加入 `.gitignore`）：
 
 ```json
 {
@@ -83,95 +77,203 @@ pnpm install
 }
 ```
 
-将 **`.data/`** 加入个人忽略或勿提交真实密钥（仓库 `.gitignore` 已包含 `.data/`）。
+| 区块 | 说明 |
+|------|------|
+| `bridges` | 上游 Bridge 列表：`id`、`host`、`port`、`token`、`enabled` |
+| `tokens` | 浏览器访问 Token，`bridgeIds` 声明可使用的 Bridge |
+| `pet` | 宠物展示参数（`opacity`、`size`） |
+| `server` | 服务端口与数据目录 |
 
-### 3. 启动开发
-
-**只起服务端（默认读 `.data`）：**
-
-```bash
-pnpm dev:server
-```
-
-**只起前端（Vite，默认端口 1420，并将 `/api`、`/ws` 代理到 localhost:3000）：**
+#### 开发
 
 ```bash
-pnpm dev:web
+pnpm dev           # 同时启动服务端 + 前端
+pnpm dev:server    # 仅服务端
+pnpm dev:web       # 仅前端（Vite，默认 1420 端口，代理 /api 和 /ws 到 localhost:3000）
 ```
 
-**同时起服务端 + 前端（同一终端内并行）：**
+浏览器访问 `http://localhost:1420`，使用配置的 Token 登录。
 
-```bash
-pnpm dev
-```
-
-浏览器打开 Vite 提示的地址（一般为 `http://localhost:1420`），使用你在 `tokens` 里配置的字符串登录。
-
-### 4. 构建与预览
-
-全量构建各 package：
+#### 构建
 
 ```bash
 pnpm build
 ```
 
-仅预览已构建的前端（需已执行过 web 的 build）：
+生产模式下服务端从 `packages/web/dist` 托管静态资源。
 
-```bash
-pnpm --filter @cc-pet/web preview
-```
-
-生产形态下，服务端会从 `packages/web/dist` 挂载静态资源（若目录不存在则跳过静态托管，仅 API/WS 可用）。
-
-### 5. 桌面端（可选）
-
-```bash
-pnpm --filter @cc-pet/desktop dev
-```
-
-需本机安装 Tauri 依赖（Rust 等），详见 [Tauri 官方文档](https://tauri.app/start/prerequisites/)。
-
-## Docker / Podman
-
-在仓库根目录：
+### Docker 部署
 
 ```bash
 docker compose build
 docker compose up -d
-# 或
-podman compose build && podman compose up -d
 ```
 
-- 默认将容器 **3000** 映射到宿主机 **3000**。
-- 数据卷 **`cc-pet-data`** 挂载为容器内 `/data`（SQLite 等）。
-- 根目录 **`cc-pet.docker.config.json`** 会挂载为容器内 **`/data/cc-pet.config.json`**，部署前请按环境修改其中的 `bridges`、`tokens`；Docker 场景下 Bridge 宿主机地址常用 `host.docker.internal`（见示例文件）。
+- 容器端口 3000 映射到宿主机 3000
+- 数据卷 `cc-pet-data` 挂载为容器内 `/data`
+- `cc-pet.docker.config.json` 挂载为容器内 `/data/cc-pet.config.json`，部署前按环境修改 `bridges` 和 `tokens`
+- Docker 环境下 Bridge 地址常用 `host.docker.internal`
 
-镜像内 Node 为 22-slim；构建阶段会执行 `pnpm install` 与 `packages/web` 的生产构建。
-
-## 环境变量（服务端）
+### 环境变量
 
 | 变量 | 说明 | 默认 |
 |------|------|------|
 | `CC_PET_PORT` | HTTP 监听端口 | `3000` |
-| `CC_PET_DATA_DIR` | 数据目录（其下 `cc-pet.config.json` 优先于库内配置） | `./data` |
-| `CC_PET_LOG_PRETTY` | `1` 强制美化日志，`0` 强制 JSON；未设时非 production 下多为美化 | - |
-| `NODE_ENV` | `production` 等 | - |
-| `LOG_LEVEL` | Pino 级别 | `info` |
+| `CC_PET_DATA_DIR` | 数据目录 | `./data` |
+| `CC_PET_LOG_PRETTY` | `1` 美化日志 / `0` JSON 日志 | 自动 |
+| `NODE_ENV` | 运行环境 | - |
+| `LOG_LEVEL` | Pino 日志级别 | `info` |
 
-## 常用脚本
+### 常用命令
 
 | 命令 | 说明 |
 |------|------|
-| `pnpm dev` / `dev:server` / `dev:web` | 开发 |
-| `pnpm build` | 各包 build |
-| `pnpm test` | 各包单元测试 |
-| `pnpm test:e2e` | 服务端连接回归 + Web 集成用例 |
-| `pnpm lint` | 各包 lint（若已配置） |
+| `pnpm dev` | 开发模式 |
+| `pnpm build` | 构建所有包 |
+| `pnpm test` | 单元测试 |
+| `pnpm test:e2e` | 端到端测试 |
+| `pnpm lint` | 代码检查 |
 
-## 宠物图片资源
+### 宠物素材
 
-`packages/web/src/assets/pet/` 下为各状态 PNG（idle / thinking / talking / happy / error）。仓库内可为占位小图；你可替换为自有素材，无需改代码路径。
+`packages/web/src/assets/pet/` 下为各状态 PNG，可替换为自有素材，无需改代码。
 
-## 协议与贡献
+---
 
-LICENSE 以仓库根目录文件为准。欢迎 Issue / PR。
+## English
+
+A web-based "desktop pet + chat" application. Displays pet animations and a chat interface in the browser, powered by a Node.js server that hosts the static frontend, REST API, and WebSocket connections. Connects to upstream Bridges (e.g., cc-connect) for session and message routing. Supports PWA installation on desktop and mobile.
+
+### Features
+
+- Pet animations (idle / thinking / talking / happy / error)
+- Multi-session management with real-time status indicators
+- Full-text message search (SQLite FTS5)
+- Inline image link previews
+- AI usage monitoring dashboard
+- PWA support for mobile home screen installation
+- Token-based authentication
+- Responsive layout for mobile and desktop
+
+### Project Structure
+
+```
+packages/
+  shared/   # Shared types and protocol definitions
+  server/   # Fastify server, SQLite storage, Bridge connections, WebSocket hub
+  web/      # React + Vite + Tailwind frontend
+```
+
+### Data Flow
+
+```
+Browser (Token auth) → Server (REST + WS) → Bridge (persistent connection) → Upstream service
+```
+
+### Prerequisites
+
+- **Node.js** >= 18 (22 recommended)
+- **pnpm** (enable via Corepack)
+- node-gyp build environment for `better-sqlite3` (Python, C++ toolchain)
+
+### Quick Start
+
+```bash
+git clone <repo-url> cc-pet-web
+cd cc-pet-web
+corepack enable
+pnpm install
+```
+
+#### Configuration
+
+Create `.data/cc-pet.config.json` (`.data/` is gitignored):
+
+```json
+{
+  "bridges": [
+    {
+      "id": "my-bridge",
+      "name": "my-bridge",
+      "host": "127.0.0.1",
+      "port": 9810,
+      "token": "bridge-side-secret",
+      "enabled": true
+    }
+  ],
+  "tokens": [
+    {
+      "token": "your-browser-login-token",
+      "name": "dev",
+      "bridgeIds": ["my-bridge"]
+    }
+  ],
+  "pet": { "opacity": 1, "size": 120 },
+  "server": { "port": 3000, "dataDir": ".data" }
+}
+```
+
+| Section | Description |
+|---------|-------------|
+| `bridges` | Upstream Bridge list: `id`, `host`, `port`, `token`, `enabled` |
+| `tokens` | Browser access tokens; `bridgeIds` specifies allowed Bridges |
+| `pet` | Pet display settings (`opacity`, `size`) |
+| `server` | Server port and data directory |
+
+#### Development
+
+```bash
+pnpm dev           # Start server + frontend together
+pnpm dev:server    # Server only
+pnpm dev:web       # Frontend only (Vite on port 1420, proxies /api and /ws to localhost:3000)
+```
+
+Open `http://localhost:1420` and log in with your configured token.
+
+#### Build
+
+```bash
+pnpm build
+```
+
+In production, the server serves static assets from `packages/web/dist`.
+
+### Docker Deployment
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+- Container port 3000 mapped to host port 3000
+- `cc-pet-data` volume mounted as `/data` in the container
+- `cc-pet.docker.config.json` mounted as `/data/cc-pet.config.json` — edit `bridges` and `tokens` for your environment
+- Use `host.docker.internal` for Bridge addresses in Docker
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CC_PET_PORT` | HTTP listen port | `3000` |
+| `CC_PET_DATA_DIR` | Data directory | `./data` |
+| `CC_PET_LOG_PRETTY` | `1` for pretty logs / `0` for JSON | auto |
+| `NODE_ENV` | Runtime environment | - |
+| `LOG_LEVEL` | Pino log level | `info` |
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `pnpm dev` | Development mode |
+| `pnpm build` | Build all packages |
+| `pnpm test` | Unit tests |
+| `pnpm test:e2e` | End-to-end tests |
+| `pnpm lint` | Linting |
+
+### Pet Assets
+
+PNG files for each state are in `packages/web/src/assets/pet/`. Replace with your own assets — no code changes needed.
+
+### License
+
+See LICENSE file in the repository root.
