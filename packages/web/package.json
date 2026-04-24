@@ -18,8 +18,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.build.json && vite build",
     "preview": "vite preview",
-    "test": "node -e \"process.exit(process.versions.node.split('.')[0]>=25?0:1)\" && NODE_OPTIONS='--no-experimental-webstorage' vitest run || vitest run",
-    "test:watch": "node -e \"process.exit(process.versions.node.split('.')[0]>=25?0:1)\" && NODE_OPTIONS='--no-experimental-webstorage' vitest || vitest"
+    "test": "node -e \"process.exit(process.versions.node.split(\\\".\\\")[0]>=25?0:1)\" && export NODE_OPTIONS=\"${NODE_OPTIONS:-} --no-experimental-webstorage\"; vitest run",
+    "test:watch": "node -e \"process.exit(process.versions.node.split(\\\".\\\")[0]>=25?0:1)\" && export NODE_OPTIONS=\"${NODE_OPTIONS:-} --no-experimental-webstorage\"; vitest"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.2",

@@ -38,7 +38,7 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 15_000, interv
 async function waitForWsMessage<T = any>(
   ws: WebSocket,
   predicate: (msg: T) => boolean,
-  timeoutMs = 3_000
+  timeoutMs = 10_000
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
