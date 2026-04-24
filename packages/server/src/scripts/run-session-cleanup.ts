@@ -1,6 +1,6 @@
-import { SessionsCleanup } from './cleanup/sessions-cleanup.js';
-import { createDatabase } from './storage/db.js';
-import { SessionStore } from './storage/sessions.js';
+import { SessionsCleanup } from '../cleanup/sessions-cleanup.js';
+import { createDatabase } from '../storage/db.js';
+import { SessionStore } from '../storage/sessions.js';
 
 // 允许通过命令行参数指定数据目录
 const DATA_DIR = process.argv[2] || './data';

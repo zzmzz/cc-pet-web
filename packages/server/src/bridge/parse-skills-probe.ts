@@ -91,7 +91,7 @@ export function parseSlashCommandsFromProbeCard(card?: BridgeCard): SlashCommand
           seen.add(key);
           out.push({
             name: name!,
-            description: btn.text?.trim() || name,
+            description: btn.text?.trim() || name!,
             category: "skill",
             type: "send",
           });
@@ -105,7 +105,7 @@ export function parseSlashCommandsFromProbeCard(card?: BridgeCard): SlashCommand
           seen.add(key);
           out.push({
             name: name!,
-            description: opt.text?.trim() || name,
+            description: opt.text?.trim() || name!,
             category: "skill",
             type: "send",
           });
