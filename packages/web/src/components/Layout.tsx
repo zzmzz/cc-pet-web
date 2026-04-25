@@ -13,29 +13,36 @@ function useLockDocumentScroll() {
     const html = document.documentElement;
     const body = document.body;
     html.style.overflow = "hidden";
-    html.style.position = "fixed";
-    html.style.width = "100%";
-    html.style.height = "100%";
     body.style.overflow = "hidden";
-    body.style.position = "fixed";
-    body.style.width = "100%";
-    body.style.height = "100%";
 
-    const preventScroll = (e: Event) => {
-      if (e.target === html || e.target === body) e.preventDefault();
+    const snapBack = () => {
+      if (window.scrollY !== 0 || window.scrollX !== 0) {
+        window.scrollTo(0, 0);
+      }
     };
-    document.addEventListener("touchmove", preventScroll, { passive: false });
+
+    window.addEventListener("scroll", snapBack, { passive: true });
+
+    const vv = window.visualViewport;
+    if (vv) {
+      const onVvScroll = () => {
+        if (vv.offsetTop !== 0) window.scrollTo(0, 0);
+      };
+      vv.addEventListener("scroll", onVvScroll, { passive: true });
+      vv.addEventListener("resize", snapBack, { passive: true });
+      return () => {
+        html.style.overflow = "";
+        body.style.overflow = "";
+        window.removeEventListener("scroll", snapBack);
+        vv.removeEventListener("scroll", onVvScroll);
+        vv.removeEventListener("resize", snapBack);
+      };
+    }
 
     return () => {
       html.style.overflow = "";
-      html.style.position = "";
-      html.style.width = "";
-      html.style.height = "";
       body.style.overflow = "";
-      body.style.position = "";
-      body.style.width = "";
-      body.style.height = "";
-      document.removeEventListener("touchmove", preventScroll);
+      window.removeEventListener("scroll", snapBack);
     };
   }, []);
 }
