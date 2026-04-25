@@ -291,12 +291,16 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     );
   }
 
+  const mPad = panelMode ? "px-2 py-1.5" : "px-3 py-2.5";
+  const mFont = panelMode ? "text-[13px]" : "text-sm";
+  const mSmFont = panelMode ? "text-[10px]" : "text-xs";
+
   const panel = (
     <div
       className={
         panelMode
           ? "w-full bg-surface-tertiary/50 border border-border rounded-xl overflow-hidden"
-          : "absolute top-full left-0 mt-1 w-60 bg-surface-secondary border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+          : "absolute top-full left-0 mt-1 w-72 bg-surface-secondary border border-border rounded-xl shadow-lg z-50 overflow-hidden"
       }
     >
           {bridgeList.length > 1 && (
@@ -312,7 +316,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                         handleSwitchConnection(conn.id);
                       }
                     }}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg transition-colors text-left ${
+                    className={`w-full flex items-center gap-2 ${mPad} rounded-lg transition-colors text-left ${
                       conn.id === activeConnectionId
                         ? "bg-accent/10 border border-accent/20 text-accent"
                         : "hover:bg-surface-tertiary text-gray-800"
@@ -322,7 +326,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${conn.connected ? "bg-green-500" : "bg-red-400"}`}
                     />
                     <span
-                      className={`text-[13px] truncate flex-1 ${
+                      className={`${mFont} truncate flex-1 ${
                         conn.id === activeConnectionId ? "text-accent font-medium" : "text-gray-800"
                       }`}
                     >
@@ -344,9 +348,9 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
             <>
               <div className="px-3 pt-2 pb-1">
                 <p className="text-xs font-semibold text-gray-700 mb-1">当前会话</p>
-                <div className="flex items-center gap-2 px-2 py-1.5 bg-accent/10 rounded-lg group/active border border-accent/20">
+                <div className={`flex items-center gap-2 ${mPad} bg-accent/10 rounded-lg group/active border border-accent/20`}>
                   <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-                  <span className="text-[13px] text-accent font-medium truncate flex-1">{activeLabel}</span>
+                  <span className={`${mFont} text-accent font-medium truncate flex-1`}>{activeLabel}</span>
                   <span className="text-xs text-accent/90 flex-shrink-0">{activeStatusLabel}</span>
                   {unreadFor(activeKey) > 0 && (
                     <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
@@ -380,10 +384,10 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                             switchSession(sess.key);
                           }
                         }}
-                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer"
+                        className={`w-full flex items-center gap-2 ${mPad} rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer`}
                       >
                         <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${phaseCss.dot}`} />
-                        <span className="text-[13px] text-gray-800 truncate flex-1">{sessionLabelText(sess)}</span>
+                        <span className={`${mFont} text-gray-800 truncate flex-1`}>{sessionLabelText(sess)}</span>
                         <span className={`text-xs flex-shrink-0 ${phaseCss.text}`}>
                           {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}
                         </span>
@@ -407,7 +411,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     <button
                       type="button"
                       onClick={() => setShowAll(true)}
-                      className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-accent text-[10px]"
+                      className={`w-full flex items-center gap-1 ${mPad} rounded-lg hover:bg-surface-tertiary transition-colors text-accent ${mSmFont}`}
                     >
                       <span>▶</span>
                       <span>显示 {hiddenCount} 个更旧的会话</span>
@@ -417,7 +421,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     <button
                       type="button"
                       onClick={() => setShowAll(false)}
-                      className="w-full flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors text-accent text-[10px]"
+                      className={`w-full flex items-center gap-1 ${mPad} rounded-lg hover:bg-surface-tertiary transition-colors text-accent ${mSmFont}`}
                     >
                       <span>▼</span>
                       <span>收起更旧的会话</span>
@@ -433,7 +437,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
             <button
               type="button"
               onClick={() => void createSession()}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/10 transition-colors text-accent text-[11px] font-medium"
+              className={`w-full flex items-center gap-2 ${mPad} rounded-lg hover:bg-accent/10 transition-colors text-accent ${panelMode ? "text-[11px]" : "text-sm"} font-medium`}
             >
               <span>＋</span>
               <span>新建会话</span>
@@ -455,7 +459,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-surface-tertiary transition-colors min-w-0 max-w-[220px]"
+        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-surface-tertiary transition-colors min-w-0 max-w-full"
         title={buttonLabel}
       >
         <span
