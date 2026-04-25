@@ -12,6 +12,23 @@ import { ActivityBlock } from "./ActivityBlock.js";
 import { CardMessage } from "./CardMessage.js";
 import { AudioMessage } from "./AudioMessage.js";
 
+function formatMessageTime(ts: number): string {
+  const date = new Date(ts);
+  const now = new Date();
+  const time = date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const msgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (msgDay.getTime() === today.getTime()) return time;
+  if (msgDay.getTime() === yesterday.getTime()) return `昨天 ${time}`;
+  if (now.getFullYear() === date.getFullYear()) {
+    return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+  }
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${time}`;
+}
+
 interface PreviewEntry {
   previewId: string;
   content: string;
@@ -514,10 +531,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             ))}
           </div>
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
-            {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            {formatMessageTime(message.timestamp)}
           </div>
         </div>
       </div>
