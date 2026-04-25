@@ -32,8 +32,10 @@ import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
 import { registerSearchRoutes } from "./api/search.js";
+import { registerSiriRoutes } from "./api/siri.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
+import { ReplyCollector } from "./siri/reply-collector.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -145,6 +147,15 @@ if (quotaCookie) {
   app.log.warn("AI quota cookie not provided via environment variable AI_QUOTA_COOKIE - skipping quota scraping service");
 }
 registerQuotaRoutes(app, { db, scraper: quotaScraper });
+
+const replyCollector = new ReplyCollector();
+registerSiriRoutes(app, {
+  bridgeManager,
+  messageStore,
+  replyCollector,
+  getAuthIdentity: getRequestAuthIdentity,
+  getDefaultConnectionId: (bridgeIds) => [...bridgeIds][0],
+});
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
   const auth = getRequestAuthIdentity(req);
@@ -262,6 +273,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         content: replyContent,
         replyCtx: replyCtx || undefined,
       });
+      replyCollector.onReply(connId, sessionKey ?? "default", replyContent);
       break;
     }
     case "reply_stream": {
@@ -299,9 +311,11 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
           });
         }
         hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText });
+        replyCollector.onDone(connId, sessionKey ?? "default", fullText);
       } else {
         const delta = extractReplyStreamChunk(raw) ?? (typeof raw.content === "string" ? raw.content : undefined);
         hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DELTA, { connectionId: connId, sessionKey, delta });
+        if (delta) replyCollector.onDelta(connId, sessionKey ?? "default", delta);
       }
       break;
     }
