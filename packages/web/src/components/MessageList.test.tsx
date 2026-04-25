@@ -48,7 +48,7 @@ describe("MessageList", () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
-  it("scrolls to latest when session key changes", () => {
+  it("scrolls to latest when session key changes", async () => {
     const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
     const messages = buildMessages(5);
     const { rerender } = render(<MessageList messages={messages} sessionKey="session-a" />);
@@ -56,6 +56,7 @@ describe("MessageList", () => {
     scrollIntoView.mockClear();
     rerender(<MessageList messages={messages} sessionKey="session-b" />);
 
+    await new Promise((r) => requestAnimationFrame(r));
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
   });
 

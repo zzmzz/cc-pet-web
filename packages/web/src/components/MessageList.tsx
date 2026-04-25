@@ -384,9 +384,14 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     [messages, streamingContent],
   );
 
+  const prevSessionRef = useRef(sessionKey);
   useEffect(() => {
-    if (!sessionKey) return;
-    scrollToLatest("auto");
+    if (prevSessionRef.current !== sessionKey) {
+      prevSessionRef.current = sessionKey;
+      stickToBottomRef.current = true;
+      setShowBackToLatest(false);
+      requestAnimationFrame(() => scrollToLatest("auto"));
+    }
   }, [sessionKey, scrollToLatest]);
 
   useEffect(() => {
