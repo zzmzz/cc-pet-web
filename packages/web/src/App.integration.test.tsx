@@ -213,9 +213,8 @@ describe("App integration", () => {
         const mobileRoot = banner?.parentElement;
         expect(banner).not.toBeNull();
         expect(mobileRoot).not.toBeNull();
-        expect(banner?.className).toContain("fixed");
-        expect(banner?.className).toContain("top-0");
-        expect(mobileRoot?.className).toContain("h-[100dvh]");
+        expect(mobileRoot?.className).toContain("fixed");
+        expect(mobileRoot?.className).toContain("inset-0");
       });
     } finally {
       Object.defineProperty(window, "innerWidth", {
