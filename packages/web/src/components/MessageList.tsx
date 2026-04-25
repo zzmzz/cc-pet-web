@@ -382,6 +382,18 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     setShowBackToLatest(true);
   }, [messages, streamingContent, previews, scrollToLatest]);
 
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      if (stickToBottomRef.current) {
+        requestAnimationFrame(() => scrollToLatest("auto"));
+      }
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, [scrollToLatest]);
+
   return (
     <div className="relative flex-1 min-h-0">
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto py-3 space-y-1">
