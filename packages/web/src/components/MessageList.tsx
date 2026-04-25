@@ -353,7 +353,10 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     setShowBackToLatest(false);
   }, []);
 
+  const viewportResizingRef = useRef(false);
+
   const handleScroll = useCallback(() => {
+    if (viewportResizingRef.current) return;
     const shouldStick = isNearBottom();
     stickToBottomRef.current = shouldStick;
     setShowBackToLatest(!shouldStick);
@@ -385,13 +388,22 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
+    let timer: ReturnType<typeof setTimeout>;
     const onResize = () => {
+      viewportResizingRef.current = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        viewportResizingRef.current = false;
+      }, 150);
       if (stickToBottomRef.current) {
         requestAnimationFrame(() => scrollToLatest("auto"));
       }
     };
     vv.addEventListener("resize", onResize);
-    return () => vv.removeEventListener("resize", onResize);
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      clearTimeout(timer);
+    };
   }, [scrollToLatest]);
 
   return (
