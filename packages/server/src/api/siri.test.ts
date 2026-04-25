@@ -17,7 +17,7 @@ function buildApp() {
   };
 
   const mockAuthIdentity = {
-    name: "test",
+    tokenName: "test",
     bridgeIds: new Set(["bridge1"]),
   };
 

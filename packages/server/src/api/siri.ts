@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BridgeManager } from "../bridge/manager.js";
 import type { MessageStore } from "../storage/messages.js";
 import type { ReplyCollector } from "../siri/reply-collector.js";
+import type { AuthIdentity } from "../auth/token-auth.js";
 import { wrapWithVoicePrompt } from "../siri/voice-prompt.js";
 
 const MAX_ACTIVE_COLLECTORS = 5;
@@ -10,7 +11,7 @@ interface SiriDeps {
   bridgeManager: BridgeManager;
   messageStore: MessageStore;
   replyCollector: ReplyCollector;
-  getAuthIdentity: (req: FastifyRequest) => { name: string; bridgeIds: Set<string> } | null;
+  getAuthIdentity: (req: FastifyRequest) => AuthIdentity | null;
   getDefaultConnectionId: (bridgeIds: Set<string>) => string | undefined;
 }
 
