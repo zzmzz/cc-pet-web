@@ -25,8 +25,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   if (isMobile) {
     return (
-      <div className="flex h-[100dvh] flex-col bg-surface">
-        <header className={`${TOP_BAR_CLASS} sticky top-0 z-20`}>
+      <div className="h-[100dvh] flex flex-col bg-surface">
+        <header className={`${TOP_BAR_CLASS} fixed top-0 left-0 right-0 z-20 shadow-sm backdrop-blur-md bg-surface-secondary/90`}>
           <PetMini />
           <div className="flex-1 min-w-0">
             <SessionDropdown />
@@ -45,6 +45,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </svg>
           </button>
         </header>
+        <div className={`${TOP_BAR_CLASS} invisible shrink-0`} aria-hidden="true">
+          <div className="h-5 w-5" />
+          <div className="flex-1">&nbsp;</div>
+          <div className="h-5 w-8" />
+        </div>
         {searchOpen && <SearchPanel variant="mobile" />}
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
