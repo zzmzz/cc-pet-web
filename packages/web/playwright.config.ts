@@ -18,12 +18,12 @@ export default defineConfig({
   projects: [
     {
       name: "mobile-webkit",
-      testMatch: ["**/mobile-*.spec.ts", "**/login-gate.spec.ts"],
+      testMatch: ["**/mobile-*.spec.ts", "**/login-gate.spec.ts", "**/session-switch.spec.ts"],
       use: { ...devices["iPhone 14"] },
     },
     {
       name: "desktop-chromium",
-      testMatch: ["**/desktop-*.spec.ts", "**/login-gate.spec.ts"],
+      testMatch: ["**/desktop-*.spec.ts", "**/login-gate.spec.ts", "**/session-switch.spec.ts"],
       use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 720 } },
     },
   ],
