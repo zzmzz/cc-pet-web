@@ -15,7 +15,9 @@ function useIOSViewport(rootRef: React.RefObject<HTMLDivElement | null>) {
     if (!vv || !el) return;
 
     const update = () => {
+      el.style.top = `${vv.offsetTop}px`;
       el.style.height = `${vv.height}px`;
+      el.style.bottom = "auto";
     };
 
     update();
