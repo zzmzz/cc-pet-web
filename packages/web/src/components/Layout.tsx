@@ -1,4 +1,4 @@
-import { Fragment, useEffect } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { useUIStore } from "../lib/store/ui.js";
 import { useSearchStore } from "../lib/store/search.js";
 import { PetFull, PetMini } from "./Pet.js";
@@ -7,6 +7,26 @@ import { SearchPanel } from "./SearchPanel.js";
 
 const TOP_BAR_CLASS =
   "flex shrink-0 items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]";
+
+function useIOSViewport(rootRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const el = rootRef.current;
+    if (!vv || !el) return;
+
+    const update = () => {
+      el.style.height = `${vv.height}px`;
+    };
+
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, [rootRef]);
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
@@ -23,9 +43,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const searchOpen = useSearchStore((s) => s.isOpen);
   const setSearchOpen = useSearchStore((s) => s.setOpen);
 
+  const mobileRootRef = useRef<HTMLDivElement>(null);
+  useIOSViewport(mobileRootRef);
+
   if (isMobile) {
     return (
-      <div className="fixed inset-0 flex flex-col bg-surface">
+      <div ref={mobileRootRef} className="fixed inset-0 flex flex-col bg-surface">
         <header className={`${TOP_BAR_CLASS} shrink-0 z-20 shadow-sm`}>
           <PetMini />
           <div className="flex-1 min-w-0">
