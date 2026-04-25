@@ -8,45 +8,6 @@ import { SearchPanel } from "./SearchPanel.js";
 const TOP_BAR_CLASS =
   "flex shrink-0 items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]";
 
-function useLockDocumentScroll() {
-  useEffect(() => {
-    const html = document.documentElement;
-    const body = document.body;
-    html.style.overflow = "hidden";
-    body.style.overflow = "hidden";
-
-    const snapBack = () => {
-      if (window.scrollY !== 0 || window.scrollX !== 0) {
-        window.scrollTo(0, 0);
-      }
-    };
-
-    window.addEventListener("scroll", snapBack, { passive: true });
-
-    const vv = window.visualViewport;
-    if (vv) {
-      const onVvScroll = () => {
-        if (vv.offsetTop !== 0) window.scrollTo(0, 0);
-      };
-      vv.addEventListener("scroll", onVvScroll, { passive: true });
-      vv.addEventListener("resize", snapBack, { passive: true });
-      return () => {
-        html.style.overflow = "";
-        body.style.overflow = "";
-        window.removeEventListener("scroll", snapBack);
-        vv.removeEventListener("scroll", onVvScroll);
-        vv.removeEventListener("resize", snapBack);
-      };
-    }
-
-    return () => {
-      html.style.overflow = "";
-      body.style.overflow = "";
-      window.removeEventListener("scroll", snapBack);
-    };
-  }, []);
-}
-
 export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
   const setIsMobile = useUIStore((s) => s.setIsMobile);
@@ -62,11 +23,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const searchOpen = useSearchStore((s) => s.isOpen);
   const setSearchOpen = useSearchStore((s) => s.setOpen);
 
-  useLockDocumentScroll();
-
   if (isMobile) {
     return (
-      <div className="flex h-dvh flex-col bg-surface overflow-hidden">
+      <div className="flex h-full flex-col bg-surface overflow-hidden">
         <header className={`${TOP_BAR_CLASS} shrink-0 z-20 shadow-sm`}>
           <PetMini />
           <div className="flex-1 min-w-0">
@@ -107,7 +66,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <Fragment>
-      <div className="flex h-screen flex-col bg-surface">
+      <div className="flex h-full flex-col bg-surface">
         <header className={TOP_BAR_CLASS}>
           <PetMini />
           <div className="flex-1" />

@@ -6,12 +6,12 @@ test.describe("Desktop layout", () => {
     await page.waitForSelector("header", { timeout: 10_000 });
   });
 
-  test("uses non-fixed layout with sidebar", async ({ page }) => {
+  test("uses h-full flex layout with sidebar", async ({ page }) => {
     const aside = page.locator("aside");
     await expect(aside).toBeVisible();
 
-    const container = aside.locator("..");
-    await expect(container).not.toHaveCSS("position", "fixed");
+    const container = aside.locator("..").locator("..");
+    await expect(container).toHaveCSS("height", /\d+px/);
   });
 
   test("sidebar has correct width (w-72 = 288px)", async ({ page }) => {

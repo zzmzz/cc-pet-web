@@ -213,7 +213,7 @@ describe("App integration", () => {
         const mobileRoot = banner?.parentElement;
         expect(banner).not.toBeNull();
         expect(mobileRoot).not.toBeNull();
-        expect(mobileRoot?.className).toContain("h-dvh");
+        expect(mobileRoot?.className).toContain("h-full");
         expect(mobileRoot?.className).toContain("overflow-hidden");
       });
     } finally {

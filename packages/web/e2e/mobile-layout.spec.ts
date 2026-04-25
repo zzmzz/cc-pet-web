@@ -6,11 +6,12 @@ test.describe("Mobile layout", () => {
     await page.waitForSelector("header", { timeout: 10_000 });
   });
 
-  test("root container uses h-dvh layout with document scroll locked", async ({ page }) => {
+  test("root container uses height:100% layout with overflow hidden", async ({ page }) => {
     const root = page.locator("header").locator("..");
     await expect(root).toHaveCSS("overflow", "hidden");
-    const docOverflow = await page.evaluate(() => document.documentElement.style.overflow);
-    expect(docOverflow).toBe("hidden");
+    // html and body should also be overflow:hidden (set via globals.css)
+    const htmlOverflow = await page.evaluate(() => getComputedStyle(document.documentElement).overflow);
+    expect(htmlOverflow).toBe("hidden");
   });
 
   test("header stays visible after viewport shrinks (keyboard simulation)", async ({ page }) => {

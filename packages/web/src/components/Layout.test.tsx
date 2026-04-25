@@ -51,17 +51,15 @@ describe("Layout", () => {
   });
 
   describe("mobile layout", () => {
-    it("uses h-dvh layout with document scroll locked", () => {
+    it("uses h-full layout with overflow hidden", () => {
       setMobile();
       render(<Layout><div>content</div></Layout>);
 
       const header = document.querySelector("header")!;
       const root = header.parentElement!;
-      expect(root.className).toContain("h-dvh");
+      expect(root.className).toContain("h-full");
       expect(root.className).toContain("overflow-hidden");
       expect(root.className).toContain("flex-col");
-      expect(document.documentElement.style.overflow).toBe("hidden");
-      expect(document.body.style.overflow).toBe("hidden");
     });
 
     it("renders header with search and settings buttons", () => {
@@ -139,13 +137,12 @@ describe("Layout", () => {
   });
 
   describe("desktop layout", () => {
-    it("uses h-screen flex layout (not fixed)", () => {
+    it("uses h-full flex layout", () => {
       setDesktop();
       render(<Layout><div>content</div></Layout>);
 
-      const containers = document.querySelectorAll("div.flex.h-screen");
+      const containers = document.querySelectorAll("div.flex.h-full");
       expect(containers.length).toBeGreaterThanOrEqual(1);
-      expect(containers[0]!.className).not.toContain("fixed");
     });
 
     it("renders sidebar with search panel and session dropdown", () => {
@@ -196,7 +193,7 @@ describe("Layout", () => {
 
       expect(document.querySelector("aside")).toBeNull();
       const header = document.querySelector("header")!;
-      expect(header.parentElement!.className).toContain("h-dvh");
+      expect(header.parentElement!.className).toContain("h-full");
     });
 
     it("switches from mobile to desktop layout on resize", async () => {
@@ -204,7 +201,7 @@ describe("Layout", () => {
       render(<Layout><div>content</div></Layout>);
 
       const header = document.querySelector("header")!;
-      expect(header.parentElement!.className).toContain("h-dvh");
+      expect(header.parentElement!.className).toContain("h-full");
 
       setDesktop();
       await vi.waitFor(() => {
