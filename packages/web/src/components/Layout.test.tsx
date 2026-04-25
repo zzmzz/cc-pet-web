@@ -51,15 +51,17 @@ describe("Layout", () => {
   });
 
   describe("mobile layout", () => {
-    it("uses fixed positioning so header stays visible during keyboard open", () => {
+    it("uses h-dvh layout with document scroll locked", () => {
       setMobile();
       render(<Layout><div>content</div></Layout>);
 
       const header = document.querySelector("header")!;
       const root = header.parentElement!;
-      expect(root.className).toContain("fixed");
-      expect(root.className).toContain("inset-0");
+      expect(root.className).toContain("h-dvh");
+      expect(root.className).toContain("overflow-hidden");
       expect(root.className).toContain("flex-col");
+      expect(document.documentElement.style.overflow).toBe("hidden");
+      expect(document.body.style.overflow).toBe("hidden");
     });
 
     it("renders header with search and settings buttons", () => {
@@ -194,7 +196,7 @@ describe("Layout", () => {
 
       expect(document.querySelector("aside")).toBeNull();
       const header = document.querySelector("header")!;
-      expect(header.parentElement!.className).toContain("fixed");
+      expect(header.parentElement!.className).toContain("h-dvh");
     });
 
     it("switches from mobile to desktop layout on resize", async () => {
@@ -202,7 +204,7 @@ describe("Layout", () => {
       render(<Layout><div>content</div></Layout>);
 
       const header = document.querySelector("header")!;
-      expect(header.parentElement!.className).toContain("fixed");
+      expect(header.parentElement!.className).toContain("h-dvh");
 
       setDesktop();
       await vi.waitFor(() => {

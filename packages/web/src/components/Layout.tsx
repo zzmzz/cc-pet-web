@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect } from "react";
 import { useUIStore } from "../lib/store/ui.js";
 import { useSearchStore } from "../lib/store/search.js";
 import { PetFull, PetMini } from "./Pet.js";
@@ -8,26 +8,36 @@ import { SearchPanel } from "./SearchPanel.js";
 const TOP_BAR_CLASS =
   "flex shrink-0 items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]";
 
-function useIOSViewport(rootRef: React.RefObject<HTMLDivElement | null>) {
+function useLockDocumentScroll() {
   useEffect(() => {
-    const vv = window.visualViewport;
-    const el = rootRef.current;
-    if (!vv || !el) return;
+    const html = document.documentElement;
+    const body = document.body;
+    html.style.overflow = "hidden";
+    html.style.position = "fixed";
+    html.style.width = "100%";
+    html.style.height = "100%";
+    body.style.overflow = "hidden";
+    body.style.position = "fixed";
+    body.style.width = "100%";
+    body.style.height = "100%";
 
-    const update = () => {
-      el.style.top = `${vv.offsetTop}px`;
-      el.style.height = `${vv.height}px`;
-      el.style.bottom = "auto";
+    const preventScroll = (e: Event) => {
+      if (e.target === html || e.target === body) e.preventDefault();
     };
+    document.addEventListener("touchmove", preventScroll, { passive: false });
 
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
     return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
+      html.style.overflow = "";
+      html.style.position = "";
+      html.style.width = "";
+      html.style.height = "";
+      body.style.overflow = "";
+      body.style.position = "";
+      body.style.width = "";
+      body.style.height = "";
+      document.removeEventListener("touchmove", preventScroll);
     };
-  }, [rootRef]);
+  }, []);
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -45,12 +55,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const searchOpen = useSearchStore((s) => s.isOpen);
   const setSearchOpen = useSearchStore((s) => s.setOpen);
 
-  const mobileRootRef = useRef<HTMLDivElement>(null);
-  useIOSViewport(mobileRootRef);
+  useLockDocumentScroll();
 
   if (isMobile) {
     return (
-      <div ref={mobileRootRef} className="fixed inset-0 flex flex-col bg-surface">
+      <div className="flex h-dvh flex-col bg-surface overflow-hidden">
         <header className={`${TOP_BAR_CLASS} shrink-0 z-20 shadow-sm`}>
           <PetMini />
           <div className="flex-1 min-w-0">

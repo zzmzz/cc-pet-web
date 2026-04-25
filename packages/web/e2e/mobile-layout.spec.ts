@@ -6,9 +6,11 @@ test.describe("Mobile layout", () => {
     await page.waitForSelector("header", { timeout: 10_000 });
   });
 
-  test("root container uses fixed positioning", async ({ page }) => {
+  test("root container uses h-dvh layout with document scroll locked", async ({ page }) => {
     const root = page.locator("header").locator("..");
-    await expect(root).toHaveCSS("position", "fixed");
+    await expect(root).toHaveCSS("overflow", "hidden");
+    const docOverflow = await page.evaluate(() => document.documentElement.style.overflow);
+    expect(docOverflow).toBe("hidden");
   });
 
   test("header stays visible after viewport shrinks (keyboard simulation)", async ({ page }) => {
