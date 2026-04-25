@@ -13,15 +13,15 @@ const RECENT_VISIBLE = 2;
 function formatTime(ts: number): string {
   const now = new Date();
   const target = new Date(ts);
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const daysDiff = Math.floor((todayStart - target.getTime()) / 86_400_000);
-  if (daysDiff < 0) {
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
+  const targetDay = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+
+  if (targetDay.getTime() >= todayStart.getTime()) {
     return target.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   }
-  if (daysDiff === 0) {
-    return target.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  }
-  if (daysDiff === 1) return "昨天";
+  if (targetDay.getTime() >= yesterdayStart.getTime()) return "昨天";
+  const daysDiff = Math.floor((todayStart.getTime() - targetDay.getTime()) / 86_400_000);
   if (daysDiff < 7) return `${daysDiff}天前`;
   return target.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
