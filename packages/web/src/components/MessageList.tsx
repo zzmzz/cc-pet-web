@@ -378,6 +378,11 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       scrollToLatest("auto");
       return;
     }
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg?.role === "user") {
+      scrollToLatest("smooth");
+      return;
+    }
     if (stickToBottomRef.current) {
       scrollToLatest("smooth");
       return;

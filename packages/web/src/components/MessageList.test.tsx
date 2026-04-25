@@ -36,7 +36,8 @@ describe("MessageList", () => {
 
     scrollIntoView.mockClear();
 
-    const nextMessages = [...initialMessages, buildMessages(31)[30]!];
+    const assistantMsg: ChatMessage = { id: "m-new", role: "assistant", content: "new reply", timestamp: 999 };
+    const nextMessages = [...initialMessages, assistantMsg];
     rerender(<MessageList messages={nextMessages} />);
 
     const backToLatest = await screen.findByRole("button", { name: "回到最新" });
