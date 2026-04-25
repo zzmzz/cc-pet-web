@@ -15,3 +15,6 @@ packages/web/tests/setup.js
 packages/web/tests/setup.js.map
 packages/web/tests/setup.d.ts
 packages/web/tests/setup.d.ts.map
+packages/web/e2e-results/
+packages/web/playwright-report/
+packages/web/test-results/
