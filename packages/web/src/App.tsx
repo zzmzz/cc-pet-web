@@ -13,6 +13,7 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
+import { useVisualViewport } from "./lib/useVisualViewport.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -25,6 +26,8 @@ import {
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
 export default function App() {
+  useVisualViewport();
+
   const [ready, setReady] = useState(false);
   const [authBooting, setAuthBooting] = useState(true);
   const [authToken, setAuthToken] = useState<string | null>(null);

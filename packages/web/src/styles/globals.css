@@ -1,11 +1,29 @@
 @import "tailwindcss";
 
+:root {
+  --keyboard-inset: 0px;
+  --viewport-offset-top: 0px;
+  --visual-viewport-height: 100%;
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
   margin: 0;
   padding: 0;
   overflow: hidden;
+}
+
+@media (max-width: 767px) {
+  .ios #root {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: var(--visual-viewport-height, 100%);
+    transform: translateY(var(--viewport-offset-top, 0px));
+    transform-origin: top left;
+  }
 }
 
 @theme {

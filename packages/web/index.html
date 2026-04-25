@@ -11,5 +11,5 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>CC Pet</title>
   </head>
-  <body class="bg-surface text-white"><div id="root"></div><script>caches.delete("api-cache")</script><script type="module" src="/src/main.tsx"></script></body>
+  <body class="bg-surface text-white"><div id="root"></div><script>caches.delete("api-cache");if(/iP(hone|ad|od)/.test(navigator.userAgent)||(/Mac/.test(navigator.userAgent)&&navigator.maxTouchPoints>1))document.documentElement.classList.add("ios")</script><script type="module" src="/src/main.tsx"></script></body>
 </html>
