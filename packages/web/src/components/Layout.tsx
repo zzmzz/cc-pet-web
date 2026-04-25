@@ -25,7 +25,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   if (isMobile) {
     return (
-      <div className="flex h-dvh flex-col bg-surface">
+      <div className="fixed inset-0 flex flex-col bg-surface">
         <header className={`${TOP_BAR_CLASS} shrink-0 z-20 shadow-sm`}>
           <PetMini />
           <div className="flex-1 min-w-0">
