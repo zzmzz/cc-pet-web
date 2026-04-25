@@ -74,6 +74,19 @@ export function Layout({ children }: { children: React.ReactNode }) {
               />
             </svg>
           </button>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="shrink-0 rounded-md border border-border px-1.5 py-1 text-gray-500 hover:bg-surface hover:text-gray-300"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M8.34 1.804A1 1 0 019.32 1h1.36a1 1 0 01.98.804l.295 1.473c.497.191.964.44 1.39.738l1.38-.553a1 1 0 011.187.326l.68 1.18a1 1 0 01-.208 1.283l-1.086.92c.056.329.086.666.086 1.009s-.03.68-.086 1.01l1.086.919a1 1 0 01.208 1.283l-.68 1.18a1 1 0 01-1.187.326l-1.38-.553a5.98 5.98 0 01-1.39.738l-.295 1.473a1 1 0 01-.98.804H9.32a1 1 0 01-.98-.804l-.295-1.473a5.98 5.98 0 01-1.39-.738l-1.38.553a1 1 0 01-1.187-.326l-.68-1.18a1 1 0 01.208-1.283l1.086-.92A6.07 6.07 0 014.616 10c0-.343.03-.68.086-1.01l-1.086-.919a1 1 0 01-.208-1.283l.68-1.18a1 1 0 011.187-.326l1.38.553a5.98 5.98 0 011.39-.738l.295-1.473zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
         </header>
         {searchOpen && <SearchPanel variant="mobile" />}
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
