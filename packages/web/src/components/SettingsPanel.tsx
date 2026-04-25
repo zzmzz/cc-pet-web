@@ -227,7 +227,7 @@ export function SettingsPanel() {
                 </button>
               </section>
 
-              <section>
+              <section className="mb-5 border-b border-border pb-5">
                 <h3 className="mb-2 text-sm font-medium text-text-primary">账号</h3>
                 <button
                   type="button"
@@ -236,6 +236,13 @@ export function SettingsPanel() {
                 >
                   退出登录
                 </button>
+              </section>
+
+              <section>
+                <h3 className="mb-2 text-sm font-medium text-text-primary">版本</h3>
+                <p className="text-xs text-text-secondary">
+                  构建时间：{new Date(__BUILD_TIME__).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+                </p>
               </section>
             </div>
           )}
