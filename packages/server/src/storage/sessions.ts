@@ -6,8 +6,12 @@ export class SessionStore {
 
   create(session: Session): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO sessions (connection_id, key, label, created_at, last_active_at)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO sessions (connection_id, key, label, created_at, last_active_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(connection_id, key) DO UPDATE SET
+         label = excluded.label,
+         created_at = excluded.created_at,
+         last_active_at = excluded.last_active_at`
     ).run(session.connectionId, session.key, session.label ?? null, session.createdAt, session.lastActiveAt);
   }
 

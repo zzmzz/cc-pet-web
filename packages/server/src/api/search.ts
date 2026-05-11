@@ -25,6 +25,7 @@ export function registerSearchRoutes(app: FastifyInstance, db: Database.Database
     const connFilter = req.query.connectionId;
     const connClause = connFilter ? " AND m.connection_id = ?" : "";
     const baseParams = connFilter ? [ftsQuery, connFilter] : [ftsQuery];
+    const visibleSessionClause = " AND (m.session_key = 'default' OR s.key IS NOT NULL)";
 
     const rows = db.prepare(`
       SELECT
@@ -38,7 +39,7 @@ export function registerSearchRoutes(app: FastifyInstance, db: Database.Database
       FROM messages_fts
       JOIN messages m ON m.id = messages_fts.id
       LEFT JOIN sessions s ON s.connection_id = m.connection_id AND s.key = m.session_key
-      WHERE messages_fts MATCH ?${connClause}
+      WHERE messages_fts MATCH ?${connClause}${visibleSessionClause}
       ORDER BY rank
       LIMIT ? OFFSET ?
     `).all(...baseParams, limit, offset) as SearchResult[];
@@ -47,7 +48,8 @@ export function registerSearchRoutes(app: FastifyInstance, db: Database.Database
       SELECT COUNT(*) AS total
       FROM messages_fts
       JOIN messages m ON m.id = messages_fts.id
-      WHERE messages_fts MATCH ?${connClause}
+      LEFT JOIN sessions s ON s.connection_id = m.connection_id AND s.key = m.session_key
+      WHERE messages_fts MATCH ?${connClause}${visibleSessionClause}
     `).get(...baseParams) as { total: number };
 
     return { results: rows, total: countRow.total };

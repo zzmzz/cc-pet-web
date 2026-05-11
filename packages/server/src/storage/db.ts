@@ -34,6 +34,10 @@ export function initSchema(db: Database.Database): void {
       PRIMARY KEY (connection_id, key)
     );
 
+    CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
+      DELETE FROM messages WHERE connection_id = old.connection_id AND session_key = old.key;
+    END;
+
     CREATE TABLE IF NOT EXISTS config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       data TEXT NOT NULL
