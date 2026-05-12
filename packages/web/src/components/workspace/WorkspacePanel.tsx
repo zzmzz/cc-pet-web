@@ -25,8 +25,15 @@ export function WorkspacePanel() {
     void loadWorkspace(activeConnectionId);
   }, [activeConnectionId, loadWorkspace]);
 
+  if (activeConnectionId && !loading && meta?.configured === false) {
+    return null;
+  }
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col rounded-xl border border-border bg-surface-tertiary/40">
+    <section
+      data-testid="workspace-panel"
+      className="flex min-h-0 flex-1 flex-col rounded-xl border border-border bg-surface-tertiary/40"
+    >
       <header className="border-b border-border px-3 py-2">
         <div className="text-sm font-semibold text-text-primary">工作区</div>
         <div className="truncate text-[11px] text-text-secondary">
@@ -39,11 +46,6 @@ export function WorkspacePanel() {
         )}
         {activeConnectionId && loading && (
           <div className="px-2 py-3 text-xs text-text-secondary">工作区加载中...</div>
-        )}
-        {activeConnectionId && !loading && meta?.configured === false && (
-          <div className="px-2 py-3 text-xs text-text-secondary">
-            {meta.message ?? "当前连接需要先配置有效工作区。"}
-          </div>
         )}
         {activeConnectionId && !loading && meta?.configured && (
           <>

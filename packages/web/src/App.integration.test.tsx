@@ -526,7 +526,7 @@ describe("App integration", () => {
     expect(screen.queryByRole("button", { name: /a\.txt/ })).not.toBeInTheDocument();
   });
 
-  it("shows a clear workspace configuration error for invalid workspaces", async () => {
+  it("hides the workspace panel when the active connection has no configured workspace", async () => {
     adapter.fetchApi.mockImplementation(async (path: string) => {
       if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
       if (path.startsWith("/api/history/")) return { messages: [] };
@@ -538,7 +538,11 @@ describe("App integration", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Connection does not have a configured workspace")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(adapter.fetchApi).toHaveBeenCalledWith("/api/workspaces/cc-connect");
+    });
+    expect(screen.queryByTestId("workspace-panel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Connection does not have a configured workspace")).not.toBeInTheDocument();
   });
 
   it("keeps mobile session bar visible with sticky top layout", async () => {
