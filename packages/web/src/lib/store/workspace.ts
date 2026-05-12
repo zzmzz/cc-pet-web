@@ -122,6 +122,7 @@ interface WorkspaceState {
   downloadFile: (connectionId: string, path: string) => Promise<void>;
   openDiff: (connectionId: string, path: string) => Promise<void>;
   createItem: (connectionId: string, parentPath: string, name: string, kind: FileEntry["kind"]) => Promise<boolean>;
+  uploadFile: (connectionId: string, parentPath: string, file: File) => Promise<boolean>;
   renameItem: (connectionId: string, path: string, newName: string) => Promise<boolean>;
   deleteItem: (connectionId: string, path: string, recursive?: boolean) => Promise<boolean>;
   saveFile: (connectionId: string, path: string, content: string) => Promise<boolean>;
@@ -772,6 +773,54 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         operationErrorByConnection: {
           ...state.operationErrorByConnection,
           [connectionId]: error instanceof Error ? error.message : "创建失败",
+        },
+      }));
+      return false;
+    }
+  },
+
+  uploadFile: async (connectionId, parentPath, file) => {
+    const normalizedParentPath = normalizeTreePath(parentPath);
+    const validationError = validateItemName(file.name);
+    if (validationError) {
+      set((state) => ({
+        operationMessageByConnection: { ...state.operationMessageByConnection, [connectionId]: "" },
+        operationErrorByConnection: { ...state.operationErrorByConnection, [connectionId]: validationError },
+      }));
+      return false;
+    }
+    try {
+      const form = new FormData();
+      form.append("parentPath", normalizedParentPath);
+      form.append("name", file.name);
+      form.append("file", file, file.name);
+      const response = await getPlatform().fetchApi<ItemMutationResponse | ApiErrorResponse>(
+        `/api/workspaces/${encodeURIComponent(connectionId)}/items/upload`,
+        { method: "POST", body: form },
+      );
+      if (isApiErrorResponse(response)) {
+        set((state) => ({
+          operationMessageByConnection: { ...state.operationMessageByConnection, [connectionId]: "" },
+          operationErrorByConnection: { ...state.operationErrorByConnection, [connectionId]: response.message },
+        }));
+        return false;
+      }
+      set((state) => ({
+        operationMessageByConnection: {
+          ...state.operationMessageByConnection,
+          [connectionId]: `已上传 ${response.entry.name}`,
+        },
+        operationErrorByConnection: { ...state.operationErrorByConnection, [connectionId]: "" },
+      }));
+      await get().loadTree(connectionId, normalizedParentPath);
+      await get().loadGitStatus(connectionId);
+      return true;
+    } catch (error) {
+      set((state) => ({
+        operationMessageByConnection: { ...state.operationMessageByConnection, [connectionId]: "" },
+        operationErrorByConnection: {
+          ...state.operationErrorByConnection,
+          [connectionId]: error instanceof Error ? error.message : "上传失败",
         },
       }));
       return false;
