@@ -12,6 +12,7 @@ export interface BridgeConfig {
   port: number;
   token: string;
   enabled: boolean;
+  workspacePath?: string;
 }
 
 export interface TokenConfig {

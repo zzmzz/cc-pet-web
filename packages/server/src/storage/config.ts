@@ -21,6 +21,10 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
       ? x.port
       : parseInt(String(x.port ?? ""), 10);
   if (!Number.isFinite(port)) return null;
+  const workspacePath =
+    typeof x.workspacePath === "string" && x.workspacePath.trim().length > 0
+      ? x.workspacePath.trim()
+      : undefined;
   return {
     id: x.id,
     name: typeof x.name === "string" ? x.name : x.id,
@@ -28,6 +32,7 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
     port,
     token: typeof x.token === "string" ? x.token : "",
     enabled: typeof x.enabled === "boolean" ? x.enabled : true,
+    workspacePath,
   };
 }
 

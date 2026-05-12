@@ -10,7 +10,7 @@
     "dev": "bash scripts/run-dev.sh",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "test:e2e": "pnpm --filter @cc-pet/server test -- tests/e2e-connect-regression.test.ts && pnpm --filter @cc-pet/web test -- src/App.integration.test.tsx",
+    "test:e2e": "pnpm --filter @cc-pet/server exec vitest run tests/e2e-connect-regression.test.ts tests/workspace-api.test.ts && pnpm --filter @cc-pet/web exec sh -c 'if node -e \"process.exit(process.versions.node.split(\\\".\\\")[0]>=25?0:1)\"; then export NODE_OPTIONS=\"${NODE_OPTIONS:-} --no-experimental-webstorage\"; fi; vitest run src/App.integration.test.tsx'",
     "lint": "pnpm -r lint"
   },
   "engines": {

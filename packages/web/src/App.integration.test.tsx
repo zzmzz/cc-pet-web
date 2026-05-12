@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import type { PlatformAPI } from "./lib/platform.js";
@@ -10,6 +10,7 @@ import { useMessageStore } from "./lib/store/message.js";
 import { useSessionStore } from "./lib/store/session.js";
 import { useUIStore } from "./lib/store/ui.js";
 import { useCommandStore } from "./lib/store/commands.js";
+import { useWorkspaceStore } from "./lib/store/workspace.js";
 
 class FakeAdapter implements PlatformAPI {
   private handler: ((type: string, payload: any) => void) | null = null;
@@ -65,6 +66,7 @@ function resetStores() {
     settingsOpen: false,
   });
   useCommandStore.setState({ agentCommandsByConnection: {} });
+  useWorkspaceStore.setState(useWorkspaceStore.getInitialState());
 }
 
 const INPUT_PLACEHOLDER = "输入消息，Enter 发送，Shift+Enter 换行";
@@ -196,6 +198,349 @@ describe("App integration", () => {
     });
   });
 
+  it("loads the active connection workspace and opens a file preview", async () => {
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [{ name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false }],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return { gitAvailable: true, changes: [] };
+      }
+      if (path === "/api/workspaces/cc-connect/file?path=README.md") {
+        return {
+          path: "README.md",
+          name: "README.md",
+          previewable: true,
+          encoding: "utf8",
+          content: "# cc-pet-web\n",
+          size: 13,
+        };
+      }
+      return {};
+    });
+
+    render(<App />);
+    expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /README\.md/ }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("README.md").length).toBeGreaterThanOrEqual(2);
+    });
+    expect(screen.getByRole("textbox", { name: "文件内容" })).toHaveValue("# cc-pet-web\n");
+    expect(useWorkspaceStore.getState().activeConnectionId).toBe("cc-connect");
+  });
+
+  it("loads git changes, marks the file tree, opens diffs, and refreshes status", async () => {
+    const user = userEvent.setup();
+    let changes = [{ path: "README.md", status: "M" }];
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [{ name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false }],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return { gitAvailable: true, changes };
+      }
+      if (path === "/api/workspaces/cc-connect/git/diff?path=README.md") {
+        return {
+          path: "README.md",
+          previewable: true,
+          diff: "diff --git a/README.md b/README.md\n-# old\n+# new\n",
+        };
+      }
+      return {};
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Git 修改")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Git 变更" }));
+    await user.click(await screen.findByRole("button", { name: /README\.md/ }));
+    expect(await screen.findByText("Diff 查看")).toBeInTheDocument();
+    expect(screen.getByText("+# new")).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().activeDiff?.path).toBe("README.md");
+
+    changes = [];
+    await user.click(screen.getByRole("button", { name: "刷新 Git 状态" }));
+    expect(await screen.findByText("暂无 Git 变更。")).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().gitStatusByConnection["cc-connect"].changes).toEqual([]);
+  });
+
+  it("shows non-previewable and unavailable git diff states without blocking files", async () => {
+    const user = userEvent.setup();
+    let unavailable = false;
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [{ name: "binary.dat", path: "binary.dat", kind: "file", inaccessible: false }],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return unavailable
+          ? { gitAvailable: false, changes: [], message: "Git 状态不可用，文件浏览仍可继续使用。" }
+          : { gitAvailable: true, changes: [{ path: "binary.dat", status: "M" }] };
+      }
+      if (path === "/api/workspaces/cc-connect/git/diff?path=binary.dat") {
+        return { path: "binary.dat", previewable: false, reason: "BINARY_DIFF" };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Git 变更" }));
+    await user.click(await screen.findByRole("button", { name: /binary\.dat/ }));
+    expect(await screen.findByText("二进制 diff 无法直接预览。")).toBeInTheDocument();
+
+    unavailable = true;
+    await user.click(screen.getByRole("button", { name: "刷新 Git 状态" }));
+    expect(await screen.findByText("Git 状态不可用，文件浏览仍可继续使用。")).toBeInTheDocument();
+    expect(screen.getByText("binary.dat")).toBeInTheDocument();
+  });
+
+  it("creates, renames, deletes, and saves workspace files from the UI", async () => {
+    const user = userEvent.setup();
+    const promptSpy = vi.spyOn(window, "prompt");
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const entries = [
+      { name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false },
+    ];
+    let readmeContent = "# cc-pet-web\n";
+    try {
+      promptSpy.mockReturnValueOnce("notes.txt").mockReturnValueOnce("README-renamed.md");
+      confirmSpy.mockReturnValue(true);
+      adapter.fetchApi.mockImplementation(async (path: string, options?: RequestInit) => {
+        if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+        if (path.startsWith("/api/history/")) return { messages: [] };
+        if (path === "/api/workspaces/cc-connect") {
+          return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+        }
+        if (path === "/api/workspaces/cc-connect/tree") {
+          return { path: "", entries };
+        }
+        if (path === "/api/workspaces/cc-connect/file?path=README.md") {
+          return {
+            path: "README.md",
+            name: "README.md",
+            previewable: true,
+            encoding: "utf8",
+            content: readmeContent,
+            size: readmeContent.length,
+            etag: "readme-v1",
+          };
+        }
+        if (path === "/api/workspaces/cc-connect/file" && options?.method === "PUT") {
+          const body = JSON.parse(String(options.body));
+          expect(body.etag).toBe("readme-v1");
+          readmeContent = body.content;
+          return { ok: true, entry: { name: "README.md", path: "README.md", kind: "file", extension: ".md" } };
+        }
+        if (path === "/api/workspaces/cc-connect/items" && options?.method === "POST") {
+          entries.push({ name: "notes.txt", path: "notes.txt", kind: "file", extension: ".txt", inaccessible: false });
+          return { ok: true, entry: { name: "notes.txt", path: "notes.txt", kind: "file", extension: ".txt" } };
+        }
+        if (path === "/api/workspaces/cc-connect/items" && options?.method === "PATCH") {
+          entries[0] = {
+            name: "README-renamed.md",
+            path: "README-renamed.md",
+            kind: "file",
+            extension: ".md",
+            inaccessible: false,
+          };
+          return { ok: true, entry: entries[0] };
+        }
+        if (path === "/api/workspaces/cc-connect/items" && options?.method === "DELETE") {
+          const body = JSON.parse(String(options.body));
+          const index = entries.findIndex((entry) => entry.path === body.path);
+          if (index >= 0) entries.splice(index, 1);
+          return { ok: true };
+        }
+        return {};
+      });
+
+      render(<App />);
+      expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /README\.md/ }));
+      const editor = await screen.findByRole("textbox", { name: "文件内容" });
+      await user.clear(editor);
+      await user.type(editor, "# Updated");
+      await user.click(screen.getByRole("button", { name: "保存" }));
+      expect(await screen.findByText("已保存 README.md")).toBeInTheDocument();
+      expect(readmeContent).toBe("# Updated");
+
+      await user.click(screen.getByRole("button", { name: "新建文件" }));
+      expect(await screen.findByRole("button", { name: /notes\.txt/ })).toBeInTheDocument();
+
+      const readmeRow = screen.getByRole("button", { name: /README\.md/ }).closest("[data-file-entry]") as HTMLElement;
+      await user.click(within(readmeRow).getByRole("button", { name: "重命名" }));
+      expect(await screen.findByRole("button", { name: /README-renamed\.md/ })).toBeInTheDocument();
+
+      const notesRow = screen.getByRole("button", { name: /notes\.txt/ }).closest("[data-file-entry]") as HTMLElement;
+      await user.click(within(notesRow).getByRole("button", { name: "删除" }));
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: /notes\.txt/ })).not.toBeInTheDocument();
+      });
+    } finally {
+      promptSpy.mockRestore();
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("shows stale workspace operation errors so users can refresh before continuing", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm");
+    try {
+      confirmSpy.mockReturnValue(true);
+      adapter.fetchApi.mockImplementation(async (path: string, options?: RequestInit) => {
+        if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+        if (path.startsWith("/api/history/")) return { messages: [] };
+        if (path === "/api/workspaces/cc-connect") {
+          return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+        }
+        if (path === "/api/workspaces/cc-connect/tree") {
+          return {
+            path: "",
+            entries: [{ name: "stale.txt", path: "stale.txt", kind: "file", extension: ".txt", inaccessible: false }],
+          };
+        }
+        if (path === "/api/workspaces/cc-connect/items" && options?.method === "DELETE") {
+          return { error: "WORKSPACE_LIST_STALE", message: "列表已过期，可刷新后继续。" };
+        }
+        return {};
+      });
+
+      render(<App />);
+      const staleRow = (await screen.findByRole("button", { name: /stale\.txt/ })).closest("[data-file-entry]") as HTMLElement;
+      await user.click(within(staleRow).getByRole("button", { name: "删除" }));
+
+      expect(await screen.findByText("列表已过期，可刷新后继续。")).toBeInTheDocument();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("sends the opened file version when saving and shows stale save errors", async () => {
+    const user = userEvent.setup();
+    adapter.fetchApi.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [{ name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false }],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return { gitAvailable: true, changes: [] };
+      }
+      if (path === "/api/workspaces/cc-connect/file?path=README.md") {
+        return {
+          path: "README.md",
+          name: "README.md",
+          previewable: true,
+          encoding: "utf8",
+          content: "# cc-pet-web\n",
+          size: 13,
+          etag: "readme-v1",
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/file" && options?.method === "PUT") {
+        expect(JSON.parse(String(options.body))).toMatchObject({
+          path: "README.md",
+          content: "# Updated",
+          etag: "readme-v1",
+        });
+        return { error: "WORKSPACE_LIST_STALE", message: "文件已在外部修改，列表已过期，可刷新后继续。" };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /README\.md/ }));
+    const editor = await screen.findByRole("textbox", { name: "文件内容" });
+    await user.clear(editor);
+    await user.type(editor, "# Updated");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("文件已在外部修改，列表已过期，可刷新后继续。")).toBeInTheDocument();
+  });
+
+  it("refreshes workspace context when the active connection changes", async () => {
+    const user = userEvent.setup();
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "workspace-a" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return { path: "", entries: [{ name: "a.txt", path: "a.txt", kind: "file", extension: ".txt" }] };
+      }
+      if (path === "/api/workspaces/cs-connect") {
+        return { connectionId: "cs-connect", configured: true, rootName: "workspace-b" };
+      }
+      if (path === "/api/workspaces/cs-connect/tree") {
+        return { path: "", entries: [{ name: "b.txt", path: "b.txt", kind: "file", extension: ".txt" }] };
+      }
+      return {};
+    });
+
+    render(<App />);
+    expect(await screen.findByText("workspace-a")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /a\.txt/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /cs-connect/i }));
+
+    expect(await screen.findByText("workspace-b")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /b\.txt/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /a\.txt/ })).not.toBeInTheDocument();
+  });
+
+  it("shows a clear workspace configuration error for invalid workspaces", async () => {
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { error: "WORKSPACE_NOT_CONFIGURED", message: "Connection does not have a configured workspace" };
+      }
+      return {};
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Connection does not have a configured workspace")).toBeInTheDocument();
+  });
+
   it("keeps mobile session bar visible with sticky top layout", async () => {
     const originalWidth = window.innerWidth;
     Object.defineProperty(window, "innerWidth", {
@@ -216,6 +561,51 @@ describe("App integration", () => {
         expect(mobileRoot?.className).toContain("h-full");
         expect(mobileRoot?.className).toContain("overflow-hidden");
       });
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        writable: true,
+        value: originalWidth,
+      });
+      window.dispatchEvent(new Event("resize"));
+    }
+  });
+
+  it("opens the workspace panel from the mobile header", async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 390,
+    });
+    window.dispatchEvent(new Event("resize"));
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [{ name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false }],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return { gitAvailable: true, changes: [{ path: "README.md", status: "M" }] };
+      }
+      return {};
+    });
+    try {
+      render(<App />);
+      await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+      await userEvent.click(screen.getByRole("button", { name: "工作区" }));
+      const dialog = screen.getByRole("dialog", { name: "工作区面板" });
+
+      expect(await within(dialog).findByText("cc-pet-web")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Git 变更" })).toBeInTheDocument();
+      expect(await within(dialog).findByRole("button", { name: /README\.md.*Git 修改/ })).toBeInTheDocument();
     } finally {
       Object.defineProperty(window, "innerWidth", {
         configurable: true,

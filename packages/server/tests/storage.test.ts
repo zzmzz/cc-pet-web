@@ -120,6 +120,7 @@ describe("Storage", () => {
             port: 9810,
             token: "secret",
             enabled: true,
+            workspacePath: dir,
           },
         ],
         pet: { opacity: 0.5, size: 100 },
@@ -131,6 +132,7 @@ describe("Storage", () => {
       const loaded = fileStore.load();
       expect(loaded.bridges).toHaveLength(1);
       expect(loaded.bridges[0]?.id).toBe("b1");
+      expect(loaded.bridges[0]?.workspacePath).toBe(dir);
       expect(loaded.pet.opacity).toBe(0.5);
 
       const next = {
@@ -143,12 +145,49 @@ describe("Storage", () => {
             port: 9811,
             token: "",
             enabled: true,
+            workspacePath: path.join(dir, "next-workspace"),
           },
         ],
       };
       fileStore.save(next);
       const raw = JSON.parse(await readFile(filePath, "utf8"));
       expect(raw.bridges[0].id).toBe("b2");
+      expect(raw.bridges[0].workspacePath).toBe(path.join(dir, "next-workspace"));
+
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("keeps old bridge configs compatible when workspacePath is absent", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "cc-pet-cfg-"));
+      const filePath = path.join(dir, "app.json");
+      const fileCfg = {
+        bridges: [
+          {
+            id: "legacy",
+            name: "legacy-bridge",
+            host: "127.0.0.1",
+            port: 9810,
+            token: "secret",
+            enabled: true,
+          },
+        ],
+        tokens: [],
+        pet: { opacity: 1, size: 120 },
+        server: { port: 3000, dataDir: "./data" },
+      };
+      await writeFile(filePath, JSON.stringify(fileCfg), "utf8");
+
+      const fileStore = new ConfigStore(db, { configFilePath: filePath });
+      const loaded = fileStore.load();
+
+      expect(loaded.bridges[0]).toEqual({
+        id: "legacy",
+        name: "legacy-bridge",
+        host: "127.0.0.1",
+        port: 9810,
+        token: "secret",
+        enabled: true,
+      });
 
       await rm(dir, { recursive: true, force: true });
     });

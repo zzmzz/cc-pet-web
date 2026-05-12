@@ -4,3 +4,4 @@ export { useSessionStore } from "./session.js";
 export { useMessageStore } from "./message.js";
 export { useCommandStore } from "./commands.js";
 export { useSearchStore } from "./search.js";
+export { useWorkspaceStore } from "./workspace.js";

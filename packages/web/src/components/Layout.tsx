@@ -1,9 +1,12 @@
-import { Fragment, useEffect } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useUIStore } from "../lib/store/ui.js";
 import { useSearchStore } from "../lib/store/search.js";
 import { PetFull, PetMini } from "./Pet.js";
 import { SessionDropdown } from "./SessionDropdown.js";
 import { SearchPanel } from "./SearchPanel.js";
+import { DiffViewer } from "./workspace/DiffViewer.js";
+import { FileViewer } from "./workspace/FileViewer.js";
+import { WorkspacePanel } from "./workspace/WorkspacePanel.js";
 
 const TOP_BAR_CLASS =
   "flex shrink-0 items-center gap-2 border-b border-border bg-surface-secondary px-3 py-2 pt-[max(0.5rem,env(safe-area-inset-top))]";
@@ -12,6 +15,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
   const setIsMobile = useUIStore((s) => s.setIsMobile);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -31,6 +35,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex-1 min-w-0">
             <SessionDropdown />
           </div>
+          <button
+            type="button"
+            onClick={() => setWorkspaceOpen(true)}
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface hover:text-gray-300"
+          >
+            工作区
+          </button>
           <button
             type="button"
             onClick={() => setSearchOpen(!searchOpen)}
@@ -59,6 +70,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </header>
         {searchOpen && <SearchPanel variant="mobile" />}
+        {workspaceOpen && (
+          <div
+            role="dialog"
+            aria-label="工作区面板"
+            className="fixed inset-0 z-40 flex flex-col bg-surface"
+          >
+            <header className={`${TOP_BAR_CLASS} shadow-sm`}>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-text-primary">工作区</div>
+                <div className="truncate text-[11px] text-text-secondary">当前连接文件与 Git 变更</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWorkspaceOpen(false)}
+                className="rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface"
+              >
+                关闭
+              </button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-hidden p-3">
+              <WorkspacePanel />
+            </div>
+            <FileViewer variant="mobile" />
+            <DiffViewer variant="mobile" />
+          </div>
+        )}
         <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
       </div>
     );
@@ -82,9 +119,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <aside className="flex w-72 shrink-0 flex-col gap-4 border-r border-border bg-surface-secondary p-3">
             <SearchPanel />
             <SessionDropdown variant="panel" />
-            <div className="flex-1 overflow-y-auto" />
+            <WorkspacePanel />
           </aside>
-          <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</main>
+          <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
+            <FileViewer />
+            <DiffViewer />
+          </main>
         </div>
       </div>
       <div className="fixed left-4 bottom-4 z-30 pointer-events-auto">

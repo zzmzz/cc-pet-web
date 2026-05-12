@@ -33,6 +33,7 @@ import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
 import { registerSearchRoutes } from "./api/search.js";
 import { registerSiriRoutes } from "./api/siri.js";
+import { registerWorkspaceRoutes } from "./api/workspace.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 import { ReplyCollector } from "./siri/reply-collector.js";
@@ -137,6 +138,7 @@ registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
 registerMiscRoutes(app);
 registerSearchRoutes(app, db);
+registerWorkspaceRoutes(app, configStore);
 // Initialize AI quota scraper if credentials are provided
 const quotaCookie = process.env.AI_QUOTA_COOKIE;
 let quotaScraper: QuotaScraper | null = null;

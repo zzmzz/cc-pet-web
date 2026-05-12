@@ -1,0 +1,402 @@
+openapi: 3.0.3
+info:
+  title: CC Pet Workspace API
+  version: 0.1.0
+paths:
+  /api/workspaces/{connectionId}:
+    get:
+      summary: Get connection workspace metadata
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: Workspace metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMeta"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/workspaces/{connectionId}/tree:
+    get:
+      summary: List direct children under a workspace path
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - name: path
+          in: query
+          required: false
+          schema:
+            type: string
+            default: ""
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, entries]
+                properties:
+                  path:
+                    type: string
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FileEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/workspaces/{connectionId}/file:
+    get:
+      summary: Read a file preview
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/RelativePath"
+      responses:
+        "200":
+          description: File preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilePreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      summary: Save a text file
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content, etag]
+              properties:
+                path:
+                  type: string
+                content:
+                  type: string
+                etag:
+                  type: string
+      responses:
+        "200":
+          description: File saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, entry]
+                properties:
+                  ok:
+                    type: boolean
+                  entry:
+                    $ref: "#/components/schemas/FileEntry"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/workspaces/{connectionId}/items:
+    post:
+      summary: Create a file or directory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, kind]
+              properties:
+                parentPath:
+                  type: string
+                  default: ""
+                name:
+                  type: string
+                kind:
+                  type: string
+                  enum: [file, directory]
+      responses:
+        "200":
+          $ref: "#/components/responses/ItemMutationOk"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      summary: Rename a file or directory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, newName]
+              properties:
+                path:
+                  type: string
+                newName:
+                  type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/ItemMutationOk"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Delete a file or directory
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                recursive:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Item deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/workspaces/{connectionId}/git/status:
+    get:
+      summary: Get git working tree status
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: Git status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitStatusResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/workspaces/{connectionId}/git/diff:
+    get:
+      summary: Get a single file diff
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/RelativePath"
+      responses:
+        "200":
+          description: Git diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitDiffResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ConnectionId:
+      name: connectionId
+      in: path
+      required: true
+      schema:
+        type: string
+    RelativePath:
+      name: path
+      in: query
+      required: true
+      schema:
+        type: string
+  schemas:
+    WorkspaceMeta:
+      type: object
+      required: [connectionId, configured, rootName]
+      properties:
+        connectionId:
+          type: string
+        configured:
+          type: boolean
+        rootName:
+          type: string
+        message:
+          type: string
+    FileEntry:
+      type: object
+      required: [name, path, kind]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        kind:
+          type: string
+          enum: [file, directory]
+        extension:
+          type: string
+        size:
+          type: integer
+          format: int64
+        modifiedAt:
+          type: integer
+          format: int64
+        etag:
+          type: string
+        inaccessible:
+          type: boolean
+        gitStatus:
+          type: string
+    FilePreview:
+      type: object
+      required: [path, name, previewable, size, modifiedAt, etag]
+      properties:
+        path:
+          type: string
+        name:
+          type: string
+        previewable:
+          type: boolean
+        encoding:
+          type: string
+          enum: [utf8]
+        content:
+          type: string
+        size:
+          type: integer
+          format: int64
+        modifiedAt:
+          type: number
+        etag:
+          type: string
+        reason:
+          type: string
+    GitChange:
+      type: object
+      required: [path, status]
+      properties:
+        path:
+          type: string
+        status:
+          type: string
+    GitStatusResponse:
+      type: object
+      required: [gitAvailable, changes]
+      properties:
+        gitAvailable:
+          type: boolean
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitChange"
+        message:
+          type: string
+    GitDiffResponse:
+      type: object
+      required: [path, previewable]
+      properties:
+        path:
+          type: string
+        previewable:
+          type: boolean
+        diff:
+          type: string
+        reason:
+          type: string
+    ApiError:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+  responses:
+    ItemMutationOk:
+      description: Item mutation succeeded
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, entry]
+            properties:
+              ok:
+                type: boolean
+              entry:
+                $ref: "#/components/schemas/FileEntry"
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
