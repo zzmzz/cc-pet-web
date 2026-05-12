@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { WorkspaceContext } from "./resolver.js";
 import type { ResolvedWorkspacePath } from "./resolver.js";
@@ -161,9 +161,18 @@ export function runGit(
 }
 
 function gitUnavailableMessage(result: GitRunResult): string {
-  if (result.errorCode === "ENOENT") return "Git executable is not available.";
   if (result.timedOut) return "Git command timed out.";
-  return result.stderr || "Git information is not available for this workspace.";
+  if (result.stderr) return result.stderr;
+  if (result.errorCode === "ENOENT") return "Git executable is not available.";
+  return "Git information is not available for this workspace.";
+}
+
+async function safeRealpath(absolutePath: string): Promise<string> {
+  try {
+    return await realpath(absolutePath);
+  } catch {
+    return absolutePath;
+  }
 }
 
 function isGitUnavailable(result: GitRunResult): boolean {
@@ -251,7 +260,12 @@ async function resolveScopeContext(
     );
   }
 
-  const topResult = await runGit(resolved.absolutePath, ["rev-parse", "--show-toplevel"]);
+  // Resolve symlinks on both sides before comparing — git rev-parse --show-toplevel
+  // always returns the realpath, so any symlink in the candidate path would otherwise
+  // make a true "nested" repo silently fall through to the subpath fallback.
+  const resolvedReal = await safeRealpath(resolved.absolutePath);
+  const rootReal = await safeRealpath(workspace.rootPath);
+  const topResult = await runGit(resolvedReal, ["rev-parse", "--show-toplevel"]);
   if (isGitUnavailable(topResult)) {
     return { ok: false, reason: "GIT_UNAVAILABLE", message: gitUnavailableMessage(topResult) };
   }
@@ -259,28 +273,29 @@ async function resolveScopeContext(
   if (!toplevel) {
     return { ok: false, reason: "GIT_UNAVAILABLE", message: "Git information is not available for this workspace." };
   }
+  const toplevelReal = await safeRealpath(toplevel);
 
-  if (toplevel === resolved.absolutePath) {
+  if (toplevelReal === resolvedReal) {
     return {
       ok: true,
       context: {
         scope: subpathApi,
         repoMode: "nested",
         repoRoot: subpathApi,
-        cwd: resolved.absolutePath,
+        cwd: resolvedReal,
         pathspec: undefined,
       },
     };
   }
 
-  if (toplevel === workspace.rootPath) {
+  if (toplevelReal === rootReal) {
     return {
       ok: true,
       context: {
         scope: subpathApi,
         repoMode: "subpath",
         repoRoot: "",
-        cwd: workspace.rootPath,
+        cwd: rootReal,
         pathspec: subpathApi,
       },
     };
@@ -294,7 +309,7 @@ async function resolveScopeContext(
       scope: subpathApi,
       repoMode: "subpath",
       repoRoot: "",
-      cwd: workspace.rootPath,
+      cwd: rootReal,
       pathspec: subpathApi,
     },
   };

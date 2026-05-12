@@ -185,7 +185,7 @@ export function FileTree({
 
         return (
           <div key={entry.path} data-file-entry>
-            <div className="group flex items-center rounded-md text-xs hover:bg-surface">
+            <div className="group relative flex items-center rounded-md text-xs hover:bg-surface">
               <button
                 type="button"
                 disabled={disabled}
@@ -213,7 +213,9 @@ export function FileTree({
                 )}
               </button>
               {!disabled && (
-                <div className="flex shrink-0 items-center gap-0.5 px-1 opacity-70 group-hover:opacity-100">
+                <div
+                  className="absolute inset-y-0 right-1 z-10 flex items-center gap-0.5 rounded-md bg-surface px-1 opacity-0 shadow-sm ring-1 ring-border/40 transition focus-within:opacity-100 group-hover:opacity-100"
+                >
                   {renderCreateActions && (
                     <>
                       <ActionIconButton label="新建文件" onClick={() => void handleCreate(entry.path, "file")}>

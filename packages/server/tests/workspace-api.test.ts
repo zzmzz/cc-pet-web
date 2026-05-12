@@ -738,6 +738,28 @@ describe("workspace file api", () => {
       );
     });
 
+    it("recognises a nested repo even when the scope path traverses a symlink", async () => {
+      await initGitRepo();
+      const realNestedDir = path.join(workspaceDir, "real-nested");
+      await mkdir(realNestedDir, { recursive: true });
+      await writeFile(path.join(realNestedDir, "inner.txt"), "v1\n", "utf8");
+      await initNestedRepo(realNestedDir);
+      await symlink(realNestedDir, path.join(workspaceDir, "link-to-nested"), "dir");
+      await writeFile(path.join(realNestedDir, "inner.txt"), "v2\n", "utf8");
+
+      const status = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=link-to-nested");
+
+      expect(status.statusCode).toBe(200);
+      expect(status.body.gitAvailable).toBe(true);
+      expect(status.body.repoMode).toBe("nested");
+      expect(status.body.repoRoot).toBe("link-to-nested");
+      expect(status.body.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "link-to-nested/inner.txt", status: "M" }),
+        ]),
+      );
+    });
+
     it("prefixes rename change paths inside a nested repo", async () => {
       await initGitRepo();
       const nestedDir = path.join(workspaceDir, "sub", "embedded");
