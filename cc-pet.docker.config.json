@@ -6,7 +6,8 @@
       "host": "host.docker.internal",
       "port": 9810,
       "token": "",
-      "enabled": false
+      "enabled": false,
+      "workspacePath": "/Users/StevenZhu/code/cc-pet-web"
     }
   ],
   "tokens": [

@@ -47,9 +47,6 @@ export function WorkspacePanel() {
         )}
         {activeConnectionId && !loading && meta?.configured && (
           <>
-            <div className="mb-2 truncate rounded-md bg-surface px-2 py-1.5 text-xs font-medium text-text-primary">
-              {meta.rootName}
-            </div>
             {operationMessage && (
               <div className="mb-2 rounded-md bg-green-500/10 px-2 py-1 text-xs text-green-400">
                 {operationMessage}
@@ -81,7 +78,7 @@ export function WorkspacePanel() {
               </button>
             </div>
             {activeTab === "files" ? (
-              <FileTree connectionId={activeConnectionId} />
+              <FileTree connectionId={activeConnectionId} title={meta.rootName} />
             ) : (
               <GitChangesPanel connectionId={activeConnectionId} />
             )}
