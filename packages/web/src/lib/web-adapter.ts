@@ -224,6 +224,11 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
     },
 
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+      const res = await api.fetchApiRaw(path, options);
+      return res.json() as T;
+    },
+
+    async fetchApiRaw(path: string, options?: RequestInit): Promise<Response> {
       const base = serverUrl.trim();
       const requestUrl = base.length > 0 ? `${base}${path}` : path;
       const headers = new Headers(options?.headers ?? {});
@@ -233,11 +238,10 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       if (token.trim().length > 0) {
         headers.set("Authorization", `Bearer ${token}`);
       }
-      const res = await fetch(requestUrl, {
+      return fetch(requestUrl, {
         ...options,
         headers,
       });
-      return res.json() as T;
     },
   };
 

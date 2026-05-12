@@ -5,6 +5,8 @@ export interface PlatformAPI {
   sendWsMessage(msg: any): void;
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
+  /** Like fetchApi but returns the raw Response so callers can read blobs/streams. */
+  fetchApiRaw(path: string, options?: RequestInit): Promise<Response>;
 }
 
 let _platform: PlatformAPI | null = null;

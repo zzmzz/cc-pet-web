@@ -119,6 +119,7 @@ interface WorkspaceState {
   requestWorkspaceTab: (connectionId: string, tab: WorkspaceTab) => void;
   consumePendingWorkspaceTab: (connectionId: string) => void;
   openFile: (connectionId: string, path: string) => Promise<void>;
+  downloadFile: (connectionId: string, path: string) => Promise<void>;
   openDiff: (connectionId: string, path: string) => Promise<void>;
   createItem: (connectionId: string, parentPath: string, name: string, kind: FileEntry["kind"]) => Promise<boolean>;
   renameItem: (connectionId: string, path: string, newName: string) => Promise<boolean>;
@@ -645,6 +646,56 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         },
         loadingFile: false,
       });
+    }
+  },
+
+  downloadFile: async (connectionId, path) => {
+    const normalized = normalizeTreePath(path);
+    const name = basename(normalized);
+    try {
+      const response = await getPlatform().fetchApiRaw(
+        `/api/workspaces/${encodeURIComponent(connectionId)}/file/download?path=${encodeURIComponent(normalized)}`,
+      );
+      if (!response.ok) {
+        let message = `文件下载失败（${response.status}）`;
+        try {
+          const body = await response.json();
+          if (isApiErrorResponse(body)) message = body.message;
+        } catch {
+          // body may not be JSON; keep default message
+        }
+        set((state) => ({
+          operationErrorByConnection: {
+            ...state.operationErrorByConnection,
+            [connectionId]: message,
+          },
+          operationMessageByConnection: {
+            ...state.operationMessageByConnection,
+            [connectionId]: "",
+          },
+        }));
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = name;
+        anchor.rel = "noopener";
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (error) {
+      set((state) => ({
+        operationErrorByConnection: {
+          ...state.operationErrorByConnection,
+          [connectionId]: error instanceof Error ? error.message : "文件下载失败",
+        },
+      }));
     }
   },
 

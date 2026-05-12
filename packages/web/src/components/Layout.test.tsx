@@ -11,10 +11,11 @@ import { useWorkspaceStore } from "../lib/store/workspace.js";
 
 const platformMock = vi.hoisted(() => ({
   fetchApi: vi.fn(),
+  fetchApiRaw: vi.fn(),
 }));
 
 vi.mock("../lib/platform.js", () => ({
-  getPlatform: () => ({ fetchApi: platformMock.fetchApi }),
+  getPlatform: () => ({ fetchApi: platformMock.fetchApi, fetchApiRaw: platformMock.fetchApiRaw }),
 }));
 
 function resetStores() {

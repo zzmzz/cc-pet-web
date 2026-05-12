@@ -20,6 +20,7 @@ class FakeAdapter implements PlatformAPI {
   sendWsMessage = vi.fn();
 
   fetchApi = vi.fn();
+  fetchApiRaw = vi.fn();
 
   onWsEvent(handler: (type: string, payload: any) => void): () => void {
     this.handler = handler;

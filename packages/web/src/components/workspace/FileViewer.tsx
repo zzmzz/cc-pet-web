@@ -14,6 +14,7 @@ export function FileViewer({ variant = "desktop" }: { variant?: "desktop" | "mob
   const savingFile = useWorkspaceStore((s) => s.savingFile);
   const closeFile = useWorkspaceStore((s) => s.closeFile);
   const saveFile = useWorkspaceStore((s) => s.saveFile);
+  const downloadFile = useWorkspaceStore((s) => s.downloadFile);
   const [draftContent, setDraftContent] = useState("");
 
   useEffect(() => {
@@ -26,6 +27,10 @@ export function FileViewer({ variant = "desktop" }: { variant?: "desktop" | "mob
   const handleSave = async () => {
     if (!activeConnectionId || !activeFile?.previewable) return;
     await saveFile(activeConnectionId, activeFile.path, draftContent);
+  };
+  const handleDownload = async () => {
+    if (!activeConnectionId || !activeFile?.path) return;
+    await downloadFile(activeConnectionId, activeFile.path);
   };
   const containerClass = variant === "mobile"
     ? "flex min-h-0 max-h-[55vh] w-full flex-col border-t border-border bg-surface-secondary"
@@ -42,6 +47,15 @@ export function FileViewer({ variant = "desktop" }: { variant?: "desktop" | "mob
             <div className="truncate text-[11px] text-text-secondary">{activeFile.path}</div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => void handleDownload()}
+          disabled={!activeFile?.path}
+          className="rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50"
+          title="下载原始文件"
+        >
+          下载
+        </button>
         <button
           type="button"
           onClick={closeFile}

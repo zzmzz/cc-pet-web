@@ -396,6 +396,44 @@ describe("workspace file api", () => {
     expect(result.body.size).toBeGreaterThan(0);
   });
 
+  it("streams raw bytes for downloads with attachment headers", async () => {
+    const binaryPath = path.join(workspaceDir, "中文 名.bin");
+    const binaryPayload = Buffer.from([0x00, 0x01, 0xff, 0x10, 0x20, 0x30]);
+    await writeFile(binaryPath, binaryPayload);
+
+    const app = Fastify();
+    app.addHook("onRequest", authGuard(config.load().tokens));
+    registerWorkspaceRoutes(app, config);
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/workspaces/conn-1/file/download?path=${encodeURIComponent("中文 名.bin")}`,
+        headers: { Authorization: "Bearer token-1" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("application/octet-stream");
+      expect(res.headers["content-length"]).toBe(String(binaryPayload.length));
+      const disposition = String(res.headers["content-disposition"]);
+      expect(disposition).toContain("attachment");
+      expect(disposition).toContain(`filename*=UTF-8''${encodeURIComponent("中文 名.bin")}`);
+      expect(res.rawPayload.equals(binaryPayload)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects download requests for missing files", async () => {
+    const result = await injectWorkspace("/api/workspaces/conn-1/file/download?path=nope.txt");
+    expect(result.statusCode).toBe(404);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_FILE_NOT_FOUND" });
+  });
+
+  it("rejects download requests for directories", async () => {
+    const result = await injectWorkspace("/api/workspaces/conn-1/file/download?path=src");
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_PATH_NOT_FILE" });
+  });
+
   it("returns a non-previewable response for files over the preview limit", async () => {
     await writeFile(path.join(workspaceDir, "large.txt"), "x".repeat(FILE_PREVIEW_MAX_BYTES + 1), "utf8");
 

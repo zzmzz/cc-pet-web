@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { ConfigStore } from "../storage/config.js";
-import { WorkspaceResolutionError, resolveConnectionWorkspace } from "../workspace/resolver.js";
+import { WorkspaceResolutionError, resolveConnectionWorkspace, resolveWorkspacePath } from "../workspace/resolver.js";
 import {
   WorkspaceFileError,
   createItem,
@@ -62,6 +64,44 @@ export function registerWorkspaceRoutes(app: FastifyInstance, configStore: Pick<
       }
       const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
       return await readFilePreview(workspace, req.query.path);
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  });
+
+  app.get<{
+    Params: { connectionId: string };
+    Querystring: { path?: string };
+  }>("/api/workspaces/:connectionId/file/download", async (req, reply) => {
+    try {
+      if (!req.query.path) {
+        return reply.code(400).send({
+          error: "WORKSPACE_PATH_INVALID",
+          message: "File path is required",
+        });
+      }
+      const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
+      const resolved = await resolveWorkspacePath(workspace, req.query.path);
+      const stats = await stat(resolved.absolutePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          throw new WorkspaceFileError("WORKSPACE_FILE_NOT_FOUND", "File was not found", 404);
+        }
+        throw error;
+      });
+      if (!stats.isFile()) {
+        throw new WorkspaceFileError("WORKSPACE_PATH_NOT_FILE", "Workspace path is not a file", 400);
+      }
+
+      const filename = path.basename(resolved.relativePath);
+      const asciiFallback = filename.replace(/[^\x20-\x7E]+/g, "_").replace(/["\\]/g, "_");
+      const encoded = encodeURIComponent(filename);
+      reply.header("Content-Type", "application/octet-stream");
+      reply.header("Content-Length", String(stats.size));
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`,
+      );
+      return reply.send(createReadStream(resolved.absolutePath));
     } catch (error) {
       return sendWorkspaceError(reply, error);
     }
