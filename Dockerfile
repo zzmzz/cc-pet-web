@@ -31,8 +31,8 @@ RUN pnpm --filter @cc-pet/web build
 
 FROM node:22-slim AS runner
 
-# 设置时区为 Asia/Shanghai
-RUN apt-get update && apt-get install -y tzdata \
+# 设置时区为 Asia/Shanghai；git 用于 workspace 面板读取仓库状态/差异
+RUN apt-get update && apt-get install -y tzdata git \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone \
     && apt-get clean \

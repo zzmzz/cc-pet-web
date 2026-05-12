@@ -103,7 +103,10 @@ export function runGit(
   const allowExitCodes = new Set(options.allowExitCodes ?? [0]);
 
   return new Promise((resolve) => {
-    const child = spawn("git", args, { cwd, shell: false, windowsHide: true });
+    // 容器里 node 常以 root 运行而挂载目录归宿主用户所有，git 2.35.2+ 会以「dubious ownership」拒绝。
+    // 这里只对本次调用通过 -c 注入 safe.directory=*，不写入任何持久化配置。
+    const finalArgs = ["-c", "safe.directory=*", ...args];
+    const child = spawn("git", finalArgs, { cwd, shell: false, windowsHide: true });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -162,8 +165,10 @@ export function runGit(
 
 function gitUnavailableMessage(result: GitRunResult): string {
   if (result.timedOut) return "Git command timed out.";
-  if (result.stderr) return result.stderr;
+  // spawn 找不到二进制时 Node 把 "spawn git ENOENT" 灌进 stderr，所以 ENOENT 必须先于 stderr 判断，
+  // 否则用户看到的是迷惑的 Node 错误而不是「未安装 git」。
   if (result.errorCode === "ENOENT") return "Git executable is not available.";
+  if (result.stderr) return result.stderr;
   return "Git information is not available for this workspace.";
 }
 
