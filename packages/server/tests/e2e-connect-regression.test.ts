@@ -506,19 +506,30 @@ describe("e2e bridge connection status sync", () => {
 
     try {
       await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
-      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
-
-      await waitForWsMessage(
+      const skillsProbePromise = waitForWsMessage(
         bridgeClient,
         (msg: any) => msg.type === "message" && msg.content === "/skills" && msg.reply_ctx === SKILLS_PROBE_REPLY_CTX,
         10_000,
       );
-      await waitForWsMessage(
+      const commandsProbePromise = waitForWsMessage(
         bridgeClient,
         (msg: any) => msg.type === "message" && msg.content === "/commands" && msg.reply_ctx === COMMANDS_PROBE_REPLY_CTX,
         10_000,
       );
+      bridgeClient.send(JSON.stringify({ type: "register_ack", ok: true }));
 
+      await skillsProbePromise;
+      await commandsProbePromise;
+
+      const mergedEvtPromise = waitForWsMessage<{ type: string; commands: Array<{ name?: string; command?: string }> }>(
+        dashboardWs,
+        (msg) =>
+          msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
+          Array.isArray(msg.commands) &&
+          msg.commands.some((c) => (c.name ?? c.command) === "skill-only") &&
+          msg.commands.some((c) => (c.name ?? c.command) === "cmd-only"),
+        10_000,
+      );
       bridgeClient.send(
         JSON.stringify({
           type: "reply",
@@ -536,15 +547,7 @@ describe("e2e bridge connection status sync", () => {
         }),
       );
 
-      const mergedEvt = await waitForWsMessage<{ type: string; commands: Array<{ name?: string; command?: string }> }>(
-        dashboardWs,
-        (msg) =>
-          msg.type === WS_EVENTS.BRIDGE_SKILLS_UPDATED &&
-          Array.isArray(msg.commands) &&
-          msg.commands.some((c) => (c.name ?? c.command) === "skill-only") &&
-          msg.commands.some((c) => (c.name ?? c.command) === "cmd-only"),
-        10_000,
-      );
+      const mergedEvt = await mergedEvtPromise;
       const names = mergedEvt.commands.map((c) => c.name ?? c.command?.replace(/^\//, ""));
       expect(names).toContain("skill-only");
       expect(names).toContain("cmd-only");
