@@ -125,9 +125,9 @@ export function FileTree({
   };
 
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       {title && (
-        <div className="mb-2 flex items-center gap-1 rounded-md bg-surface px-2 py-1.5">
+        <div className="mb-2 flex min-w-0 items-center gap-1 rounded-md bg-surface px-2 py-1.5">
           <div className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{title}</div>
           <ActionIconButton label="新建文件" onClick={() => void handleCreate(path, "file")}>
             <FilePlusIcon />
@@ -184,8 +184,8 @@ export function FileTree({
         const renderCreateActions = entry.kind === "directory" && !disabled;
 
         return (
-          <div key={entry.path} data-file-entry>
-            <div className="group relative flex items-center rounded-md text-xs hover:bg-surface">
+          <div key={entry.path} data-file-entry className="min-w-0">
+            <div className="group flex min-w-0 items-center rounded-md text-xs hover:bg-surface">
               <button
                 type="button"
                 disabled={disabled}
@@ -202,7 +202,7 @@ export function FileTree({
                 </span>
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
                 {gitLabel && (
-                  <span className="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[10px] text-accent">
+                  <span className="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[10px] text-accent group-hover:hidden">
                     {gitLabel}
                   </span>
                 )}
@@ -214,7 +214,7 @@ export function FileTree({
               </button>
               {!disabled && (
                 <div
-                  className="absolute inset-y-0 right-1 z-10 flex items-center gap-0.5 rounded-md bg-surface px-1 opacity-0 shadow-sm ring-1 ring-border/40 transition focus-within:opacity-100 group-hover:opacity-100"
+                  className="flex shrink-0 items-center gap-0 overflow-hidden opacity-0 transition-[max-width,opacity,padding] duration-150 ease-out max-w-0 group-hover:max-w-[160px] group-hover:opacity-100 group-hover:pr-1 group-focus-within:max-w-[160px] group-focus-within:opacity-100 group-focus-within:pr-1"
                 >
                   {renderCreateActions && (
                     <>
