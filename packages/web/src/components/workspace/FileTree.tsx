@@ -69,6 +69,14 @@ function TrashIcon() {
   );
 }
 
+function GitScopeIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M6 4a2 2 0 11-1 3.732V12a2 2 0 002 2h2v-1.268a2 2 0 111.5 0V14h2a2 2 0 002-2V7.732a2 2 0 11-1.5-3.732 2 2 0 011.5 3.732V12a3.5 3.5 0 01-3.5 3.5h-2V16.268a2 2 0 11-1.5 0V15.5H7A3.5 3.5 0 013.5 12V7.732A2 2 0 016 4z" />
+    </svg>
+  );
+}
+
 function entryIcon(entry: FileEntry): string {
   if (entry.kind === "directory") return ">";
   if (entry.extension === ".md") return "MD";
@@ -106,6 +114,8 @@ export function FileTree({
   const createItem = useWorkspaceStore((s) => s.createItem);
   const renameItem = useWorkspaceStore((s) => s.renameItem);
   const deleteItem = useWorkspaceStore((s) => s.deleteItem);
+  const addCustomGitScope = useWorkspaceStore((s) => s.addCustomGitScope);
+  const requestWorkspaceTab = useWorkspaceStore((s) => s.requestWorkspaceTab);
 
   const handleCreate = async (basePath: string, kind: FileEntry["kind"]) => {
     const label = kind === "directory" ? "目录" : "文件";
@@ -211,6 +221,15 @@ export function FileTree({
                       </ActionIconButton>
                       <ActionIconButton label="新建目录" onClick={() => void handleCreate(entry.path, "directory")}>
                         <FolderPlusIcon />
+                      </ActionIconButton>
+                      <ActionIconButton
+                        label="在 Git 面板查看"
+                        onClick={() => {
+                          void addCustomGitScope(connectionId, entry.path);
+                          requestWorkspaceTab(connectionId, "git");
+                        }}
+                      >
+                        <GitScopeIcon />
                       </ActionIconButton>
                     </>
                   )}

@@ -39,10 +39,15 @@ export interface GitChange {
   previousPath?: string;
 }
 
+export type GitRepoMode = "root" | "nested" | "subpath";
+
 export interface GitStatusResponse {
   gitAvailable: boolean;
   changes: GitChange[];
   message?: string;
+  scope: string;
+  repoMode: GitRepoMode;
+  repoRoot: string;
 }
 
 export interface GitDiffResponse {
@@ -51,7 +56,23 @@ export interface GitDiffResponse {
   diff?: string;
   reason?: string;
   message?: string;
+  scope?: string;
+  repoMode?: GitRepoMode;
+  repoRoot?: string;
 }
+
+export interface GitScopeEntry {
+  path: string;
+  repoMode: "root" | "nested" | "custom";
+  label?: string;
+}
+
+export interface GitScopesResponse {
+  scopes: GitScopeEntry[];
+  truncated?: boolean;
+}
+
+export type WorkspaceTab = "files" | "git";
 
 interface ApiErrorResponse {
   error: string;
@@ -72,8 +93,13 @@ interface WorkspaceState {
   metaByConnection: Record<string, WorkspaceMeta>;
   treeByConnection: Record<string, Record<string, FileEntry[]>>;
   treeErrorByConnection: Record<string, Record<string, string>>;
-  gitStatusByConnection: Record<string, GitStatusResponse>;
-  loadingGitStatusByConnection: Record<string, boolean>;
+  gitStatusByConnection: Record<string, Record<string, GitStatusResponse>>;
+  loadingGitStatusByConnection: Record<string, Record<string, boolean>>;
+  gitScopesByConnection: Record<string, GitScopeEntry[]>;
+  gitScopesTruncatedByConnection: Record<string, boolean>;
+  loadingGitScopesByConnection: Record<string, boolean>;
+  activeGitScopeByConnection: Record<string, string>;
+  pendingWorkspaceTabByConnection: Record<string, WorkspaceTab | undefined>;
   operationMessageByConnection: Record<string, string>;
   operationErrorByConnection: Record<string, string>;
   loadingWorkspaceByConnection: Record<string, boolean>;
@@ -86,7 +112,12 @@ interface WorkspaceState {
 
   loadWorkspace: (connectionId: string | null) => Promise<void>;
   loadTree: (connectionId: string, path?: string) => Promise<void>;
-  loadGitStatus: (connectionId: string) => Promise<void>;
+  loadGitStatus: (connectionId: string, scope?: string) => Promise<void>;
+  loadGitScopes: (connectionId: string) => Promise<void>;
+  setActiveGitScope: (connectionId: string, scope: string) => Promise<void>;
+  addCustomGitScope: (connectionId: string, subpath: string) => Promise<void>;
+  requestWorkspaceTab: (connectionId: string, tab: WorkspaceTab) => void;
+  consumePendingWorkspaceTab: (connectionId: string) => void;
   openFile: (connectionId: string, path: string) => Promise<void>;
   openDiff: (connectionId: string, path: string) => Promise<void>;
   createItem: (connectionId: string, parentPath: string, name: string, kind: FileEntry["kind"]) => Promise<boolean>;
@@ -147,6 +178,14 @@ function mergeTreeWithGitStatus(
   );
 }
 
+function activeGitStatusFor(
+  state: WorkspaceState,
+  connectionId: string,
+): GitStatusResponse | undefined {
+  const scope = state.activeGitScopeByConnection[connectionId] ?? "";
+  return state.gitStatusByConnection[connectionId]?.[scope];
+}
+
 function validateItemName(name: string): string | null {
   const trimmed = name.trim();
   if (!trimmed) return "名称不能为空。";
@@ -170,6 +209,30 @@ function treeUrl(connectionId: string, path = ""): string {
   return normalized ? `${base}?path=${encodeURIComponent(normalized)}` : base;
 }
 
+function gitStatusUrl(connectionId: string, scope: string): string {
+  const base = `/api/workspaces/${encodeURIComponent(connectionId)}/git/status`;
+  return scope ? `${base}?scope=${encodeURIComponent(scope)}` : base;
+}
+
+function gitDiffUrl(connectionId: string, filePath: string, scope: string): string {
+  const params = new URLSearchParams({ path: filePath });
+  if (scope) params.set("scope", scope);
+  return `/api/workspaces/${encodeURIComponent(connectionId)}/git/diff?${params.toString()}`;
+}
+
+function gitScopesUrl(connectionId: string): string {
+  return `/api/workspaces/${encodeURIComponent(connectionId)}/git/scopes`;
+}
+
+function mergeScopes(existing: GitScopeEntry[], incoming: GitScopeEntry[]): GitScopeEntry[] {
+  const byPath = new Map<string, GitScopeEntry>();
+  for (const scope of existing) byPath.set(scope.path, scope);
+  for (const scope of incoming) {
+    if (!byPath.has(scope.path)) byPath.set(scope.path, scope);
+  }
+  return Array.from(byPath.values());
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeConnectionId: null,
   metaByConnection: {},
@@ -177,6 +240,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   treeErrorByConnection: {},
   gitStatusByConnection: {},
   loadingGitStatusByConnection: {},
+  gitScopesByConnection: {},
+  gitScopesTruncatedByConnection: {},
+  loadingGitScopesByConnection: {},
+  activeGitScopeByConnection: {},
+  pendingWorkspaceTabByConnection: {},
   operationMessageByConnection: {},
   operationErrorByConnection: {},
   loadingWorkspaceByConnection: {},
@@ -223,9 +291,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           gitStatusByConnection: {
             ...state.gitStatusByConnection,
             [connectionId]: {
-              gitAvailable: false,
-              changes: [],
-              message: response.message,
+              "": {
+                gitAvailable: false,
+                changes: [],
+                message: response.message,
+                scope: "",
+                repoMode: "root",
+                repoRoot: "",
+              },
             },
           },
           loadingWorkspaceByConnection: {
@@ -241,6 +314,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           ...state.metaByConnection,
           [connectionId]: response,
         },
+        activeGitScopeByConnection: {
+          ...state.activeGitScopeByConnection,
+          [connectionId]: state.activeGitScopeByConnection[connectionId] ?? "",
+        },
         loadingWorkspaceByConnection: {
           ...state.loadingWorkspaceByConnection,
           [connectionId]: false,
@@ -248,7 +325,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }));
       if (response.configured) {
         await get().loadTree(connectionId);
-        await get().loadGitStatus(connectionId);
+        await Promise.all([
+          get().loadGitStatus(connectionId),
+          get().loadGitScopes(connectionId),
+        ]);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "工作区加载失败";
@@ -310,7 +390,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           ...state.treeByConnection,
           [connectionId]: {
             ...(state.treeByConnection[connectionId] ?? {}),
-            [responsePath]: withGitStatuses(response.entries ?? [], state.gitStatusByConnection[connectionId]),
+            [responsePath]: withGitStatuses(response.entries ?? [], activeGitStatusFor(state, connectionId)),
           },
         },
         treeErrorByConnection: {
@@ -349,55 +429,186 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  loadGitStatus: async (connectionId) => {
+  loadGitStatus: async (connectionId, scope) => {
+    const targetScope = scope ?? get().activeGitScopeByConnection[connectionId] ?? "";
     set((state) => ({
       loadingGitStatusByConnection: {
         ...state.loadingGitStatusByConnection,
-        [connectionId]: true,
+        [connectionId]: {
+          ...(state.loadingGitStatusByConnection[connectionId] ?? {}),
+          [targetScope]: true,
+        },
       },
     }));
     try {
       const response = await getPlatform().fetchApi<GitStatusResponse | ApiErrorResponse>(
-        `/api/workspaces/${encodeURIComponent(connectionId)}/git/status`,
+        gitStatusUrl(connectionId, targetScope),
       );
       const gitStatus: GitStatusResponse = isApiErrorResponse(response)
-        ? { gitAvailable: false, changes: [], message: response.message }
+        ? {
+            gitAvailable: false,
+            changes: [],
+            message: response.message,
+            scope: targetScope,
+            repoMode: "root",
+            repoRoot: "",
+          }
         : response;
-      set((state) => ({
-        gitStatusByConnection: {
-          ...state.gitStatusByConnection,
-          [connectionId]: gitStatus,
-        },
-        treeByConnection: {
-          ...state.treeByConnection,
-          [connectionId]: mergeTreeWithGitStatus(state.treeByConnection[connectionId] ?? {}, gitStatus),
-        },
-        loadingGitStatusByConnection: {
-          ...state.loadingGitStatusByConnection,
-          [connectionId]: false,
-        },
-      }));
+      set((state) => {
+        const nextStatusByScope = {
+          ...(state.gitStatusByConnection[connectionId] ?? {}),
+          [targetScope]: gitStatus,
+        };
+        const activeScope = state.activeGitScopeByConnection[connectionId] ?? "";
+        const treeStatus = activeScope === targetScope ? gitStatus : nextStatusByScope[activeScope];
+        return {
+          gitStatusByConnection: {
+            ...state.gitStatusByConnection,
+            [connectionId]: nextStatusByScope,
+          },
+          treeByConnection: {
+            ...state.treeByConnection,
+            [connectionId]: mergeTreeWithGitStatus(state.treeByConnection[connectionId] ?? {}, treeStatus),
+          },
+          loadingGitStatusByConnection: {
+            ...state.loadingGitStatusByConnection,
+            [connectionId]: {
+              ...(state.loadingGitStatusByConnection[connectionId] ?? {}),
+              [targetScope]: false,
+            },
+          },
+        };
+      });
     } catch (error) {
       const gitStatus: GitStatusResponse = {
         gitAvailable: false,
         changes: [],
         message: error instanceof Error ? error.message : "Git 状态加载失败",
+        scope: targetScope,
+        repoMode: "root",
+        repoRoot: "",
       };
+      set((state) => {
+        const nextStatusByScope = {
+          ...(state.gitStatusByConnection[connectionId] ?? {}),
+          [targetScope]: gitStatus,
+        };
+        const activeScope = state.activeGitScopeByConnection[connectionId] ?? "";
+        const treeStatus = activeScope === targetScope ? gitStatus : nextStatusByScope[activeScope];
+        return {
+          gitStatusByConnection: {
+            ...state.gitStatusByConnection,
+            [connectionId]: nextStatusByScope,
+          },
+          treeByConnection: {
+            ...state.treeByConnection,
+            [connectionId]: mergeTreeWithGitStatus(state.treeByConnection[connectionId] ?? {}, treeStatus),
+          },
+          loadingGitStatusByConnection: {
+            ...state.loadingGitStatusByConnection,
+            [connectionId]: {
+              ...(state.loadingGitStatusByConnection[connectionId] ?? {}),
+              [targetScope]: false,
+            },
+          },
+        };
+      });
+    }
+  },
+
+  loadGitScopes: async (connectionId) => {
+    set((state) => ({
+      loadingGitScopesByConnection: {
+        ...state.loadingGitScopesByConnection,
+        [connectionId]: true,
+      },
+    }));
+    try {
+      const response = await getPlatform().fetchApi<GitScopesResponse | ApiErrorResponse>(
+        gitScopesUrl(connectionId),
+      );
+      const scopes = isApiErrorResponse(response) ? [] : response.scopes ?? [];
+      const truncated = !isApiErrorResponse(response) && Boolean(response.truncated);
       set((state) => ({
-        gitStatusByConnection: {
-          ...state.gitStatusByConnection,
-          [connectionId]: gitStatus,
+        gitScopesByConnection: {
+          ...state.gitScopesByConnection,
+          [connectionId]: mergeScopes(state.gitScopesByConnection[connectionId] ?? [], scopes),
         },
-        treeByConnection: {
-          ...state.treeByConnection,
-          [connectionId]: mergeTreeWithGitStatus(state.treeByConnection[connectionId] ?? {}, gitStatus),
+        gitScopesTruncatedByConnection: {
+          ...state.gitScopesTruncatedByConnection,
+          [connectionId]: truncated,
         },
-        loadingGitStatusByConnection: {
-          ...state.loadingGitStatusByConnection,
+        loadingGitScopesByConnection: {
+          ...state.loadingGitScopesByConnection,
+          [connectionId]: false,
+        },
+      }));
+    } catch {
+      set((state) => ({
+        loadingGitScopesByConnection: {
+          ...state.loadingGitScopesByConnection,
           [connectionId]: false,
         },
       }));
     }
+  },
+
+  setActiveGitScope: async (connectionId, scope) => {
+    const normalized = scope ?? "";
+    set((state) => {
+      const nextStatusByScope = state.gitStatusByConnection[connectionId] ?? {};
+      const treeStatus = nextStatusByScope[normalized];
+      return {
+        activeGitScopeByConnection: {
+          ...state.activeGitScopeByConnection,
+          [connectionId]: normalized,
+        },
+        treeByConnection: {
+          ...state.treeByConnection,
+          [connectionId]: mergeTreeWithGitStatus(state.treeByConnection[connectionId] ?? {}, treeStatus),
+        },
+      };
+    });
+    if (!get().gitStatusByConnection[connectionId]?.[normalized]) {
+      await get().loadGitStatus(connectionId, normalized);
+    }
+  },
+
+  addCustomGitScope: async (connectionId, subpath) => {
+    const normalized = normalizeTreePath(subpath);
+    if (!normalized) {
+      await get().setActiveGitScope(connectionId, "");
+      return;
+    }
+    set((state) => {
+      const existing = state.gitScopesByConnection[connectionId] ?? [];
+      if (existing.some((scope) => scope.path === normalized)) return {};
+      return {
+        gitScopesByConnection: {
+          ...state.gitScopesByConnection,
+          [connectionId]: [...existing, { path: normalized, repoMode: "custom", label: normalized }],
+        },
+      };
+    });
+    await get().setActiveGitScope(connectionId, normalized);
+  },
+
+  requestWorkspaceTab: (connectionId, tab) => {
+    set((state) => ({
+      pendingWorkspaceTabByConnection: {
+        ...state.pendingWorkspaceTabByConnection,
+        [connectionId]: tab,
+      },
+    }));
+  },
+
+  consumePendingWorkspaceTab: (connectionId) => {
+    set((state) => {
+      if (!(connectionId in state.pendingWorkspaceTabByConnection)) return {};
+      const next = { ...state.pendingWorkspaceTabByConnection };
+      delete next[connectionId];
+      return { pendingWorkspaceTabByConnection: next };
+    });
   },
 
   openFile: async (connectionId, path) => {
@@ -439,10 +650,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   openDiff: async (connectionId, path) => {
     const normalized = normalizeTreePath(path);
+    const scope = get().activeGitScopeByConnection[connectionId] ?? "";
     set({ loadingDiff: true, activeFile: null, loadingFile: false });
     try {
       const response = await getPlatform().fetchApi<GitDiffResponse | ApiErrorResponse>(
-        `/api/workspaces/${encodeURIComponent(connectionId)}/git/diff?path=${encodeURIComponent(normalized)}`,
+        gitDiffUrl(connectionId, normalized, scope),
       );
       if (isApiErrorResponse(response)) {
         set({

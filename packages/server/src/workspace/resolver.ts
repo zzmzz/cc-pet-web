@@ -16,6 +16,8 @@ export type WorkspaceErrorCode =
   | "WORKSPACE_PATH_OUTSIDE_ROOT"
   | "WORKSPACE_PATH_NOT_WRITABLE";
 
+export const WORKSPACE_PARENT_PATH_MISSING_MESSAGE = "Parent path does not exist";
+
 export class WorkspaceResolutionError extends Error {
   constructor(
     public readonly code: WorkspaceErrorCode,
@@ -138,7 +140,7 @@ export async function resolveWorkspacePath(
     allowOutsideSymlinkTarget: true,
   });
   if (!realParent) {
-    throw workspaceError("WORKSPACE_PATH_INVALID", "Parent path does not exist", 400);
+    throw workspaceError("WORKSPACE_PATH_INVALID", WORKSPACE_PARENT_PATH_MISSING_MESSAGE, 400);
   }
   return { relativePath: normalized, absolutePath: absoluteCandidate };
 }
@@ -151,7 +153,7 @@ export async function assertWritablePath(
   const parentPath = path.dirname(resolved.absolutePath);
   const realParent = await realpathInside(workspace.rootPath, parentPath);
   if (!realParent) {
-    throw workspaceError("WORKSPACE_PATH_INVALID", "Parent path does not exist", 400);
+    throw workspaceError("WORKSPACE_PATH_INVALID", WORKSPACE_PARENT_PATH_MISSING_MESSAGE, 400);
   }
 
   try {
@@ -173,7 +175,7 @@ export async function assertWritableChildPath(
   const parentPath = path.dirname(resolved.absolutePath);
   const realParent = await realpathInside(workspace.rootPath, parentPath);
   if (!realParent) {
-    throw workspaceError("WORKSPACE_PATH_INVALID", "Parent path does not exist", 400);
+    throw workspaceError("WORKSPACE_PATH_INVALID", WORKSPACE_PARENT_PATH_MISSING_MESSAGE, 400);
   }
 
   try {

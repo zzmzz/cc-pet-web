@@ -1,11 +1,31 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { WorkspaceContext } from "./resolver.js";
-import { resolveWorkspacePath } from "./resolver.js";
+import type { ResolvedWorkspacePath } from "./resolver.js";
+import {
+  resolveWorkspacePath,
+  WORKSPACE_PARENT_PATH_MISSING_MESSAGE,
+  WorkspaceResolutionError,
+} from "./resolver.js";
 
 export const GIT_COMMAND_TIMEOUT_MS = 5_000;
 export const GIT_OUTPUT_MAX_BYTES = 128 * 1024;
+export const GIT_SCOPE_SCAN_DEFAULT_DEPTH = 2;
+export const GIT_SCOPE_SCAN_DIR_LIMIT = 200;
+const GIT_SCOPE_IGNORE_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  "out",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".pnpm-store",
+]);
+
+export type GitRepoMode = "root" | "nested" | "subpath";
 
 export interface GitChange {
   path: string;
@@ -17,6 +37,9 @@ export interface GitStatusResponse {
   gitAvailable: boolean;
   changes: GitChange[];
   message?: string;
+  scope: string;
+  repoMode: GitRepoMode;
+  repoRoot: string;
 }
 
 export interface GitDiffResponse {
@@ -25,6 +48,20 @@ export interface GitDiffResponse {
   diff?: string;
   reason?: "GIT_UNAVAILABLE" | "DIFF_TOO_LARGE" | "BINARY_DIFF" | "DIFF_UNAVAILABLE";
   message?: string;
+  scope?: string;
+  repoMode?: GitRepoMode;
+  repoRoot?: string;
+}
+
+export interface GitScopeEntry {
+  path: string;
+  repoMode: "root" | "nested";
+  label?: string;
+}
+
+export interface GitScopesResponse {
+  scopes: GitScopeEntry[];
+  truncated: boolean;
 }
 
 export interface GitRunResult {
@@ -34,6 +71,14 @@ export interface GitRunResult {
   timedOut: boolean;
   outputTruncated: boolean;
   errorCode?: string;
+}
+
+interface ScopeContext {
+  scope: string;
+  repoMode: GitRepoMode;
+  repoRoot: string;
+  cwd: string;
+  pathspec?: string;
 }
 
 function toApiPath(relativePath: string): string {
@@ -125,132 +170,391 @@ function isGitUnavailable(result: GitRunResult): boolean {
   return result.errorCode === "ENOENT" || result.exitCode !== 0 || result.timedOut;
 }
 
-async function ensureGitWorkspace(workspace: WorkspaceContext): Promise<{ available: true } | { available: false; message: string }> {
-  const result = await runGit(workspace.rootPath, ["rev-parse", "--is-inside-work-tree"]);
-  if (isGitUnavailable(result) || result.stdout.trim() !== "true") {
-    return { available: false, message: gitUnavailableMessage(result) };
-  }
-  return { available: true };
+function joinScopePath(scope: string, repoRelativePath: string): string {
+  if (!repoRelativePath) return scope;
+  if (!scope) return repoRelativePath;
+  return `${scope}/${repoRelativePath}`;
 }
 
-function parseStatusLine(line: string): GitChange | null {
+function stripScopePrefix(scope: string, fullPath: string): string {
+  if (!scope) return fullPath;
+  if (fullPath === scope) return "";
+  const prefix = `${scope}/`;
+  if (fullPath.startsWith(prefix)) return fullPath.slice(prefix.length);
+  return fullPath;
+}
+
+function normalizeScopeQuery(scope: string | undefined): string {
+  if (!scope) return "";
+  const trimmed = scope.trim();
+  if (!trimmed || trimmed === "." || trimmed === "/") return "";
+  return trimmed;
+}
+
+async function resolveScopeContext(
+  workspace: WorkspaceContext,
+  scope: string | undefined,
+): Promise<{ ok: true; context: ScopeContext } | { ok: false; reason: "GIT_UNAVAILABLE"; message: string }> {
+  const normalizedScope = normalizeScopeQuery(scope);
+
+  if (!normalizedScope) {
+    const root = await runGit(workspace.rootPath, ["rev-parse", "--is-inside-work-tree"]);
+    if (isGitUnavailable(root) || root.stdout.trim() !== "true") {
+      return { ok: false, reason: "GIT_UNAVAILABLE", message: gitUnavailableMessage(root) };
+    }
+    return {
+      ok: true,
+      context: {
+        scope: "",
+        repoMode: "root",
+        repoRoot: "",
+        cwd: workspace.rootPath,
+        pathspec: undefined,
+      },
+    };
+  }
+
+  let resolved: ResolvedWorkspacePath;
+  try {
+    resolved = await resolveWorkspacePath(workspace, normalizedScope);
+  } catch (error) {
+    // "Parent path does not exist" is semantically a not-found scope for git purposes,
+    // so we translate it to 404 to match the rest of the scope contract.
+    if (
+      error instanceof WorkspaceResolutionError &&
+      error.code === "WORKSPACE_PATH_INVALID" &&
+      error.message === WORKSPACE_PARENT_PATH_MISSING_MESSAGE
+    ) {
+      throw new WorkspaceResolutionError(
+        "WORKSPACE_UNAVAILABLE",
+        "Git scope path does not exist",
+        404,
+      );
+    }
+    throw error;
+  }
+  const subpathApi = toApiPath(resolved.relativePath);
+
+  const targetStat = await stat(resolved.absolutePath).catch(() => null);
+  if (!targetStat) {
+    throw new WorkspaceResolutionError(
+      "WORKSPACE_UNAVAILABLE",
+      "Git scope path does not exist",
+      404,
+    );
+  }
+  if (!targetStat.isDirectory()) {
+    throw new WorkspaceResolutionError(
+      "WORKSPACE_PATH_INVALID",
+      "Git scope must be a directory",
+      400,
+    );
+  }
+
+  const topResult = await runGit(resolved.absolutePath, ["rev-parse", "--show-toplevel"]);
+  if (isGitUnavailable(topResult)) {
+    return { ok: false, reason: "GIT_UNAVAILABLE", message: gitUnavailableMessage(topResult) };
+  }
+  const toplevel = topResult.stdout.trim();
+  if (!toplevel) {
+    return { ok: false, reason: "GIT_UNAVAILABLE", message: "Git information is not available for this workspace." };
+  }
+
+  if (toplevel === resolved.absolutePath) {
+    return {
+      ok: true,
+      context: {
+        scope: subpathApi,
+        repoMode: "nested",
+        repoRoot: subpathApi,
+        cwd: resolved.absolutePath,
+        pathspec: undefined,
+      },
+    };
+  }
+
+  if (toplevel === workspace.rootPath) {
+    return {
+      ok: true,
+      context: {
+        scope: subpathApi,
+        repoMode: "subpath",
+        repoRoot: "",
+        cwd: workspace.rootPath,
+        pathspec: subpathApi,
+      },
+    };
+  }
+
+  // Toplevel is an ancestor of workspace.rootPath (workspace lives inside a larger repo).
+  // Treat workspace root as the effective repo root and apply pathspec filter from workspace root.
+  return {
+    ok: true,
+    context: {
+      scope: subpathApi,
+      repoMode: "subpath",
+      repoRoot: "",
+      cwd: workspace.rootPath,
+      pathspec: subpathApi,
+    },
+  };
+}
+
+function parseStatusLine(line: string, repoRoot: string): GitChange | null {
   if (line.length < 4) return null;
   const xy = line.slice(0, 2);
   const rawPath = line.slice(3);
   if (!rawPath) return null;
 
   if (xy === "??") {
-    return { path: rawPath, status: "??" };
+    return { path: joinScopePath(repoRoot, rawPath), status: "??" };
   }
 
   const status = xy.includes("R") ? "R" : xy.includes("C") ? "C" : xy.trim()[0] ?? "M";
   if (status === "R" || status === "C") {
     const [previousPath, nextPath] = rawPath.split(" -> ");
-    return { path: nextPath ?? rawPath, previousPath, status };
+    return {
+      path: joinScopePath(repoRoot, nextPath ?? rawPath),
+      previousPath: previousPath ? joinScopePath(repoRoot, previousPath) : undefined,
+      status,
+    };
   }
-  return { path: rawPath, status };
+  return { path: joinScopePath(repoRoot, rawPath), status };
 }
 
 function isBinaryDiff(diff: string): boolean {
   return /^Binary files .+ differ$/m.test(diff) || diff.includes("GIT binary patch");
 }
 
-async function isUntracked(workspace: WorkspaceContext, relativePath: string): Promise<boolean> {
-  const result = await runGit(workspace.rootPath, ["status", "--porcelain=v1", "--untracked-files=all", "--", relativePath]);
+async function isUntracked(cwd: string, repoRelativePath: string): Promise<boolean> {
+  const result = await runGit(cwd, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--",
+    repoRelativePath,
+  ]);
   return result.stdout
     .split(/\r?\n/)
     .some((line) => line.startsWith("?? "));
 }
 
-export async function getGitStatus(workspace: WorkspaceContext): Promise<GitStatusResponse> {
-  const git = await ensureGitWorkspace(workspace);
-  if (!git.available) {
-    return { gitAvailable: false, changes: [], message: git.message };
+export async function getGitStatus(
+  workspace: WorkspaceContext,
+  options: { scope?: string } = {},
+): Promise<GitStatusResponse> {
+  const scopeResult = await resolveScopeContext(workspace, options.scope);
+  if (!scopeResult.ok) {
+    return {
+      gitAvailable: false,
+      changes: [],
+      message: scopeResult.message,
+      scope: normalizeScopeQuery(options.scope),
+      repoMode: "root",
+      repoRoot: "",
+    };
   }
+  const ctx = scopeResult.context;
 
-  const result = await runGit(workspace.rootPath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const statusArgs = ["status", "--porcelain=v1", "--untracked-files=all"];
+  if (ctx.pathspec) statusArgs.push("--", ctx.pathspec);
+  const result = await runGit(ctx.cwd, statusArgs);
   if (result.outputTruncated) {
-    return { gitAvailable: true, changes: [], message: "Git status output is too large to display." };
+    return {
+      gitAvailable: true,
+      changes: [],
+      message: "Git status output is too large to display.",
+      scope: ctx.scope,
+      repoMode: ctx.repoMode,
+      repoRoot: ctx.repoRoot,
+    };
   }
   if (isGitUnavailable(result)) {
-    return { gitAvailable: false, changes: [], message: gitUnavailableMessage(result) };
+    return {
+      gitAvailable: false,
+      changes: [],
+      message: gitUnavailableMessage(result),
+      scope: ctx.scope,
+      repoMode: ctx.repoMode,
+      repoRoot: ctx.repoRoot,
+    };
   }
 
   const changes = result.stdout
     .split(/\r?\n/)
-    .map((line) => parseStatusLine(line))
+    .map((line) => parseStatusLine(line, ctx.repoRoot))
     .filter((change): change is GitChange => change !== null);
 
-  return { gitAvailable: true, changes };
+  return {
+    gitAvailable: true,
+    changes,
+    scope: ctx.scope,
+    repoMode: ctx.repoMode,
+    repoRoot: ctx.repoRoot,
+  };
 }
 
-export async function getGitDiff(workspace: WorkspaceContext, relativePath: string): Promise<GitDiffResponse> {
+export async function getGitDiff(
+  workspace: WorkspaceContext,
+  relativePath: string,
+  options: { scope?: string } = {},
+): Promise<GitDiffResponse> {
   const resolved = await resolveWorkspacePath(workspace, relativePath);
   const normalizedPath = toApiPath(resolved.relativePath);
-  const git = await ensureGitWorkspace(workspace);
-  if (!git.available) {
+
+  const scopeResult = await resolveScopeContext(workspace, options.scope);
+  if (!scopeResult.ok) {
     return {
       path: normalizedPath,
       previewable: false,
       reason: "GIT_UNAVAILABLE",
-      message: git.message,
+      message: scopeResult.message,
+      scope: normalizeScopeQuery(options.scope),
     };
   }
+  const ctx = scopeResult.context;
 
-  const untracked = await isUntracked(workspace, normalizedPath);
+  // For nested repos: ensure the requested path lives under the repo root, then translate to
+  // repo-relative path before invoking git.
+  let repoRelativePath = normalizedPath;
+  if (ctx.repoMode === "nested") {
+    if (normalizedPath !== ctx.repoRoot && !normalizedPath.startsWith(`${ctx.repoRoot}/`)) {
+      return {
+        path: normalizedPath,
+        previewable: false,
+        reason: "DIFF_UNAVAILABLE",
+        message: "Diff path is outside the selected git scope.",
+        scope: ctx.scope,
+        repoMode: ctx.repoMode,
+        repoRoot: ctx.repoRoot,
+      };
+    }
+    repoRelativePath = stripScopePrefix(ctx.repoRoot, normalizedPath);
+  } else if (ctx.repoMode === "subpath" && ctx.pathspec) {
+    if (normalizedPath !== ctx.pathspec && !normalizedPath.startsWith(`${ctx.pathspec}/`)) {
+      return {
+        path: normalizedPath,
+        previewable: false,
+        reason: "DIFF_UNAVAILABLE",
+        message: "Diff path is outside the selected git scope.",
+        scope: ctx.scope,
+        repoMode: ctx.repoMode,
+        repoRoot: ctx.repoRoot,
+      };
+    }
+  }
+
+  const untracked = await isUntracked(ctx.cwd, repoRelativePath);
   const existingFileStats = await stat(resolved.absolutePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
+
   const args = untracked && existingFileStats?.isFile()
-    ? ["diff", "--no-ext-diff", "--no-color", "--no-index", "--", "/dev/null", normalizedPath]
-    : ["diff", "--no-ext-diff", "--no-color", "--find-renames", "HEAD", "--", normalizedPath];
-  const result = await runGit(workspace.rootPath, args, { allowExitCodes: untracked ? [0, 1] : [0] });
+    ? ["diff", "--no-ext-diff", "--no-color", "--no-index", "--", "/dev/null", repoRelativePath]
+    : ["diff", "--no-ext-diff", "--no-color", "--find-renames", "HEAD", "--", repoRelativePath];
+  const result = await runGit(ctx.cwd, args, { allowExitCodes: untracked ? [0, 1] : [0] });
+
+  const base = {
+    path: normalizedPath,
+    scope: ctx.scope,
+    repoMode: ctx.repoMode,
+    repoRoot: ctx.repoRoot,
+  };
 
   if (result.outputTruncated) {
-    return {
-      path: normalizedPath,
-      previewable: false,
-      reason: "DIFF_TOO_LARGE",
-      message: "Diff is too large to preview.",
-    };
+    return { ...base, previewable: false, reason: "DIFF_TOO_LARGE", message: "Diff is too large to preview." };
   }
   if (result.timedOut) {
-    return {
-      path: normalizedPath,
-      previewable: false,
-      reason: "DIFF_UNAVAILABLE",
-      message: "Git diff timed out.",
-    };
+    return { ...base, previewable: false, reason: "DIFF_UNAVAILABLE", message: "Git diff timed out." };
   }
   if (result.errorCode === "ENOENT") {
-    return {
-      path: normalizedPath,
-      previewable: false,
-      reason: "GIT_UNAVAILABLE",
-      message: gitUnavailableMessage(result),
-    };
+    return { ...base, previewable: false, reason: "GIT_UNAVAILABLE", message: gitUnavailableMessage(result) };
   }
   if (!untracked && result.exitCode !== 0) {
     return {
-      path: normalizedPath,
+      ...base,
       previewable: false,
       reason: "DIFF_UNAVAILABLE",
       message: result.stderr || "Git diff is not available for this file.",
     };
   }
   if (isBinaryDiff(result.stdout)) {
-    return {
-      path: normalizedPath,
-      previewable: false,
-      reason: "BINARY_DIFF",
-      message: "Binary diff cannot be previewed.",
-    };
+    return { ...base, previewable: false, reason: "BINARY_DIFF", message: "Binary diff cannot be previewed." };
   }
 
-  return {
-    path: normalizedPath,
-    previewable: true,
-    diff: result.stdout,
-  };
+  return { ...base, previewable: true, diff: result.stdout };
+}
+
+async function isGitDirEntry(absolutePath: string): Promise<boolean> {
+  // A nested repo is identified by either a `.git` directory (regular repo) or a `.git` file
+  // (worktree / submodule).
+  const stats = await stat(absolutePath).catch(() => null);
+  return Boolean(stats && (stats.isDirectory() || stats.isFile()));
+}
+
+export async function listGitScopes(
+  workspace: WorkspaceContext,
+  options: { maxDepth?: number; maxDirs?: number } = {},
+): Promise<GitScopesResponse> {
+  const maxDepth = Math.max(1, options.maxDepth ?? GIT_SCOPE_SCAN_DEFAULT_DEPTH);
+  const maxDirs = Math.max(1, options.maxDirs ?? GIT_SCOPE_SCAN_DIR_LIMIT);
+
+  const scopes: GitScopeEntry[] = [];
+  let truncated = false;
+
+  const rootCheck = await runGit(workspace.rootPath, ["rev-parse", "--is-inside-work-tree"]);
+  const rootIsRepo = !isGitUnavailable(rootCheck) && rootCheck.stdout.trim() === "true";
+  if (rootIsRepo) {
+    scopes.push({ path: "", repoMode: "root", label: "（工作区根）" });
+  }
+
+  let dirCount = 0;
+  // BFS to deterministic order
+  const queue: Array<{ absPath: string; relPath: string; depth: number }> = [
+    { absPath: workspace.rootPath, relPath: "", depth: 0 },
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (dirCount >= maxDirs) {
+      truncated = true;
+      break;
+    }
+    dirCount += 1;
+
+    let entries: { name: string; isDirectory: boolean }[];
+    try {
+      const dirEntries = await readdir(current.absPath, { withFileTypes: true });
+      entries = dirEntries
+        .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+        .map((entry) => ({ name: entry.name, isDirectory: true }));
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (GIT_SCOPE_IGNORE_DIRS.has(entry.name)) continue;
+      if (entry.name.startsWith(".")) {
+        // Skip hidden dirs other than the ones we already ignore; avoids surprises like .vscode being scanned.
+        continue;
+      }
+      const absChild = path.join(current.absPath, entry.name);
+      const relChild = current.relPath ? `${current.relPath}/${entry.name}` : entry.name;
+
+      const gitMarker = path.join(absChild, ".git");
+      const hasGit = await isGitDirEntry(gitMarker);
+      if (hasGit && relChild !== "") {
+        scopes.push({ path: relChild, repoMode: "nested", label: relChild });
+        // Don't descend into a nested repo to avoid double counting deeper repos
+        continue;
+      }
+
+      if (current.depth + 1 < maxDepth) {
+        queue.push({ absPath: absChild, relPath: relChild, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return { scopes, truncated };
 }

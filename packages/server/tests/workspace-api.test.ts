@@ -704,4 +704,193 @@ describe("workspace file api", () => {
     );
     expect(refreshedDiff.body.diff).toContain("+# Refresh");
   });
+
+  describe("git scope: nested repos", () => {
+    async function initNestedRepo(absDir: string): Promise<void> {
+      await execFileAsync("git", ["-C", absDir, "init"]);
+      await execFileAsync("git", ["-C", absDir, "config", "user.name", "CC Pet Test"]);
+      await execFileAsync("git", ["-C", absDir, "config", "user.email", "cc-pet@example.test"]);
+      await execFileAsync("git", ["-C", absDir, "add", "."]);
+      await execFileAsync("git", ["-C", absDir, "commit", "-m", "initial-nested"]);
+    }
+
+    it("returns nested-repo changes with workspace-root-relative paths", async () => {
+      await initGitRepo();
+      const nestedDir = path.join(workspaceDir, "sub", "embedded");
+      await mkdir(nestedDir, { recursive: true });
+      await writeFile(path.join(nestedDir, "inner.txt"), "hello\n", "utf8");
+      await initNestedRepo(nestedDir);
+      await writeFile(path.join(nestedDir, "inner.txt"), "hello changed\n", "utf8");
+      await writeFile(path.join(nestedDir, "added.txt"), "new\n", "utf8");
+
+      const status = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=sub%2Fembedded");
+
+      expect(status.statusCode).toBe(200);
+      expect(status.body.gitAvailable).toBe(true);
+      expect(status.body.repoMode).toBe("nested");
+      expect(status.body.repoRoot).toBe("sub/embedded");
+      expect(status.body.scope).toBe("sub/embedded");
+      expect(status.body.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "sub/embedded/inner.txt", status: "M" }),
+          expect.objectContaining({ path: "sub/embedded/added.txt", status: "??" }),
+        ]),
+      );
+    });
+
+    it("prefixes rename change paths inside a nested repo", async () => {
+      await initGitRepo();
+      const nestedDir = path.join(workspaceDir, "sub", "embedded");
+      await mkdir(nestedDir, { recursive: true });
+      await writeFile(path.join(nestedDir, "old-name.txt"), "stay\n", "utf8");
+      await initNestedRepo(nestedDir);
+      await execFileAsync("git", ["-C", nestedDir, "mv", "old-name.txt", "new-name.txt"]);
+
+      const status = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=sub%2Fembedded");
+
+      expect(status.statusCode).toBe(200);
+      expect(status.body.repoMode).toBe("nested");
+      const renameChange = (status.body.changes as Array<{ path: string; previousPath?: string; status: string }>).find(
+        (c) => c.status === "R",
+      );
+      expect(renameChange).toBeDefined();
+      expect(renameChange?.path).toBe("sub/embedded/new-name.txt");
+      expect(renameChange?.previousPath).toBe("sub/embedded/old-name.txt");
+    });
+
+    it("returns a diff for files inside a nested repo using workspace-root paths", async () => {
+      await initGitRepo();
+      const nestedDir = path.join(workspaceDir, "sub", "embedded");
+      await mkdir(nestedDir, { recursive: true });
+      await writeFile(path.join(nestedDir, "inner.txt"), "hello\n", "utf8");
+      await initNestedRepo(nestedDir);
+      await writeFile(path.join(nestedDir, "inner.txt"), "hello changed\n", "utf8");
+
+      const diff = await injectWorkspace(
+        "/api/workspaces/conn-1/git/diff?path=sub%2Fembedded%2Finner.txt&scope=sub%2Fembedded",
+      );
+
+      expect(diff.statusCode).toBe(200);
+      expect(diff.body).toMatchObject({
+        path: "sub/embedded/inner.txt",
+        previewable: true,
+        repoMode: "nested",
+        repoRoot: "sub/embedded",
+        scope: "sub/embedded",
+      });
+      expect(diff.body.diff).toContain("-hello");
+      expect(diff.body.diff).toContain("+hello changed");
+    });
+  });
+
+  describe("git scope: subpath filter inside root repo", () => {
+    it("filters status results to the requested subpath only", async () => {
+      await initGitRepo();
+      await mkdir(path.join(workspaceDir, "packages", "a"), { recursive: true });
+      await mkdir(path.join(workspaceDir, "packages", "b"), { recursive: true });
+      await writeFile(path.join(workspaceDir, "packages", "a", "file-a.txt"), "a-original\n", "utf8");
+      await writeFile(path.join(workspaceDir, "packages", "b", "file-b.txt"), "b-original\n", "utf8");
+      await git(["add", "packages"]);
+      await git(["commit", "-m", "add packages"]);
+
+      await writeFile(path.join(workspaceDir, "packages", "a", "file-a.txt"), "a-changed\n", "utf8");
+      await writeFile(path.join(workspaceDir, "packages", "b", "file-b.txt"), "b-changed\n", "utf8");
+      await writeFile(path.join(workspaceDir, "packages", "a", "new-a.txt"), "fresh\n", "utf8");
+
+      const status = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=packages%2Fa");
+
+      expect(status.statusCode).toBe(200);
+      expect(status.body.gitAvailable).toBe(true);
+      expect(status.body.repoMode).toBe("subpath");
+      expect(status.body.scope).toBe("packages/a");
+      expect(status.body.repoRoot).toBe("");
+      const paths = status.body.changes.map((c: { path: string }) => c.path);
+      expect(paths).toEqual(expect.arrayContaining(["packages/a/file-a.txt"]));
+      expect(paths.some((p: string) => p.startsWith("packages/b/"))).toBe(false);
+      expect(paths).toEqual(expect.arrayContaining([expect.stringMatching(/^packages\/a\/new-a\.txt$/)]));
+    });
+
+    it("rejects diff requests whose path falls outside the requested scope", async () => {
+      await initGitRepo();
+      await mkdir(path.join(workspaceDir, "packages", "a"), { recursive: true });
+      await writeFile(path.join(workspaceDir, "packages", "a", "file-a.txt"), "a\n", "utf8");
+      await git(["add", "packages"]);
+      await git(["commit", "-m", "add packages"]);
+      await writeFile(path.join(workspaceDir, "README.md"), "# Changed\n", "utf8");
+
+      const diff = await injectWorkspace(
+        "/api/workspaces/conn-1/git/diff?path=README.md&scope=packages%2Fa",
+      );
+
+      expect(diff.statusCode).toBe(200);
+      expect(diff.body).toMatchObject({
+        path: "README.md",
+        previewable: false,
+        reason: "DIFF_UNAVAILABLE",
+        repoMode: "subpath",
+      });
+    });
+  });
+
+  describe("git scope: validation", () => {
+    it("rejects scopes that escape the workspace root", async () => {
+      await initGitRepo();
+      const escape = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=..%2Foutside");
+
+      expect(escape.statusCode).toBe(400);
+      expect(escape.body.error).toBe("WORKSPACE_PATH_OUTSIDE_ROOT");
+    });
+
+    it("rejects scopes that do not point to a directory", async () => {
+      await initGitRepo();
+      const fileScope = await injectWorkspace("/api/workspaces/conn-1/git/status?scope=README.md");
+
+      expect(fileScope.statusCode).toBe(400);
+      expect(fileScope.body.error).toBe("WORKSPACE_PATH_INVALID");
+    });
+
+    it("returns 404 when scope points to a non-existing directory", async () => {
+      await initGitRepo();
+      const missing = await injectWorkspace(
+        "/api/workspaces/conn-1/git/status?scope=does-not-exist%2Fanywhere",
+      );
+
+      expect(missing.statusCode).toBe(404);
+      expect(missing.body.error).toBe("WORKSPACE_UNAVAILABLE");
+    });
+  });
+
+  describe("git scopes listing", () => {
+    it("returns workspace root and any nested git repositories", async () => {
+      await initGitRepo();
+      const nestedDir = path.join(workspaceDir, "sub", "embedded");
+      await mkdir(nestedDir, { recursive: true });
+      await writeFile(path.join(nestedDir, "inner.txt"), "x\n", "utf8");
+      await execFileAsync("git", ["-C", nestedDir, "init"]);
+
+      // Also produce a noise directory that should be ignored.
+      await mkdir(path.join(workspaceDir, "node_modules", "skip-me"), { recursive: true });
+      await mkdir(path.join(workspaceDir, "node_modules", "skip-me", ".git"), { recursive: true });
+
+      const scopes = await injectWorkspace("/api/workspaces/conn-1/git/scopes");
+
+      expect(scopes.statusCode).toBe(200);
+      expect(scopes.body.scopes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "", repoMode: "root" }),
+          expect.objectContaining({ path: "sub/embedded", repoMode: "nested" }),
+        ]),
+      );
+      expect(
+        scopes.body.scopes.some((s: { path: string }) => s.path.startsWith("node_modules")),
+      ).toBe(false);
+    });
+
+    it("returns no root entry when workspace itself is not a git repo", async () => {
+      const scopes = await injectWorkspace("/api/workspaces/plain-workspace/git/scopes");
+
+      expect(scopes.statusCode).toBe(200);
+      expect(scopes.body.scopes).toEqual([]);
+    });
+  });
 });

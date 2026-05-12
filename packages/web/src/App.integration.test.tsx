@@ -283,9 +283,74 @@ describe("App integration", () => {
     expect(useWorkspaceStore.getState().activeDiff?.path).toBe("README.md");
 
     changes = [];
-    await user.click(screen.getByRole("button", { name: "刷新 Git 状态" }));
+    await user.click(screen.getByRole("button", { name: "刷新" }));
     expect(await screen.findByText("暂无 Git 变更。")).toBeInTheDocument();
-    expect(useWorkspaceStore.getState().gitStatusByConnection["cc-connect"].changes).toEqual([]);
+    expect(useWorkspaceStore.getState().gitStatusByConnection["cc-connect"][""].changes).toEqual([]);
+  });
+
+  it("switches git scope and reloads status when picking a nested repo from the selector", async () => {
+    const user = userEvent.setup();
+    const requestUrls: string[] = [];
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      requestUrls.push(path);
+      if (path.startsWith("/api/sessions?connectionId=")) return { sessions: [] };
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      if (path === "/api/workspaces/cc-connect") {
+        return { connectionId: "cc-connect", configured: true, rootName: "cc-pet-web" };
+      }
+      if (path === "/api/workspaces/cc-connect/tree") {
+        return {
+          path: "",
+          entries: [
+            { name: "README.md", path: "README.md", kind: "file", extension: ".md", inaccessible: false },
+            { name: "sub", path: "sub", kind: "directory", inaccessible: false },
+          ],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/scopes") {
+        return {
+          scopes: [
+            { path: "", repoMode: "root", label: "（工作区根）" },
+            { path: "sub/embedded", repoMode: "nested", label: "sub/embedded" },
+          ],
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status") {
+        return {
+          gitAvailable: true,
+          changes: [{ path: "README.md", status: "M" }],
+          scope: "",
+          repoMode: "root",
+          repoRoot: "",
+        };
+      }
+      if (path === "/api/workspaces/cc-connect/git/status?scope=sub%2Fembedded") {
+        return {
+          gitAvailable: true,
+          changes: [{ path: "sub/embedded/inner.txt", status: "??" }],
+          scope: "sub/embedded",
+          repoMode: "nested",
+          repoRoot: "sub/embedded",
+        };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await openWorkspaceTab(user);
+    await user.click(await screen.findByRole("button", { name: "Git 变更" }));
+    expect(await screen.findByRole("button", { name: /README\.md/ })).toBeInTheDocument();
+
+    const selector = screen.getByRole("combobox", { name: "Git 范围" });
+    await user.selectOptions(selector, "sub/embedded");
+
+    expect(await screen.findByRole("button", { name: /sub\/embedded\/inner\.txt/ })).toBeInTheDocument();
+    expect(useWorkspaceStore.getState().activeGitScopeByConnection["cc-connect"]).toBe("sub/embedded");
+    expect(
+      useWorkspaceStore.getState().gitStatusByConnection["cc-connect"]["sub/embedded"].changes,
+    ).toEqual([{ path: "sub/embedded/inner.txt", status: "??" }]);
+    expect(requestUrls).toContain("/api/workspaces/cc-connect/git/status");
+    expect(requestUrls).toContain("/api/workspaces/cc-connect/git/status?scope=sub%2Fembedded");
   });
 
   it("shows non-previewable and unavailable git diff states without blocking files", async () => {
@@ -321,7 +386,7 @@ describe("App integration", () => {
     expect(await screen.findByText("二进制 diff 无法直接预览。")).toBeInTheDocument();
 
     unavailable = true;
-    await user.click(screen.getByRole("button", { name: "刷新 Git 状态" }));
+    await user.click(screen.getByRole("button", { name: "刷新" }));
     expect(await screen.findByText("Git 状态不可用，文件浏览仍可继续使用。")).toBeInTheDocument();
     expect(screen.getByText("binary.dat")).toBeInTheDocument();
   });

@@ -356,7 +356,7 @@ describe("Layout", () => {
       expect(await screen.findByText("暂无 Git 变更。")).toBeInTheDocument();
 
       unavailable = true;
-      await user.click(screen.getByRole("button", { name: "刷新 Git 状态" }));
+      await user.click(screen.getByRole("button", { name: "刷新" }));
       expect(await screen.findByText("Git 状态不可用，文件浏览仍可继续使用。")).toBeInTheDocument();
     });
 

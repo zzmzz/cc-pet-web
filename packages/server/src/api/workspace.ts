@@ -12,7 +12,7 @@ import {
   writeFileContent,
 } from "../workspace/file-service.js";
 import type { WorkspaceMeta } from "../workspace/file-service.js";
-import { getGitDiff, getGitStatus } from "../workspace/git-service.js";
+import { getGitDiff, getGitStatus, listGitScopes } from "../workspace/git-service.js";
 
 function sendWorkspaceError(reply: FastifyReply, error: unknown) {
   if (error instanceof WorkspaceResolutionError || error instanceof WorkspaceFileError) {
@@ -137,21 +137,21 @@ export function registerWorkspaceRoutes(app: FastifyInstance, configStore: Pick<
     }
   });
 
-  app.get<{ Params: { connectionId: string } }>(
-    "/api/workspaces/:connectionId/git/status",
-    async (req, reply) => {
-      try {
-        const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
-        return await getGitStatus(workspace);
-      } catch (error) {
-        return sendWorkspaceError(reply, error);
-      }
-    },
-  );
+  app.get<{
+    Params: { connectionId: string };
+    Querystring: { scope?: string };
+  }>("/api/workspaces/:connectionId/git/status", async (req, reply) => {
+    try {
+      const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
+      return await getGitStatus(workspace, { scope: req.query.scope });
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  });
 
   app.get<{
     Params: { connectionId: string };
-    Querystring: { path?: string };
+    Querystring: { path?: string; scope?: string };
   }>("/api/workspaces/:connectionId/git/diff", async (req, reply) => {
     try {
       if (!req.query.path) {
@@ -161,9 +161,21 @@ export function registerWorkspaceRoutes(app: FastifyInstance, configStore: Pick<
         });
       }
       const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
-      return await getGitDiff(workspace, req.query.path);
+      return await getGitDiff(workspace, req.query.path, { scope: req.query.scope });
     } catch (error) {
       return sendWorkspaceError(reply, error);
     }
   });
+
+  app.get<{ Params: { connectionId: string } }>(
+    "/api/workspaces/:connectionId/git/scopes",
+    async (req, reply) => {
+      try {
+        const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
+        return await listGitScopes(workspace);
+      } catch (error) {
+        return sendWorkspaceError(reply, error);
+      }
+    },
+  );
 }

@@ -19,11 +19,21 @@ export function WorkspacePanel() {
   const operationError = useWorkspaceStore((s) =>
     activeConnectionId ? s.operationErrorByConnection[activeConnectionId] : "",
   );
+  const pendingTab = useWorkspaceStore((s) =>
+    activeConnectionId ? s.pendingWorkspaceTabByConnection[activeConnectionId] : undefined,
+  );
   const loadWorkspace = useWorkspaceStore((s) => s.loadWorkspace);
+  const consumePendingWorkspaceTab = useWorkspaceStore((s) => s.consumePendingWorkspaceTab);
 
   useEffect(() => {
     void loadWorkspace(activeConnectionId);
   }, [activeConnectionId, loadWorkspace]);
+
+  useEffect(() => {
+    if (!activeConnectionId || !pendingTab) return;
+    setActiveTab(pendingTab);
+    consumePendingWorkspaceTab(activeConnectionId);
+  }, [activeConnectionId, pendingTab, consumePendingWorkspaceTab]);
 
   if (activeConnectionId && !loading && meta?.configured === false) {
     return null;
