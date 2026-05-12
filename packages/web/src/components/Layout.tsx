@@ -16,6 +16,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const setIsMobile = useUIStore((s) => s.setIsMobile);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<"connections" | "workspace">("connections");
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -116,10 +117,35 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
-          <aside className="flex w-72 shrink-0 flex-col gap-4 border-r border-border bg-surface-secondary p-3">
+          <aside className="flex w-72 shrink-0 flex-col gap-3 border-r border-border bg-surface-secondary p-3">
             <SearchPanel />
-            <SessionDropdown variant="panel" />
-            <WorkspacePanel />
+            <div className="grid grid-cols-2 rounded-lg bg-surface p-1 text-xs" role="tablist" aria-label="侧边栏">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sidebarTab === "connections"}
+                onClick={() => setSidebarTab("connections")}
+                className={`rounded-md px-2 py-1.5 ${
+                  sidebarTab === "connections" ? "bg-surface-secondary text-text-primary" : "text-text-secondary"
+                }`}
+              >
+                连接
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sidebarTab === "workspace"}
+                onClick={() => setSidebarTab("workspace")}
+                className={`rounded-md px-2 py-1.5 ${
+                  sidebarTab === "workspace" ? "bg-surface-secondary text-text-primary" : "text-text-secondary"
+                }`}
+              >
+                工作区
+              </button>
+            </div>
+            <div className="min-h-0 flex flex-1 overflow-hidden">
+              {sidebarTab === "connections" ? <SessionDropdown variant="panel" /> : <WorkspacePanel />}
+            </div>
           </aside>
           <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>

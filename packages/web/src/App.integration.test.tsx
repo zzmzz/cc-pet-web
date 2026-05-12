@@ -71,6 +71,10 @@ function resetStores() {
 
 const INPUT_PLACEHOLDER = "输入消息，Enter 发送，Shift+Enter 换行";
 
+async function openWorkspaceTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("tab", { name: "工作区" }));
+}
+
 describe("App integration", () => {
   beforeEach(() => {
     requestPermissionMock.mockReset();
@@ -189,7 +193,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
-    await screen.findByText("连接");
+    await screen.findByRole("tab", { name: "连接" });
     expect(await screen.findByRole("button", { name: /cs-connect/i })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /cs-connect/i }));
@@ -227,9 +231,11 @@ describe("App integration", () => {
       return {};
     });
 
+    const user = userEvent.setup();
     render(<App />);
+    await openWorkspaceTab(user);
     expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /README\.md/ }));
+    await user.click(screen.getByRole("button", { name: /README\.md/ }));
 
     await waitFor(() => {
       expect(screen.getAllByText("README.md").length).toBeGreaterThanOrEqual(2);
@@ -267,6 +273,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
+    await openWorkspaceTab(user);
 
     expect(await screen.findByText("Git 修改")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Git 变更" }));
@@ -308,6 +315,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
+    await openWorkspaceTab(user);
     await user.click(await screen.findByRole("button", { name: "Git 变更" }));
     await user.click(await screen.findByRole("button", { name: /binary\.dat/ }));
     expect(await screen.findByText("二进制 diff 无法直接预览。")).toBeInTheDocument();
@@ -379,6 +387,7 @@ describe("App integration", () => {
       });
 
       render(<App />);
+      await openWorkspaceTab(user);
       expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: /README\.md/ }));
@@ -431,6 +440,7 @@ describe("App integration", () => {
       });
 
       render(<App />);
+      await openWorkspaceTab(user);
       const staleRow = (await screen.findByRole("button", { name: /stale\.txt/ })).closest("[data-file-entry]") as HTMLElement;
       await user.click(within(staleRow).getByRole("button", { name: "删除" }));
 
@@ -480,6 +490,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
+    await openWorkspaceTab(user);
     await user.click(await screen.findByRole("button", { name: /README\.md/ }));
     const editor = await screen.findByRole("textbox", { name: "文件内容" });
     await user.clear(editor);
@@ -516,10 +527,13 @@ describe("App integration", () => {
     });
 
     render(<App />);
+    await openWorkspaceTab(user);
     expect(await screen.findByText("workspace-a")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /a\.txt/ })).toBeInTheDocument();
 
+    await user.click(screen.getByRole("tab", { name: "连接" }));
     await user.click(screen.getByRole("button", { name: /cs-connect/i }));
+    await openWorkspaceTab(user);
 
     expect(await screen.findByText("workspace-b")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /b\.txt/ })).toBeInTheDocument();
@@ -537,6 +551,7 @@ describe("App integration", () => {
     });
 
     render(<App />);
+    await openWorkspaceTab(userEvent.setup());
 
     await waitFor(() => {
       expect(adapter.fetchApi).toHaveBeenCalledWith("/api/workspaces/cc-connect");

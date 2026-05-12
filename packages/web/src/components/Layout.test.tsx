@@ -49,6 +49,10 @@ function seedConnection() {
   });
 }
 
+async function openWorkspaceTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("tab", { name: "工作区" }));
+}
+
 describe("Layout", () => {
   const originalWidth = window.innerWidth;
 
@@ -189,6 +193,8 @@ describe("Layout", () => {
       const aside = document.querySelector("aside")!;
       expect(aside).toBeTruthy();
       expect(aside.className).toContain("w-72");
+      expect(screen.getByRole("tab", { name: "连接" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "工作区" })).toBeInTheDocument();
     });
 
     it("shows text settings button instead of icon", () => {
@@ -215,7 +221,23 @@ describe("Layout", () => {
       expect(petContainer).toBeTruthy();
     });
 
+    it("switches between connection and workspace tabs in the sidebar", async () => {
+      const user = userEvent.setup();
+      setDesktop();
+      seedConnection();
+      render(<Layout><div>content</div></Layout>);
+
+      expect(screen.getByText("当前会话")).toBeInTheDocument();
+      expect(screen.queryByTestId("workspace-panel")).not.toBeInTheDocument();
+
+      await openWorkspaceTab(user);
+
+      expect(screen.getByTestId("workspace-panel")).toBeInTheDocument();
+      expect(screen.queryByText("当前会话")).not.toBeInTheDocument();
+    });
+
     it("shows the workspace panel for the active connection", async () => {
+      const user = userEvent.setup();
       setDesktop();
       seedConnection();
       platformMock.fetchApi.mockImplementation(async (path: string) => {
@@ -238,8 +260,9 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
 
-      expect(await screen.findByText("工作区")).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-panel")).toBeInTheDocument();
       expect(await screen.findByText("demo-workspace")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /README\.md/ })).toBeInTheDocument();
     });
@@ -274,6 +297,7 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
 
       expect(await screen.findByText("Git 修改")).toBeInTheDocument();
       await user.click(screen.getByRole("button", { name: "Git 变更" }));
@@ -284,6 +308,7 @@ describe("Layout", () => {
     });
 
     it("marks parent directories when nested files have git changes", async () => {
+      const user = userEvent.setup();
       setDesktop();
       seedConnection();
       platformMock.fetchApi.mockImplementation(async (path: string) => {
@@ -300,6 +325,7 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
 
       expect(await screen.findByRole("button", { name: /src.*Git 修改/ })).toBeInTheDocument();
     });
@@ -325,6 +351,7 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
       await user.click(await screen.findByRole("button", { name: "Git 变更" }));
       expect(await screen.findByText("暂无 Git 变更。")).toBeInTheDocument();
 
@@ -364,6 +391,7 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
       const srcButton = await screen.findByRole("button", { name: /src/ });
 
       await user.click(srcButton);
@@ -404,6 +432,7 @@ describe("Layout", () => {
       });
 
       render(<Layout><div>content</div></Layout>);
+      await openWorkspaceTab(user);
 
       await user.click(await screen.findByRole("button", { name: /empty/ }));
       expect(await screen.findByText("目录为空")).toBeInTheDocument();
@@ -437,6 +466,7 @@ describe("Layout", () => {
         });
 
         render(<Layout><div>content</div></Layout>);
+        await openWorkspaceTab(user);
         const createFileButton = await screen.findByRole("button", { name: "新建文件" });
 
         await user.click(createFileButton);
@@ -475,6 +505,7 @@ describe("Layout", () => {
         });
 
         render(<Layout><div>content</div></Layout>);
+        await openWorkspaceTab(user);
         const srcRow = await screen.findByRole("button", { name: /src/ });
         const rowContainer = srcRow.closest("[data-file-entry]") as HTMLElement;
         await user.click(within(rowContainer).getByRole("button", { name: "删除" }));

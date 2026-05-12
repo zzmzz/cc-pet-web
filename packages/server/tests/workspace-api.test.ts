@@ -183,13 +183,16 @@ describe("workspace resolver", () => {
     expect(absolute.body.error).toBe("WORKSPACE_PATH_INVALID");
   });
 
-  it("rejects symlinks that resolve outside the workspace root", async () => {
+  it("resolves symlinks that point outside the workspace root through their workspace path", async () => {
     await symlink(outsideDir, path.join(workspaceDir, "linked-outside"), "dir");
 
     const result = await resolvePath("conn-1", "linked-outside/secret.txt");
 
-    expect(result.statusCode).toBe(400);
-    expect(result.body.error).toBe("WORKSPACE_PATH_OUTSIDE_ROOT");
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toMatchObject({
+      relativePath: "linked-outside/secret.txt",
+      absolutePath: path.join(workspaceDir, "linked-outside", "secret.txt"),
+    });
   });
 
   it("allows writable paths only when their parent stays inside the workspace", async () => {
@@ -352,16 +355,29 @@ describe("workspace file api", () => {
     expect(result.body).toMatchObject({ path: "empty", entries: [] });
   });
 
-  it("marks inaccessible direct children without blocking other entries", async () => {
+  it("lists directory symlinks outside the workspace as expandable directories", async () => {
     await symlink(outsideDir, path.join(workspaceDir, "linked-outside"), "dir");
 
-    const result = await injectWorkspace("/api/workspaces/conn-1/tree");
+    const root = await injectWorkspace("/api/workspaces/conn-1/tree");
+    const linked = await injectWorkspace("/api/workspaces/conn-1/tree?path=linked-outside");
 
-    expect(result.statusCode).toBe(200);
-    expect(result.body.entries).toEqual(
+    expect(root.statusCode).toBe(200);
+    expect(root.body.entries).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "linked-outside", inaccessible: true }),
+        expect.objectContaining({
+          name: "linked-outside",
+          path: "linked-outside",
+          kind: "directory",
+          inaccessible: false,
+        }),
         expect.objectContaining({ name: "README.md", inaccessible: false }),
+      ]),
+    );
+    expect(linked.statusCode).toBe(200);
+    expect(linked.body).toMatchObject({ path: "linked-outside" });
+    expect(linked.body.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "secret.txt", path: "linked-outside/secret.txt", kind: "file" }),
       ]),
     );
   });

@@ -63,10 +63,14 @@ function normalizeRelativePath(relativePath?: string): string {
   return normalized;
 }
 
-async function realpathInside(rootPath: string, candidatePath: string): Promise<string | null> {
+async function realpathInside(
+  rootPath: string,
+  candidatePath: string,
+  options: { allowOutsideSymlinkTarget?: boolean } = {},
+): Promise<string | null> {
   try {
     const resolved = await realpath(candidatePath);
-    if (!isInsideOrEqual(rootPath, resolved)) {
+    if (!isInsideOrEqual(rootPath, resolved) && !options.allowOutsideSymlinkTarget) {
       throw workspaceError("WORKSPACE_PATH_OUTSIDE_ROOT", "Path escapes the configured workspace", 400);
     }
     return resolved;
@@ -122,13 +126,17 @@ export async function resolveWorkspacePath(
     throw workspaceError("WORKSPACE_PATH_OUTSIDE_ROOT", "Path escapes the configured workspace", 400);
   }
 
-  const realTarget = await realpathInside(workspace.rootPath, absoluteCandidate);
+  const realTarget = await realpathInside(workspace.rootPath, absoluteCandidate, {
+    allowOutsideSymlinkTarget: true,
+  });
   if (realTarget) {
-    return { relativePath: normalized, absolutePath: realTarget };
+    return { relativePath: normalized, absolutePath: absoluteCandidate };
   }
 
   const parentPath = path.dirname(absoluteCandidate);
-  const realParent = await realpathInside(workspace.rootPath, parentPath);
+  const realParent = await realpathInside(workspace.rootPath, parentPath, {
+    allowOutsideSymlinkTarget: true,
+  });
   if (!realParent) {
     throw workspaceError("WORKSPACE_PATH_INVALID", "Parent path does not exist", 400);
   }
