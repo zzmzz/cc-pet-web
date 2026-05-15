@@ -6,6 +6,7 @@ import { getPlatform } from "../lib/platform.js";
 import { WS_EVENTS } from "@cc-pet/shared";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { useSessionStore } from "../lib/store/session.js";
+import { AskQuestionCard, detectAskQuestion } from "./AskQuestionCard.js";
 
 interface Props {
   card: ChatCard;
@@ -127,6 +128,7 @@ function CardElement({ element }: { element: ChatCardElement }) {
 export function CardMessage({ card }: Props) {
   const headerColor = card.header?.color ?? "blue";
   const headerClass = HEADER_COLORS[headerColor] ?? HEADER_COLORS.blue;
+  const askData = detectAskQuestion(card);
 
   return (
     <div className="rounded-lg border border-gray-300 overflow-hidden bg-gray-50 text-gray-800 shadow-sm max-w-[85%]">
@@ -136,9 +138,11 @@ export function CardMessage({ card }: Props) {
         </div>
       )}
       <div className="px-3 py-2 space-y-2">
-        {card.elements.map((el, i) => (
-          <CardElement key={i} element={el} />
-        ))}
+        {askData ? (
+          <AskQuestionCard data={askData} />
+        ) : (
+          card.elements.map((el, i) => <CardElement key={i} element={el} />)
+        )}
       </div>
     </div>
   );
