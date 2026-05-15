@@ -66,21 +66,25 @@ function phaseForSession(
   return formatSessionPhase(p ?? "idle");
 }
 
+const SPINNER_DOT = "w-2 h-2 rounded-full border-[1.5px] border-t-transparent animate-spin";
+const SOLID_DOT = "w-1.5 h-1.5 rounded-full";
+
 function isActivePhaseCss(
   connectionId: string,
   sessionKey: string,
   taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
+  activeAccent = false,
 ): { dot: string; text: string } {
   const p = taskStateByConnection[connectionId]?.[sessionKey]?.phase ?? "idle";
   if (p === "thinking" || p === "processing" || p === "working")
-    return { dot: "bg-accent animate-pulse", text: "text-accent font-medium" };
+    return { dot: `${SPINNER_DOT} border-accent`, text: "text-accent font-medium" };
   if (p === "waiting_confirm" || p === "awaiting_confirmation")
-    return { dot: "bg-amber-500 animate-pulse", text: "text-amber-600 font-medium" };
+    return { dot: `${SOLID_DOT} bg-amber-500 animate-pulse`, text: "text-amber-600 font-medium" };
   if (p === "possibly_stuck" || p === "stalled")
-    return { dot: "bg-amber-500", text: "text-amber-600 font-medium" };
+    return { dot: `${SOLID_DOT} bg-amber-500`, text: "text-amber-600 font-medium" };
   if (p === "failed")
-    return { dot: "bg-red-500", text: "text-red-500 font-medium" };
-  return { dot: "bg-gray-500", text: "text-gray-600" };
+    return { dot: `${SOLID_DOT} bg-red-500`, text: "text-red-500 font-medium" };
+  return { dot: `${SOLID_DOT} ${activeAccent ? "bg-accent" : "bg-gray-500"}`, text: "text-gray-600" };
 }
 
 function latestMessageByConnection(messagesByChat: Record<string, ChatMessage[]>): Record<string, number> {
@@ -349,7 +353,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
               <div className="px-3 pt-2 pb-1">
                 <p className="text-xs font-semibold text-gray-700 mb-1">当前会话</p>
                 <div className={`flex items-center gap-2 ${mPad} bg-accent/10 rounded-lg group/active border border-accent/20`}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+                  <span className={`${isActivePhaseCss(activeConnectionId, activeKey, taskStateByConnection, true).dot} flex-shrink-0`} />
                   <span className={`${mFont} text-accent font-medium truncate flex-1`}>{activeLabel}</span>
                   <span className="text-xs text-accent/90 flex-shrink-0">{activeStatusLabel}</span>
                   {unreadFor(activeKey) > 0 && (
@@ -386,7 +390,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                         }}
                         className={`w-full flex items-center gap-2 ${mPad} rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer`}
                       >
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${phaseCss.dot}`} />
+                        <span className={`${phaseCss.dot} flex-shrink-0`} />
                         <span className={`${mFont} text-gray-800 truncate flex-1`}>{sessionLabelText(sess)}</span>
                         <span className={`text-xs flex-shrink-0 ${phaseCss.text}`}>
                           {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}
