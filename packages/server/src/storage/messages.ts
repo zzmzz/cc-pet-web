@@ -25,6 +25,7 @@ export class MessageStore {
       files: msg.files,
       replyCtx: msg.replyCtx,
       preview: msg.preview,
+      card: msg.card,
     });
     this.stmtInsert.run(msg.id, chatKey, msg.role, msg.content, msg.timestamp, msg.connectionId, msg.sessionKey, extra);
   }

@@ -9,6 +9,7 @@ import type { BridgeIncoming } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
 import { findTokenIdentity } from "./auth/token-auth.js";
 import { parseSlashCommandsFromProbeCard, parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
+import { normalizeBridgeCard } from "./bridge/card-normalize.js";
 import {
   bridgeReplyCtx,
   bridgeReplyStreamDone,
@@ -361,13 +362,15 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: merged });
         break;
       }
+      const normalizedCard = msg.card ? normalizeBridgeCard(msg.card) : undefined;
       messageStore.save({
         id: `msg-${Date.now()}`, role: "assistant",
         content: msg.card?.header?.title ?? "",
+        card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
       hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
-        connectionId: connId, sessionKey, card: msg.card,
+        connectionId: connId, sessionKey, card: normalizedCard,
       });
       break;
     case "audio":
