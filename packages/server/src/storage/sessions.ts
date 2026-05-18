@@ -1,6 +1,16 @@
 import type Database from "better-sqlite3";
 import type { Session } from "@cc-pet/shared";
 
+const AUTO_TITLE_MAX_LEN = 15;
+
+function deriveSessionLabel(stored: string | null, firstUserContent: string | null): string | undefined {
+  const s = stored?.trim();
+  if (s && s.length > 0) return s;
+  const t = firstUserContent?.trim();
+  if (!t) return undefined;
+  return t.length > AUTO_TITLE_MAX_LEN ? `${t.slice(0, AUTO_TITLE_MAX_LEN)}…` : t;
+}
+
 export class SessionStore {
   constructor(private db: Database.Database) {}
 
@@ -16,13 +26,26 @@ export class SessionStore {
   }
 
   listByConnection(connectionId: string): Session[] {
+    // Left-join the first user message so sessions that pre-date server-side
+    // auto-title persistence still show a meaningful label without forcing
+    // the client to load history. Stored labels still win when present.
     const rows = this.db.prepare(
-      `SELECT * FROM sessions WHERE connection_id = ? ORDER BY last_active_at DESC`
+      `SELECT s.*, (
+         SELECT m.content FROM messages m
+         WHERE m.connection_id = s.connection_id
+           AND m.session_key = s.key
+           AND m.role = 'user'
+         ORDER BY m.timestamp ASC
+         LIMIT 1
+       ) AS first_user_content
+       FROM sessions s
+       WHERE s.connection_id = ?
+       ORDER BY s.last_active_at DESC`
     ).all(connectionId) as any[];
     return rows.map((r) => ({
       key: r.key,
       connectionId: r.connection_id,
-      label: r.label ?? undefined,
+      label: deriveSessionLabel(r.label, r.first_user_content),
       createdAt: r.created_at,
       lastActiveAt: r.last_active_at,
     }));

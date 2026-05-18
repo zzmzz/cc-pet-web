@@ -21,6 +21,16 @@ describe('SessionsCleanup', () => {
         last_active_at INTEGER NOT NULL,
         PRIMARY KEY (connection_id, key)
       );
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        chat_key TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        connection_id TEXT,
+        session_key TEXT,
+        extra TEXT
+      );
     `);
 
     sessionStore = new SessionStore(db);
