@@ -9,8 +9,14 @@ const sid = "session-a";
 const chatKey = makeChatKey(conn, sid);
 
 function resetStores() {
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  useSessionStore.setState({
+    sessions: {},
+    activeSessionKey: {},
+    unread: {},
+    taskStateByConnection: {},
+    lazyLoadChat: null,
+  });
   useUIStore.setState({
     chatOpen: false,
     petState: "idle",

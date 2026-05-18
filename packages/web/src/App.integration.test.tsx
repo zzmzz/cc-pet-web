@@ -58,8 +58,14 @@ function defaultConnectSnapshot(bridges: { id: string; name: string }[]): void {
 
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  useSessionStore.setState({
+    sessions: {},
+    activeSessionKey: {},
+    unread: {},
+    taskStateByConnection: {},
+    lazyLoadChat: null,
+  });
   useUIStore.setState({
     chatOpen: true,
     petState: "idle",
@@ -1004,7 +1010,7 @@ describe("App integration", () => {
     expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("sess-restored");
   });
 
-  it("defaults active connection to the one with newest message after hydrate", async () => {
+  it("defaults active connection to the one with newest server lastActiveAt after hydrate", async () => {
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([
         { id: "cc-connect", name: "cc-connect" },
@@ -1014,46 +1020,15 @@ describe("App integration", () => {
     adapter.fetchApi.mockImplementation(async (path: string) => {
       if (path.includes("connectionId=cc-connect")) {
         return {
-          sessions: [{ key: "s1", connectionId: "cc-connect", createdAt: 100, lastActiveAt: 100 }],
+          sessions: [{ key: "s1", connectionId: "cc-connect", createdAt: 100, lastActiveAt: 1000 }],
         };
       }
       if (path.includes("connectionId=cs-connect")) {
         return {
-          sessions: [{ key: "s2", connectionId: "cs-connect", createdAt: 100, lastActiveAt: 100 }],
+          sessions: [{ key: "s2", connectionId: "cs-connect", createdAt: 100, lastActiveAt: 2000 }],
         };
       }
-      if (path.startsWith("/api/history/")) {
-        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
-        if (chatKey === makeChatKey("cc-connect", "s1")) {
-          return {
-            messages: [
-              {
-                id: "cc-old",
-                role: "assistant",
-                content: "older",
-                timestamp: 1000,
-                connectionId: "cc-connect",
-                sessionKey: "s1",
-              },
-            ],
-          };
-        }
-        if (chatKey === makeChatKey("cs-connect", "s2")) {
-          return {
-            messages: [
-              {
-                id: "cs-new",
-                role: "assistant",
-                content: "newer",
-                timestamp: 2000,
-                connectionId: "cs-connect",
-                sessionKey: "s2",
-              },
-            ],
-          };
-        }
-        return { messages: [] };
-      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
       return {};
     });
 
@@ -1065,7 +1040,7 @@ describe("App integration", () => {
     });
   });
 
-  it("defaults active session to newest message in connection, not API lastActiveAt order", async () => {
+  it("defaults active session to the one with the largest server lastActiveAt", async () => {
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
     });
@@ -1073,43 +1048,12 @@ describe("App integration", () => {
       if (path.includes("connectionId=cc-connect")) {
         return {
           sessions: [
-            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 },
-            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 100 },
+            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 100 },
+            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 900 },
           ],
         };
       }
-      if (path.startsWith("/api/history/")) {
-        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
-        if (chatKey === makeChatKey("cc-connect", "s-old")) {
-          return {
-            messages: [
-              {
-                id: "a",
-                role: "user",
-                content: "older",
-                timestamp: 1000,
-                connectionId: "cc-connect",
-                sessionKey: "s-old",
-              },
-            ],
-          };
-        }
-        if (chatKey === makeChatKey("cc-connect", "s-new")) {
-          return {
-            messages: [
-              {
-                id: "b",
-                role: "user",
-                content: "newer",
-                timestamp: 5000,
-                connectionId: "cc-connect",
-                sessionKey: "s-new",
-              },
-            ],
-          };
-        }
-        return { messages: [] };
-      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
       return {};
     });
 
@@ -1120,6 +1064,46 @@ describe("App integration", () => {
       expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("s-new");
       expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
     });
+  });
+
+  it("only fetches history for the active session at hydrate, lazy-loads others on switch", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
+    });
+    const fetched: string[] = [];
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return {
+          sessions: [
+            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 100 },
+            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 900 },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) {
+        fetched.push(decodeURIComponent(path.slice("/api/history/".length)));
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    await waitFor(() => {
+      expect(fetched).toEqual([makeChatKey("cc-connect", "s-new")]);
+    });
+
+    useSessionStore.getState().setActiveSession("cc-connect", "s-old");
+    await waitFor(() => {
+      expect(fetched).toContain(makeChatKey("cc-connect", "s-old"));
+    });
+
+    // Switching back to an already-loaded chat must not re-fetch.
+    const before = fetched.length;
+    useSessionStore.getState().setActiveSession("cc-connect", "s-new");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetched.length).toBe(before);
   });
 
   it("sends message to websocket and renders incoming bridge reply", async () => {
