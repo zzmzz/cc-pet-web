@@ -6,6 +6,7 @@ export class MessageStore {
   private stmtInsert;
   private stmtSelect;
   private stmtDelete;
+  private stmtUpsertSessionActivity;
 
   constructor(private db: Database.Database) {
     this.stmtInsert = db.prepare(
@@ -16,6 +17,14 @@ export class MessageStore {
       `SELECT * FROM messages WHERE chat_key = ? ORDER BY timestamp ASC`
     );
     this.stmtDelete = db.prepare(`DELETE FROM messages WHERE chat_key = ?`);
+    // Update-only: bump an existing session's last_active_at so cleanup and
+    // the client's "newest session" logic stay accurate. Never create a row;
+    // messages without a matching sessions row remain "ghost" messages
+    // filtered out by search/list (preserves existing invariants).
+    this.stmtUpsertSessionActivity = db.prepare(
+      `UPDATE sessions SET last_active_at = ?
+       WHERE connection_id = ? AND key = ? AND last_active_at < ?`
+    );
   }
 
   save(msg: ChatMessage): void {
@@ -28,6 +37,14 @@ export class MessageStore {
       card: msg.card,
     });
     this.stmtInsert.run(msg.id, chatKey, msg.role, msg.content, msg.timestamp, msg.connectionId, msg.sessionKey, extra);
+    if (msg.connectionId && msg.sessionKey) {
+      this.stmtUpsertSessionActivity.run(
+        msg.timestamp,
+        msg.connectionId,
+        msg.sessionKey,
+        msg.timestamp,
+      );
+    }
   }
 
   getByChatKey(chatKey: string): ChatMessage[] {

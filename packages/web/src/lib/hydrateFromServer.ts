@@ -1,4 +1,4 @@
-import { makeChatKey, parseChatKey } from "@cc-pet/shared";
+import { makeChatKey } from "@cc-pet/shared";
 import type { ChatMessage, Session } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { useConnectionStore } from "./store/connection.js";
@@ -6,84 +6,45 @@ import { useMessageStore } from "./store/message.js";
 import { useSessionStore } from "./store/session.js";
 import { useUIStore } from "./store/ui.js";
 
-function latestMessageTimestamp(messages: ChatMessage[]): number {
-  return Math.max(...messages.map((m) => m.timestamp));
-}
-
-/** 该连接下任意 chat 中最新消息时间最晚的 sessionKey；无消息则 null。 */
-function pickLatestMessagedSessionForConnection(connectionId: string): string | null {
-  const messagesByChat = useMessageStore.getState().messagesByChat;
-  const prefix = `${connectionId}::`;
-  let bestSession: string | null = null;
-  let bestTs = -1;
-  for (const [chatKey, messages] of Object.entries(messagesByChat)) {
-    if (!chatKey.startsWith(prefix) || !Array.isArray(messages) || messages.length === 0) continue;
-    const sessionKey = chatKey.slice(prefix.length);
-    const ts = latestMessageTimestamp(messages);
-    if (ts > bestTs) {
-      bestTs = ts;
-      bestSession = sessionKey;
-    }
+/**
+ * Choose the default active session for a connection, given the persisted
+ * active key (from localStorage) and the server's session list.
+ *
+ * Preference order:
+ *  1. Persisted activeSessionKey, if it still exists in the server list.
+ *  2. Session with the largest lastActiveAt.
+ *  3. First entry in the list (already sorted by lastActiveAt desc).
+ *  4. "default" as final fallback.
+ */
+function pickActiveSessionKey(
+  sessions: Session[],
+  persistedActive: string | undefined,
+): string {
+  if (persistedActive && sessions.some((s) => s.key === persistedActive)) {
+    return persistedActive;
   }
-  return bestSession;
-}
-
-/** 在若干连接中，全局最新消息所在的 connection + session；无消息则 null。 */
-function pickLatestMessagedChat(connectionIds: string[]): { connectionId: string; sessionKey: string } | null {
-  const idSet = new Set(connectionIds);
-  const messagesByChat = useMessageStore.getState().messagesByChat;
-  let best: { connectionId: string; sessionKey: string } | null = null;
-  let bestTs = -1;
-  for (const [chatKey, messages] of Object.entries(messagesByChat)) {
-    if (!Array.isArray(messages) || messages.length === 0) continue;
-    let parsed: { connectionId: string; sessionKey: string };
-    try {
-      parsed = parseChatKey(chatKey);
-    } catch {
-      continue;
-    }
-    if (!idSet.has(parsed.connectionId)) continue;
-    const ts = latestMessageTimestamp(messages);
-    if (ts > bestTs) {
-      bestTs = ts;
-      best = parsed;
-    }
+  if (sessions.length > 0) {
+    return sessions[0].key;
   }
-  return best;
+  return "default";
 }
 
 /**
- * Hydrate 写入消息后：每个连接默认选中「该连接下最后有消息的会话」；
- * 当前展示连接选「全局最新消息」所在连接。
+ * Pick the connection whose most-recent session is globally newest, used when
+ * the previously active connection is no longer present.
  */
-export function applyDefaultFocusAfterHydrate(connectionIds: string[]): void {
-  if (connectionIds.length === 0) {
-    useConnectionStore.getState().setActiveConnection(null);
-    return;
-  }
-  const sessionStore = useSessionStore.getState();
+function pickGlobalActiveConnection(
+  connectionIds: string[],
+  sessionsByConnection: Record<string, Session[]>,
+): string | null {
+  let best: { id: string; ts: number } | null = null;
   for (const cid of connectionIds) {
-    const list = sessionStore.sessions[cid] ?? [];
-    const persistedActive = sessionStore.activeSessionKey[cid];
-    const hasPersistedActive = Boolean(
-      persistedActive && list.some((session) => session.key === persistedActive),
-    );
-    if (hasPersistedActive) {
-      sessionStore.setActiveSession(cid, persistedActive as string);
-      continue;
-    }
-    const fromMessages = pickLatestMessagedSessionForConnection(cid);
-    sessionStore.setActiveSession(cid, fromMessages ?? list[0]?.key ?? "default");
+    const list = sessionsByConnection[cid] ?? [];
+    if (list.length === 0) continue;
+    const ts = list[0].lastActiveAt;
+    if (!best || ts > best.ts) best = { id: cid, ts };
   }
-  const activeConnectionId = useConnectionStore.getState().activeConnectionId;
-  if (activeConnectionId && connectionIds.includes(activeConnectionId)) {
-    useConnectionStore.getState().setActiveConnection(activeConnectionId);
-    return;
-  }
-  const global = pickLatestMessagedChat(connectionIds);
-  useConnectionStore.getState().setActiveConnection(global?.connectionId ?? connectionIds[0] ?? null);
-
-  reconcilePetStateWithTaskState();
+  return best?.id ?? connectionIds[0] ?? null;
 }
 
 /**
@@ -97,11 +58,83 @@ function reconcilePetStateWithTaskState(): void {
 }
 
 /**
- * After bridge manifest (connection ids), pull sessions + per-chat history from the server.
- * If the API returns no sessions and no messages under `default`, skips writes so tests (or other code)
- * that pre-seed stores before mount are not cleared.
+ * Apply default focus after hydrate. Uses server-provided session.lastActiveAt
+ * rather than loaded message timestamps, since most sessions are not loaded yet.
  */
-export async function hydrateSessionsAndHistory(adapter: PlatformAPI, connectionIds: string[]): Promise<void> {
+export function applyDefaultFocusAfterHydrate(connectionIds: string[]): void {
+  if (connectionIds.length === 0) {
+    useConnectionStore.getState().setActiveConnection(null);
+    return;
+  }
+  const sessionStore = useSessionStore.getState();
+  for (const cid of connectionIds) {
+    const list = sessionStore.sessions[cid] ?? [];
+    const persistedActive = sessionStore.activeSessionKey[cid];
+    sessionStore.setActiveSession(cid, pickActiveSessionKey(list, persistedActive));
+  }
+  const activeConnectionId = useConnectionStore.getState().activeConnectionId;
+  if (activeConnectionId && connectionIds.includes(activeConnectionId)) {
+    useConnectionStore.getState().setActiveConnection(activeConnectionId);
+  } else {
+    const sessionsByConnection = useSessionStore.getState().sessions;
+    useConnectionStore
+      .getState()
+      .setActiveConnection(pickGlobalActiveConnection(connectionIds, sessionsByConnection));
+  }
+  reconcilePetStateWithTaskState();
+}
+
+/**
+ * Fetch and write history for a chatKey, marking it loaded. Concurrent calls for
+ * the same chatKey share a single in-flight Promise.
+ */
+async function fetchAndStoreHistory(
+  adapter: PlatformAPI,
+  chatKey: string,
+): Promise<void> {
+  const messageStore = useMessageStore.getState();
+  if (messageStore.isChatLoaded(chatKey)) return;
+  const histRes = await adapter.fetchApi<{ messages?: ChatMessage[] }>(
+    `/api/history/${encodeURIComponent(chatKey)}`,
+  );
+  const messages = histRes.messages ?? [];
+  useMessageStore.getState().setMessages(chatKey, messages);
+  useMessageStore.getState().markChatLoaded(chatKey);
+  // chatKey format: `${connectionId}::${sessionKey}`
+  const sep = chatKey.indexOf("::");
+  if (sep > 0) {
+    const connectionId = chatKey.slice(0, sep);
+    const sessionKey = chatKey.slice(sep + 2);
+    useSessionStore
+      .getState()
+      .syncAutoTitleFromHistoryMessages(connectionId, sessionKey, messages);
+  }
+}
+
+/**
+ * Hydrate sessions list and the currently-active session's history per connection.
+ * Other sessions' history is loaded lazily when the user activates them.
+ *
+ * Registers a lazy-loader on the session store so setActiveSession triggers
+ * on-demand fetches automatically.
+ */
+export async function hydrateSessionsAndHistory(
+  adapter: PlatformAPI,
+  connectionIds: string[],
+): Promise<void> {
+  const inFlight = new Map<string, Promise<void>>();
+  const lazyLoad = (chatKey: string): Promise<void> => {
+    if (useMessageStore.getState().isChatLoaded(chatKey)) return Promise.resolve();
+    const existing = inFlight.get(chatKey);
+    if (existing) return existing;
+    const p = fetchAndStoreHistory(adapter, chatKey).finally(() => {
+      inFlight.delete(chatKey);
+    });
+    inFlight.set(chatKey, p);
+    return p;
+  };
+  useSessionStore.getState().setLazyLoader(lazyLoad);
+
   for (const connectionId of connectionIds) {
     try {
       const listRes = await adapter.fetchApi<{ sessions?: Session[] }>(
@@ -109,14 +142,15 @@ export async function hydrateSessionsAndHistory(adapter: PlatformAPI, connection
       );
       const apiSessions = listRes.sessions ?? [];
 
+      // Orphan-default fallback: if server has no sessions but a `default`
+      // chatKey already has messages (e.g. pre-seeded by tests), synthesize a
+      // default session entry so the UI has something to focus.
       const defaultChatKey = makeChatKey(connectionId, "default");
-      const defaultHistRes = await adapter.fetchApi<{ messages?: ChatMessage[] }>(
-        `/api/history/${encodeURIComponent(defaultChatKey)}`,
-      );
-      const defaultMessages = defaultHistRes.messages ?? [];
-
+      const preSeededDefault = useMessageStore.getState().messagesByChat[defaultChatKey];
       const hasOrphanDefault =
-        defaultMessages.length > 0 && !apiSessions.some((s) => s.key === "default");
+        apiSessions.length === 0 &&
+        Array.isArray(preSeededDefault) &&
+        preSeededDefault.length > 0;
 
       if (apiSessions.length === 0 && !hasOrphanDefault) {
         continue;
@@ -124,37 +158,24 @@ export async function hydrateSessionsAndHistory(adapter: PlatformAPI, connection
 
       const sessions: Session[] = [...apiSessions];
       if (hasOrphanDefault) {
-        const ts = defaultMessages.map((m) => m.timestamp);
+        const ts = preSeededDefault.map((m) => m.timestamp);
         sessions.push({
           key: "default",
           connectionId,
           createdAt: Math.min(...ts),
           lastActiveAt: Math.max(...ts),
         });
+        // Pre-seeded messages count as already loaded.
+        useMessageStore.getState().markChatLoaded(defaultChatKey);
       }
 
       sessions.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
-
-      const historyCache: Record<string, ChatMessage[]> = { [defaultChatKey]: defaultMessages };
-
-      for (const sess of sessions) {
-        const ck = makeChatKey(connectionId, sess.key);
-        if (historyCache[ck] === undefined) {
-          const histRes = await adapter.fetchApi<{ messages?: ChatMessage[] }>(
-            `/api/history/${encodeURIComponent(ck)}`,
-          );
-          historyCache[ck] = histRes.messages ?? [];
-        }
-      }
-
       useSessionStore.getState().setSessions(connectionId, sessions);
 
-      for (const sess of sessions) {
-        const ck = makeChatKey(connectionId, sess.key);
-        const msgs = historyCache[ck] ?? [];
-        useMessageStore.getState().setMessages(ck, msgs);
-        useSessionStore.getState().syncAutoTitleFromHistoryMessages(connectionId, sess.key, msgs);
-      }
+      const persistedActive = useSessionStore.getState().activeSessionKey[connectionId];
+      const activeKey = pickActiveSessionKey(sessions, persistedActive);
+      const activeChatKey = makeChatKey(connectionId, activeKey);
+      await lazyLoad(activeChatKey);
     } catch (e) {
       console.error("hydrate sessions/history failed:", connectionId, e);
     }

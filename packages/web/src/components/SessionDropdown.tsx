@@ -53,8 +53,10 @@ function lastMessageOrCreatedAt(
   messagesByChat: Record<string, ChatMessage[]>,
 ): number {
   const msgs = messagesByChat[makeChatKey(connectionId, session.key)] ?? [];
-  if (msgs.length === 0) return session.createdAt;
-  return Math.max(...msgs.map((m) => m.timestamp));
+  if (msgs.length > 0) return Math.max(...msgs.map((m) => m.timestamp));
+  // For sessions whose history hasn't been lazy-loaded yet, fall back to
+  // the server-maintained lastActiveAt instead of createdAt.
+  return session.lastActiveAt ?? session.createdAt;
 }
 
 function phaseForSession(

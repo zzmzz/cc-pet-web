@@ -22,8 +22,14 @@ function resetStores() {
   useUIStore.setState({ chatOpen: true, petState: "idle", isMobile: false, settingsOpen: false });
   useSearchStore.setState({ query: "", results: [], total: 0, loading: false, isOpen: false });
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  useSessionStore.setState({
+    sessions: {},
+    activeSessionKey: {},
+    unread: {},
+    taskStateByConnection: {},
+    lazyLoadChat: null,
+  });
   useWorkspaceStore.setState(useWorkspaceStore.getInitialState());
   platformMock.fetchApi.mockReset();
   platformMock.fetchApi.mockResolvedValue({});

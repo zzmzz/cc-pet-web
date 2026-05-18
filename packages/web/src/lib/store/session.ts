@@ -125,9 +125,12 @@ interface SessionState {
   unread: Record<string, number>;
   /** Per-connection session task state for dropdown labels and task lifecycle. */
   taskStateByConnection: Record<string, Record<string, SessionTaskState>>;
+  /** Optional lazy-loader registered by hydrate; invoked when activating a session. */
+  lazyLoadChat: ((chatKey: string) => Promise<void>) | null;
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
+  setLazyLoader: (loader: ((chatKey: string) => Promise<void>) | null) => void;
   setSessionTaskState: (connectionId: string, sessionKey: string, taskState: SessionTaskState) => void;
   patchSessionTaskState: (
     connectionId: string,
@@ -161,15 +164,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessionKey: readPersistedActiveSessionMap(),
   unread: {},
   taskStateByConnection: readPersistedTaskState(),
+  lazyLoadChat: null,
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
-  setActiveSession: (connectionId, key) =>
+  setActiveSession: (connectionId, key) => {
     set((s) => {
       const next = { ...s.activeSessionKey, [connectionId]: key };
       persistActiveSessionMap(next);
       return { activeSessionKey: next };
-    }),
+    });
+    const loader = get().lazyLoadChat;
+    if (loader) {
+      void loader(makeChatKey(connectionId, key)).catch((err) => {
+        console.error("lazy load chat failed:", connectionId, key, err);
+      });
+    }
+  },
+  setLazyLoader: (loader) => set({ lazyLoadChat: loader }),
   setSessionTaskState: (connectionId, sessionKey, taskState) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
