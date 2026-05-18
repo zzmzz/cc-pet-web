@@ -247,7 +247,8 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(screen.getAllByText("README.md").length).toBeGreaterThanOrEqual(2);
     });
-    expect(screen.getByRole("textbox", { name: "文件内容" })).toHaveValue("# cc-pet-web\n");
+    const preview = await screen.findByLabelText("文件预览");
+    expect(preview).toHaveTextContent("# cc-pet-web");
     expect(useWorkspaceStore.getState().activeConnectionId).toBe("cc-connect");
   });
 
@@ -463,6 +464,7 @@ describe("App integration", () => {
       expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: /README\.md/ }));
+      await user.click(await screen.findByRole("button", { name: "编辑" }));
       const editor = await screen.findByRole("textbox", { name: "文件内容" });
       await user.clear(editor);
       await user.type(editor, "# Updated");
@@ -564,6 +566,7 @@ describe("App integration", () => {
     render(<App />);
     await openWorkspaceTab(user);
     await user.click(await screen.findByRole("button", { name: /README\.md/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑" }));
     const editor = await screen.findByRole("textbox", { name: "文件内容" });
     await user.clear(editor);
     await user.type(editor, "# Updated");

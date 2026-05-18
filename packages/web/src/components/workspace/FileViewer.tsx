@@ -121,7 +121,7 @@ export function FileViewer({ variant = "desktop" }: { variant?: "desktop" | "mob
                 spellCheck={false}
               />
             ) : (
-              <div className="min-h-0 flex-1 overflow-auto rounded-lg">
+              <div aria-label="文件预览" className="min-h-0 flex-1 overflow-auto rounded-lg">
                 <SyntaxHighlighter
                   language={getLanguageFromFilename(activeFile.name)}
                   style={oneDark}
