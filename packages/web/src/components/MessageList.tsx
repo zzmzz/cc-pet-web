@@ -625,6 +625,39 @@ function MessageBubble({ message }: { message: ChatMessage }) {
                 }
                 return <LinkPreviewAnchor href={href}>{children}</LinkPreviewAnchor>;
               },
+              table({ children }) {
+                return (
+                  <div className="my-2 overflow-x-auto rounded-lg border border-gray-300/70">
+                    <table className="w-full border-collapse text-[12.5px]">{children}</table>
+                  </div>
+                );
+              },
+              thead({ children }) {
+                return <thead className="bg-gray-200/70">{children}</thead>;
+              },
+              tr({ children }) {
+                return <tr className="border-b border-gray-300/60 last:border-0 even:bg-black/[0.03]">{children}</tr>;
+              },
+              th({ children, style }) {
+                return (
+                  <th
+                    style={style}
+                    className="px-2.5 py-1.5 text-left font-semibold text-gray-700 border-r border-gray-300/60 last:border-r-0"
+                  >
+                    {children}
+                  </th>
+                );
+              },
+              td({ children, style }) {
+                return (
+                  <td
+                    style={style}
+                    className="px-2.5 py-1.5 align-top border-r border-gray-300/60 last:border-r-0"
+                  >
+                    {children}
+                  </td>
+                );
+              },
             }}
           >
             {isUser ? message.content : message.content.replace(/\n/g, "  \n")}
