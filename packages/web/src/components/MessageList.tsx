@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
 import { groupMessages } from "../lib/group-messages.js";
+import { splitUsageFooter } from "../lib/footer.js";
 import { ActivityBlock } from "./ActivityBlock.js";
 import { CardMessage } from "./CardMessage.js";
 import { AudioMessage } from "./AudioMessage.js";
@@ -438,7 +439,7 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto py-3 space-y-1">
         {renderItems.map((item) =>
           item.kind === "tool-group" ? (
-            <ActivityBlock key={item.messages[0].id} messages={item.messages} done={item.done} />
+            <ActivityBlock key={item.steps[0].call.id} steps={item.steps} done={item.done} />
           ) : (
             <MessageBubble key={item.message.id} message={item.message} />
           ),
@@ -542,6 +543,10 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     );
   }
+
+  const { body: bubbleBody, footer: usageFooter } = isUser
+    ? { body: message.content, footer: null }
+    : splitUsageFooter(message.content);
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1`}>
@@ -660,16 +665,41 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               },
             }}
           >
-            {isUser ? message.content : message.content.replace(/\n/g, "  \n")}
+            {isUser ? bubbleBody : bubbleBody.replace(/\n/g, "  \n")}
           </ReactMarkdown>
         </div>
-        <div className={`text-[10px] mt-1 ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
-          {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+        <div className={`flex items-center gap-1.5 text-[10px] mt-1 ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
+          <span>
+            {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </span>
+          {usageFooter && <UsageBadge footer={usageFooter} />}
         </div>
       </div>
     </div>
+  );
+}
+
+function UsageBadge({ footer }: { footer: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={footer}
+        aria-label="模型用量"
+        className="rounded px-1 leading-none text-gray-300 hover:text-gray-500 focus:outline-none focus-visible:ring-1 focus-visible:ring-gray-300"
+      >
+        ⓘ
+      </button>
+      {open && (
+        <span className="absolute bottom-full right-0 mb-1 z-10 w-max max-w-[260px] rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] leading-relaxed text-gray-500 shadow-md select-text">
+          {footer}
+        </span>
+      )}
+    </span>
   );
 }
