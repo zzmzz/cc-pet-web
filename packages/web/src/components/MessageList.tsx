@@ -697,7 +697,7 @@ function UsageBadge({ footer, model }: { footer: string; model: string | null })
         {model && <span className="font-mono text-[10px]">{model}</span>}
       </button>
       {open && (
-        <span className="absolute bottom-full right-0 mb-1 z-10 w-max max-w-[min(260px,80vw)] whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] leading-relaxed text-gray-500 shadow-md select-text">
+        <span className="absolute bottom-full left-0 mb-1 z-10 w-max max-w-[min(260px,70vw)] whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] leading-relaxed text-gray-500 shadow-md select-text">
           {footer}
         </span>
       )}
