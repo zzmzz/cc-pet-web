@@ -544,8 +544,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     );
   }
 
-  const { body: bubbleBody, footer: usageFooter } = isUser
-    ? { body: message.content, footer: null }
+  const { body: bubbleBody, footer: usageFooter, model: usageModel } = isUser
+    ? { body: message.content, footer: null, model: null }
     : splitUsageFooter(message.content);
 
   return (
@@ -675,14 +675,14 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               minute: "2-digit",
             })}
           </span>
-          {usageFooter && <UsageBadge footer={usageFooter} />}
+          {usageFooter && <UsageBadge footer={usageFooter} model={usageModel} />}
         </div>
       </div>
     </div>
   );
 }
 
-function UsageBadge({ footer }: { footer: string }) {
+function UsageBadge({ footer, model }: { footer: string; model: string | null }) {
   const [open, setOpen] = useState(false);
   return (
     <span className="relative inline-flex">
@@ -691,12 +691,13 @@ function UsageBadge({ footer }: { footer: string }) {
         onClick={() => setOpen((v) => !v)}
         title={footer}
         aria-label="模型用量"
-        className="rounded px-1 leading-none text-gray-300 hover:text-gray-500 focus:outline-none focus-visible:ring-1 focus-visible:ring-gray-300"
+        className="inline-flex items-center gap-0.5 rounded px-1 leading-none text-gray-400 hover:text-gray-600 focus:outline-none focus-visible:ring-1 focus-visible:ring-gray-300"
       >
-        ⓘ
+        <span>🤖</span>
+        {model && <span className="font-mono text-[10px]">{model}</span>}
       </button>
       {open && (
-        <span className="absolute bottom-full right-0 mb-1 z-10 w-max max-w-[260px] rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] leading-relaxed text-gray-500 shadow-md select-text">
+        <span className="absolute bottom-full right-0 mb-1 z-10 w-max max-w-[min(260px,80vw)] whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] leading-relaxed text-gray-500 shadow-md select-text">
           {footer}
         </span>
       )}

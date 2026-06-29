@@ -5,10 +5,21 @@ describe("splitUsageFooter", () => {
   it("strips the usage footer and returns it separately", () => {
     const content =
       "下载在后台跑，大概十几分钟完成。\n\n*us.anthropic.claude-opus-4-8 · out 3.0k · in 2 cw 1.9k cr 78.8k · ctx 40%\n.*";
-    const { body, footer } = splitUsageFooter(content);
+    const { body, footer, model } = splitUsageFooter(content);
     expect(body).toBe("下载在后台跑，大概十几分钟完成。");
     expect(footer).toContain("us.anthropic.claude-opus-4-8");
     expect(footer).toContain("ctx 40%");
+    expect(model).toBe("opus-4-8");
+  });
+
+  it("derives a short model name from the footer", () => {
+    expect(splitUsageFooter("hi\n\n*us.anthropic.claude-opus-4-8 · ctx 1%*").model).toBe("opus-4-8");
+    expect(splitUsageFooter("hi\n\n*anthropic.claude-sonnet-4-6 · ctx 1%*").model).toBe("sonnet-4-6");
+    expect(splitUsageFooter("hi\n\n*claude-haiku-4-5-20251001 · ctx 1%*").model).toBe("haiku-4-5");
+  });
+
+  it("returns null model when no footer present", () => {
+    expect(splitUsageFooter("just a reply").model).toBeNull();
   });
 
   it("handles single-line footer", () => {
