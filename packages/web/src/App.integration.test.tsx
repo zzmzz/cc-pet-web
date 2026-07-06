@@ -65,6 +65,7 @@ function resetStores() {
     unread: {},
     taskStateByConnection: {},
     lazyLoadChat: null,
+    stickySessionByConnection: {},
   });
   useUIStore.setState({
     chatOpen: true,
@@ -856,6 +857,58 @@ describe("App integration", () => {
       const state = useSessionStore.getState().taskStateByConnection["cc-connect"] ?? {};
       expect(state["session-a"]?.phase).toBe("completed");
       expect(state["session-b"]?.phase).not.toBe("completed");
+    });
+  });
+
+  it("does not leak a keyless in-flight reply into a freshly created session", async () => {
+    // User is in session-old and sends a message; the bridge's reply arrives
+    // WITHOUT echoing a sessionKey (no ccpet reply_ctx, no typing). Meanwhile the
+    // user has created and switched to a brand-new empty session. The keyless
+    // reply must stay with the session that made the request, not follow the
+    // active-session pointer into the fresh session.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    const input = screen.getByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "question in old session");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    // User creates a brand-new session and switches to it while old is in-flight.
+    useSessionStore.setState((s) => ({
+      sessions: {
+        "cc-connect": [
+          ...(s.sessions["cc-connect"] ?? []),
+          { key: "session-new", connectionId: "cc-connect", createdAt: 3, lastActiveAt: 3 },
+        ],
+      },
+    }));
+    useSessionStore.getState().setActiveSession("cc-connect", "session-new");
+
+    // The old session's reply lands WITHOUT an explicit sessionKey.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "reply belonging to old session",
+    });
+
+    await waitFor(() => {
+      const oldKey = makeChatKey("cc-connect", "session-old");
+      const newKey = makeChatKey("cc-connect", "session-new");
+      const newMsgs = useMessageStore.getState().messagesByChat[newKey] ?? [];
+      const oldMsgs = useMessageStore.getState().messagesByChat[oldKey] ?? [];
+      // The freshly-created session must stay empty.
+      expect(newMsgs.map((m) => m.content)).not.toContain("reply belonging to old session");
+      expect(oldMsgs.map((m) => m.content)).toContain("reply belonging to old session");
     });
   });
 

@@ -175,6 +175,7 @@ export function ChatWindow() {
       if (caption) {
         useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
       }
+      useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
 
       getPlatform().sendWsMessage({
         type: WS_EVENTS.SEND_FILE,
@@ -197,6 +198,7 @@ export function ChatWindow() {
       sessionKey: activeSessionKey,
     });
     useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
+    useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
 
     getPlatform().sendWsMessage({
       type: WS_EVENTS.SEND_MESSAGE,

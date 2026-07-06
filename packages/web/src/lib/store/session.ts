@@ -127,10 +127,20 @@ interface SessionState {
   taskStateByConnection: Record<string, Record<string, SessionTaskState>>;
   /** Optional lazy-loader registered by hydrate; invoked when activating a session. */
   lazyLoadChat: ((chatKey: string) => Promise<void>) | null;
+  /**
+   * Per-connection "session a keyless incoming event most likely belongs to":
+   * the last session that exchanged a keyed message (sent from the dashboard or
+   * received with an explicit key). Used to route keyless bridge replies back to
+   * the requesting session instead of whatever session is currently active —
+   * otherwise a late reply leaks into a freshly-created/switched session.
+   */
+  stickySessionByConnection: Record<string, string>;
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
   setLazyLoader: (loader: ((chatKey: string) => Promise<void>) | null) => void;
+  /** Record the session a keyless reply should route back to (outgoing send or keyed incoming). */
+  noteStickySession: (connectionId: string, sessionKey: string) => void;
   setSessionTaskState: (connectionId: string, sessionKey: string, taskState: SessionTaskState) => void;
   patchSessionTaskState: (
     connectionId: string,
@@ -165,9 +175,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   unread: {},
   taskStateByConnection: readPersistedTaskState(),
   lazyLoadChat: null,
+  stickySessionByConnection: {},
 
   setSessions: (connectionId, sessions) =>
     set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
+  noteStickySession: (connectionId, sessionKey) =>
+    set((s) =>
+      s.stickySessionByConnection[connectionId] === sessionKey
+        ? s
+        : { stickySessionByConnection: { ...s.stickySessionByConnection, [connectionId]: sessionKey } },
+    ),
   setActiveSession: (connectionId, key) => {
     set((s) => {
       const next = { ...s.activeSessionKey, [connectionId]: key };
@@ -292,11 +309,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       persistActiveSessionMap(nextActive);
 
+      const nextSticky = { ...s.stickySessionByConnection };
+      if (nextSticky[connectionId] === sessionKey) {
+        delete nextSticky[connectionId];
+      }
+
       return {
         sessions: { ...s.sessions, [connectionId]: nextList },
         activeSessionKey: nextActive,
         unread: restUnread,
         taskStateByConnection: nextTaskState,
+        stickySessionByConnection: nextSticky,
       };
     }),
   touchSessionAutoTitle: (connectionId, sessionKey, userText) =>

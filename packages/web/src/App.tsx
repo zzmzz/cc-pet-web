@@ -98,7 +98,6 @@ export default function App() {
     let happyAfterConnectTimer: ReturnType<typeof setTimeout> | null = null;
     let unsub: (() => void) | null = null;
     const typingActiveByChatKey: Record<string, boolean> = {};
-    const stickySessionByConnection: Record<string, string> = {};
     let activeAdapter: PlatformAPI | null = null;
     let isPageHidden = typeof document !== "undefined" && document.hidden;
     let permissionRequestTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,10 +137,13 @@ export default function App() {
         let resolvedSessionKey =
           connectionId ? (sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default") : undefined;
         if (connectionId && resolvedSessionKey && (routeSource === "payload" || routeSource === "reply_ctx")) {
-          stickySessionByConnection[connectionId] = resolvedSessionKey;
+          useSessionStore.getState().noteStickySession(connectionId, resolvedSessionKey);
         }
         if (connectionId && (routeSource === "active" || routeSource === "known" || routeSource === "fallback")) {
-          const sticky = stickySessionByConnection[connectionId];
+          // A keyless reply belongs to the session that made the request, not to
+          // whatever session is currently active — otherwise a late reply leaks
+          // into a freshly-created/switched session.
+          const sticky = useSessionStore.getState().stickySessionByConnection[connectionId];
           if (sticky) {
             resolvedSessionKey = sticky;
           }

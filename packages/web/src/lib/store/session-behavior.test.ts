@@ -16,6 +16,7 @@ function resetStores() {
     unread: {},
     taskStateByConnection: {},
     lazyLoadChat: null,
+    stickySessionByConnection: {},
   });
   useUIStore.setState({
     chatOpen: false,

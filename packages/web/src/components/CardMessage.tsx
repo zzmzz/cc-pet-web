@@ -25,6 +25,7 @@ function sendCardAction(value: string) {
   const connectionId = useConnectionStore.getState().activeConnectionId;
   if (!connectionId) return;
   const sessionKey = useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
+  useSessionStore.getState().noteStickySession(connectionId, sessionKey);
   // card button values starting with "cmd:" are sent as chat messages
   const content = value.startsWith("cmd:") ? value.slice(4) : value;
   getPlatform().sendWsMessage({

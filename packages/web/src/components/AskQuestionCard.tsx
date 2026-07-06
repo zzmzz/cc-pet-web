@@ -63,6 +63,7 @@ function dispatchMessage(content: string) {
   const connectionId = useConnectionStore.getState().activeConnectionId;
   if (!connectionId) return;
   const sessionKey = useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
+  useSessionStore.getState().noteStickySession(connectionId, sessionKey);
   getPlatform().sendWsMessage({
     type: WS_EVENTS.SEND_MESSAGE,
     connectionId,
