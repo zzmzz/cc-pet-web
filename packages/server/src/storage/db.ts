@@ -1,6 +1,11 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { segmentForFts } from "./fts.js";
+
+/** Bump when the FTS table/tokenization scheme changes so existing databases
+ *  rebuild their index on next startup. v2 = CJK per-character segmentation. */
+const FTS_SCHEMA_VERSION = 2;
 
 export function createDatabase(dataDir: string): Database.Database {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -12,6 +17,12 @@ export function createDatabase(dataDir: string): Database.Database {
 }
 
 export function initSchema(db: Database.Database): void {
+  // Registered on the connection so triggers and index rebuilds can segment
+  // CJK text into per-character tokens (see storage/fts.ts).
+  db.function("cc_seg", { deterministic: true }, (text: unknown) =>
+    segmentForFts(text == null ? "" : String(text)),
+  );
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -56,32 +67,39 @@ export function initSchema(db: Database.Database): void {
 }
 
 function initFts(db: Database.Database): void {
-  const ftsExists = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-  ).get();
+  const version = db.pragma("user_version", { simple: true }) as number;
+  if (version >= FTS_SCHEMA_VERSION) return;
 
+  // Rebuild from scratch: drop the previous FTS table (older versions used an
+  // external-content table with the unicode61 tokenizer, which cannot match
+  // CJK substrings) and its triggers, then recreate with per-character
+  // segmentation and repopulate from the existing messages.
   db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-      id,
+    DROP TRIGGER IF EXISTS messages_fts_ai;
+    DROP TRIGGER IF EXISTS messages_fts_ad;
+    DROP TRIGGER IF EXISTS messages_fts_au;
+    DROP TABLE IF EXISTS messages_fts;
+
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+      id UNINDEXED,
       content,
-      content='messages',
-      content_rowid='rowid',
       tokenize='unicode61'
     );
 
-    CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
-      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
+    CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, cc_seg(new.content));
     END;
-    CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
+    CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+      DELETE FROM messages_fts WHERE rowid = old.rowid;
     END;
-    CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid, id, content) VALUES('delete', old.rowid, old.id, old.content);
-      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, new.content);
+    CREATE TRIGGER messages_fts_au AFTER UPDATE ON messages BEGIN
+      DELETE FROM messages_fts WHERE rowid = old.rowid;
+      INSERT INTO messages_fts(rowid, id, content) VALUES (new.rowid, new.id, cc_seg(new.content));
     END;
+
+    INSERT INTO messages_fts(rowid, id, content)
+      SELECT rowid, id, cc_seg(content) FROM messages;
   `);
 
-  if (!ftsExists) {
-    db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
-  }
+  db.pragma(`user_version = ${FTS_SCHEMA_VERSION}`);
 }
