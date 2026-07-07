@@ -3,7 +3,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
-import type { ChatMessage } from "@cc-pet/shared";
+import type { ChatMessage, FileAttachment } from "@cc-pet/shared";
 import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
@@ -471,6 +471,80 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   );
 });
 
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+/**
+ * Renders a file attachment received over the bridge. `/api/files/*` is behind
+ * bearer auth (an <img>/<a> can't send the header), so fetch the bytes with the
+ * token and expose them via an object URL — same pattern as Pet.tsx pet images.
+ */
+function FileAttachmentView({ file, isUser }: { file: FileAttachment; isUser: boolean }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!file.url) return;
+    const token = localStorage.getItem("cc-pet-token")?.trim() ?? "";
+    let cancelled = false;
+    let created: string | null = null;
+    void fetch(file.url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
+      .then((res) => {
+        if (!res.ok) throw new Error(`file fetch failed (${res.status})`);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        created = URL.createObjectURL(blob);
+        setObjectUrl(created);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [file.url]);
+
+  const isImageFile = IMAGE_FILE_RE.test(file.name);
+  const sizeLabel = file.size > 0 ? `${(file.size / 1024).toFixed(1)} KB` : "";
+
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="shrink-0">{isUser ? "📎" : "📥"}</span>
+        {objectUrl ? (
+          <a
+            href={objectUrl}
+            download={file.name}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="truncate underline"
+          >
+            {file.name}
+          </a>
+        ) : (
+          <span className="truncate">
+            {file.name}
+            {failed ? "（无法加载）" : ""}
+          </span>
+        )}
+        {sizeLabel ? <span className="shrink-0 text-[10px] opacity-60">{sizeLabel}</span> : null}
+      </div>
+      {objectUrl && isImageFile ? (
+        <a href={objectUrl} target="_blank" rel="noopener noreferrer">
+          <img
+            src={objectUrl}
+            alt={file.name}
+            loading="lazy"
+            className="mt-1 max-h-60 max-w-full rounded-lg border border-black/10"
+          />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
@@ -530,10 +604,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           {caption ? <div className="mb-1.5 whitespace-pre-wrap break-words">{caption}</div> : null}
           <div className="space-y-1">
             {(message.files ?? []).map((file) => (
-              <div key={file.id} className="flex items-center gap-2 min-w-0">
-                <span className="shrink-0">{isUser ? "📎" : "📥"}</span>
-                <span className="truncate">{file.name}</span>
-              </div>
+              <FileAttachmentView key={file.id} file={file} isUser={isUser} />
             ))}
           </div>
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>

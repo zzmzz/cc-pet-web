@@ -35,6 +35,20 @@ export function bridgeReplyCtx(val: Record<string, unknown>): string {
   );
 }
 
+/** file 帧文件名：兼容 name / file_name / fileName / filename，及 data.* 嵌套 */
+export function bridgeFileName(val: Record<string, unknown>): string | undefined {
+  const pick = (o: Record<string, unknown>) =>
+    str(o.name) ?? str(o.file_name) ?? str(o.fileName) ?? str(o.filename);
+  return pick(val) ?? pick(bridgeNestedData(val) ?? {});
+}
+
+/** file 帧的 base64 内容：兼容顶层 data(字符串)/content/bytes，及 data.data 等嵌套 */
+export function bridgeFileData(val: Record<string, unknown>): string | undefined {
+  if (typeof val.data === "string") return val.data;
+  const nested = bridgeNestedData(val);
+  return str(nested?.data) ?? str(nested?.content) ?? str(nested?.bytes) ?? str(val.content) ?? str(val.bytes);
+}
+
 export function bridgeSessionKey(val: Record<string, unknown>): string | undefined {
   const s =
     str(val.session_key) ??

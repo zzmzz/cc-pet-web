@@ -328,7 +328,7 @@ export default function App() {
               connectionId,
               sessionKey: resolvedSessionKey,
               files: [
-                {
+                payload.file ?? {
                   id: `recv-${Date.now()}`,
                   name: payload.name ?? "收到文件",
                   size: 0,

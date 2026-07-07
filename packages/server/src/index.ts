@@ -5,12 +5,14 @@ import fstatic from "@fastify/static";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
-import type { BridgeIncoming } from "@cc-pet/shared";
+import type { BridgeIncoming, FileAttachment } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
 import { findTokenIdentity } from "./auth/token-auth.js";
 import { parseSlashCommandsFromProbeCard, parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
 import { normalizeBridgeCard } from "./bridge/card-normalize.js";
 import {
+  bridgeFileData,
+  bridgeFileName,
   bridgeReplyCtx,
   bridgeReplyStreamDone,
   bridgeReplyTextContent,
@@ -28,7 +30,7 @@ import { SessionsCleanup } from "./cleanup/sessions-cleanup.js";
 import { registerConfigRoutes } from "./api/config.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
-import { registerFileRoutes } from "./api/files.js";
+import { registerFileRoutes, saveBase64File } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
@@ -331,18 +333,37 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
     case "typing_stop":
       hub.broadcast(WS_EVENTS.BRIDGE_TYPING_STOP, { connectionId: connId, sessionKey });
       break;
-    case "file":
+    case "file": {
+      // Bridge `file` frames carry the payload as base64; field names vary across
+      // cc-connect versions, so resolve name/data defensively. Persist to the shared
+      // files store so the dashboard gets a downloadable URL, falling back to a
+      // name-only chip if the payload is missing/undecodable.
+      const fileName = bridgeFileName(raw) ?? "file";
+      const fileData = bridgeFileData(raw);
+      app.log.info(
+        { connectionId: connId, fileName, hasData: !!fileData },
+        "Bridge file frame received",
+      );
+      let attachment: FileAttachment = { id: `file-${Date.now()}`, name: fileName, size: 0 };
+      if (fileData) {
+        try {
+          attachment = saveBase64File(DATA_DIR, fileName, fileData);
+        } catch (err) {
+          app.log.error({ err, connectionId: connId, name: fileName }, "Failed to persist bridge file attachment");
+        }
+      }
       messageStore.save({
         id: `msg-${Date.now()}`,
         role: "assistant",
-        content: msg.name,
-        files: [{ id: `file-${Date.now()}`, name: msg.name, size: 0 }],
+        content: fileName,
+        files: [attachment],
         timestamp: Date.now(),
         connectionId: connId,
         sessionKey,
       });
-      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name });
+      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: fileName, file: attachment });
       break;
+    }
     case "card":
       const cardReplyCtx = bridgeReplyCtx(raw);
       if (cardReplyCtx === SKILLS_PROBE_REPLY_CTX || cardReplyCtx === COMMANDS_PROBE_REPLY_CTX) {
