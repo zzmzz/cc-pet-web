@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ChatMessage } from "@cc-pet/shared";
 import { MessageList } from "./MessageList.js";
+import { useSessionStore } from "../lib/store/session.js";
 
 function buildMessages(count: number): ChatMessage[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -304,5 +305,58 @@ describe("MessageList", () => {
 
     expect(screen.getByText(/🔧 Bash/)).toBeInTheDocument();
     expect(screen.getByText(/💭 思考/)).toBeInTheDocument();
+  });
+
+  describe("jump to message from search", () => {
+    beforeEach(() => {
+      useSessionStore.setState({ pendingScrollMessageId: null });
+    });
+
+    it("scrolls the requested message to center and flashes it", async () => {
+      const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
+      const messages = buildMessages(10);
+      const { container } = render(<MessageList messages={messages} sessionKey="s" />);
+      scrollIntoView.mockClear();
+
+      act(() => {
+        useSessionStore.getState().jumpToMessage("conn", "s", "m-3");
+      });
+
+      await waitFor(() => {
+        const flashed = container.querySelector(".cc-flash");
+        expect(flashed?.textContent).toContain("message-3");
+      });
+      await new Promise((r) => requestAnimationFrame(r));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+      // Consumed: the pending request is cleared after handling.
+      expect(useSessionStore.getState().pendingScrollMessageId).toBeNull();
+    });
+
+    it("defers to the target instead of snapping to bottom on session change", async () => {
+      const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
+      const messagesA = buildMessages(5);
+      const messagesB: ChatMessage[] = [
+        { id: "b-1", role: "user", content: "beta-1", timestamp: 1 },
+        { id: "b-2", role: "assistant", content: "beta-2", timestamp: 2 },
+        { id: "b-3", role: "user", content: "beta-3", timestamp: 3 },
+      ];
+      const { rerender } = render(<MessageList messages={messagesA} sessionKey="a" />);
+      scrollIntoView.mockClear();
+
+      // Request a message that only exists in the not-yet-loaded session B.
+      act(() => {
+        useSessionStore.setState({ pendingScrollMessageId: "b-2" });
+      });
+      // Session switches and B's messages arrive together.
+      rerender(<MessageList messages={messagesB} sessionKey="b" />);
+
+      await waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+      });
+      // Never snapped to the bottom while the jump was pending.
+      expect(scrollIntoView).not.toHaveBeenCalledWith({ behavior: "auto" });
+      expect(useSessionStore.getState().pendingScrollMessageId).toBeNull();
+    });
   });
 });

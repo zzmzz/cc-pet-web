@@ -39,7 +39,7 @@ export function SearchPanel({ variant = "panel" }: { variant?: "panel" | "mobile
 
   const { results, total, loading, isOpen, search, clearSearch, setOpen } = useSearchStore();
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
-  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+  const jumpToMessage = useSessionStore((s) => s.jumpToMessage);
   const clearSessionUnread = useSessionStore((s) => s.clearSessionUnread);
 
   const doSearch = useCallback(
@@ -67,9 +67,13 @@ export function SearchPanel({ variant = "panel" }: { variant?: "panel" | "mobile
     if (variant === "mobile") setOpen(false);
   };
 
-  const handleResultClick = (connectionId: string | null, sessionKey: string | null) => {
+  const handleResultClick = (
+    connectionId: string | null,
+    sessionKey: string | null,
+    messageId: string,
+  ) => {
     if (!connectionId || !sessionKey) return;
-    setActiveSession(connectionId, sessionKey);
+    jumpToMessage(connectionId, sessionKey, messageId);
     clearSessionUnread(connectionId, sessionKey);
     handleClear();
   };
@@ -147,7 +151,7 @@ export function SearchPanel({ variant = "panel" }: { variant?: "panel" | "mobile
                       <button
                         key={item.messageId}
                         type="button"
-                        onClick={() => handleResultClick(item.connectionId, item.sessionKey)}
+                        onClick={() => handleResultClick(item.connectionId, item.sessionKey, item.messageId)}
                         className="w-full px-3 py-1.5 text-left hover:bg-surface-tertiary transition-colors"
                       >
                         <div className="flex items-center gap-1.5">

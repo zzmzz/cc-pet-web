@@ -7,6 +7,7 @@ import type { ChatMessage, FileAttachment } from "@cc-pet/shared";
 import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
+import { useSessionStore } from "../lib/store/session.js";
 import { groupMessages } from "../lib/group-messages.js";
 import { splitUsageFooter } from "../lib/footer.js";
 import { ActivityBlock } from "./ActivityBlock.js";
@@ -357,6 +358,22 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   const stickToBottomRef = useRef(true);
   const [showBackToLatest, setShowBackToLatest] = useState(false);
 
+  // Jump-to-message support: a search result can request scrolling to a specific
+  // message. We keep the target in a ref so the auto-scroll effects can defer to
+  // it, and flash the message briefly once it is scrolled into view.
+  const pendingScrollMessageId = useSessionStore((s) => s.pendingScrollMessageId);
+  const clearPendingScroll = useSessionStore((s) => s.clearPendingScroll);
+  const pendingRef = useRef<string | null>(pendingScrollMessageId);
+  pendingRef.current = pendingScrollMessageId;
+  const bubbleRefs = useRef(new Map<string, HTMLDivElement>());
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
+  const registerBubble = useCallback((id: string, el: HTMLDivElement | null) => {
+    if (el) bubbleRefs.current.set(id, el);
+    else bubbleRefs.current.delete(id);
+  }, []);
+
   const isNearBottom = useCallback(() => {
     const container = containerRef.current;
     if (!container) return true;
@@ -389,18 +406,48 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   useEffect(() => {
     if (prevSessionRef.current !== sessionKey) {
       prevSessionRef.current = sessionKey;
+      // A pending jump owns the scroll position; don't snap to the bottom.
+      if (pendingRef.current) return;
       stickToBottomRef.current = true;
       setShowBackToLatest(false);
       requestAnimationFrame(() => scrollToLatest("auto"));
     }
   }, [sessionKey, scrollToLatest]);
 
+  // Scroll to and briefly highlight a message requested by a search result,
+  // once it is present in the current session's rendered messages.
+  useEffect(() => {
+    if (!pendingScrollMessageId) return;
+    if (!messages.some((m) => m.id === pendingScrollMessageId)) return;
+    const el = bubbleRefs.current.get(pendingScrollMessageId);
+    if (!el) return;
+
+    stickToBottomRef.current = false;
+    setShowBackToLatest(false);
+    requestAnimationFrame(() => el.scrollIntoView({ behavior: "smooth", block: "center" }));
+
+    setFlashId(pendingScrollMessageId);
+    if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashId(null);
+      flashTimerRef.current = null;
+    }, 2000);
+
+    clearPendingScroll();
+  }, [pendingScrollMessageId, messages, clearPendingScroll]);
+
+  useEffect(() => () => {
+    if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+  }, []);
+
   useEffect(() => {
     if (!initializedRef.current) {
       initializedRef.current = true;
-      scrollToLatest("auto");
+      if (!pendingRef.current) scrollToLatest("auto");
       return;
     }
+    // While a jump is pending, the jump effect controls scrolling.
+    if (pendingRef.current) return;
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === "user") {
       scrollToLatest("smooth");
@@ -441,7 +488,13 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
           item.kind === "tool-group" ? (
             <ActivityBlock key={item.steps[0].call.id} steps={item.steps} done={item.done} />
           ) : (
-            <MessageBubble key={item.message.id} message={item.message} />
+            <div
+              key={item.message.id}
+              ref={(el) => registerBubble(item.message.id, el)}
+              className={flashId === item.message.id ? "cc-flash" : undefined}
+            >
+              <MessageBubble message={item.message} />
+            </div>
           ),
         )}
         {previews?.map((pv) => (

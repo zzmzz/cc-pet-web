@@ -128,6 +128,12 @@ interface SessionState {
   /** Optional lazy-loader registered by hydrate; invoked when activating a session. */
   lazyLoadChat: ((chatKey: string) => Promise<void>) | null;
   /**
+   * Message a search result asked to jump to. MessageList consumes this once the
+   * target message is rendered (scrolls to it + briefly highlights) and clears
+   * it. Cleared automatically when the active session changes without consuming.
+   */
+  pendingScrollMessageId: string | null;
+  /**
    * Per-connection "session a keyless incoming event most likely belongs to":
    * the last session that exchanged a keyed message (sent from the dashboard or
    * received with an explicit key). Used to route keyless bridge replies back to
@@ -138,6 +144,9 @@ interface SessionState {
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
+  /** Activate a session and request MessageList to scroll to a specific message. */
+  jumpToMessage: (connectionId: string, key: string, messageId: string) => void;
+  clearPendingScroll: () => void;
   setLazyLoader: (loader: ((chatKey: string) => Promise<void>) | null) => void;
   /** Record the session a keyless reply should route back to (outgoing send or keyed incoming). */
   noteStickySession: (connectionId: string, sessionKey: string) => void;
@@ -175,6 +184,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   unread: {},
   taskStateByConnection: readPersistedTaskState(),
   lazyLoadChat: null,
+  pendingScrollMessageId: null,
   stickySessionByConnection: {},
 
   setSessions: (connectionId, sessions) =>
@@ -189,7 +199,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((s) => {
       const next = { ...s.activeSessionKey, [connectionId]: key };
       persistActiveSessionMap(next);
-      return { activeSessionKey: next };
+      // A plain session switch cancels any unconsumed jump request.
+      return { activeSessionKey: next, pendingScrollMessageId: null };
     });
     const loader = get().lazyLoadChat;
     if (loader) {
@@ -197,6 +208,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         console.error("lazy load chat failed:", connectionId, key, err);
       });
     }
+  },
+  jumpToMessage: (connectionId, key, messageId) => {
+    set((s) => {
+      const next = { ...s.activeSessionKey, [connectionId]: key };
+      persistActiveSessionMap(next);
+      return { activeSessionKey: next, pendingScrollMessageId: messageId };
+    });
+    const loader = get().lazyLoadChat;
+    if (loader) {
+      void loader(makeChatKey(connectionId, key)).catch((err) => {
+        console.error("lazy load chat failed:", connectionId, key, err);
+      });
+    }
+  },
+  clearPendingScroll: () => {
+    if (get().pendingScrollMessageId !== null) set({ pendingScrollMessageId: null });
   },
   setLazyLoader: (loader) => set({ lazyLoadChat: loader }),
   setSessionTaskState: (connectionId, sessionKey, taskState) =>
