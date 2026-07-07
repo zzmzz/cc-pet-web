@@ -11,6 +11,8 @@ import { findTokenIdentity } from "./auth/token-auth.js";
 import { parseSlashCommandsFromProbeCard, parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
 import { normalizeBridgeCard } from "./bridge/card-normalize.js";
 import {
+  bridgeFileData,
+  bridgeFileName,
   bridgeReplyCtx,
   bridgeReplyStreamDone,
   bridgeReplyTextContent,
@@ -332,27 +334,34 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_TYPING_STOP, { connectionId: connId, sessionKey });
       break;
     case "file": {
-      // Bridge `file` frames carry the payload as base64 in `msg.data`; persist it
-      // to the shared files store so the dashboard gets a downloadable URL. Falling
-      // back to a name-only chip keeps old behaviour if data is missing/undecodable.
-      let attachment: FileAttachment = { id: `file-${Date.now()}`, name: msg.name, size: 0 };
-      if (msg.data) {
+      // Bridge `file` frames carry the payload as base64; field names vary across
+      // cc-connect versions, so resolve name/data defensively. Persist to the shared
+      // files store so the dashboard gets a downloadable URL, falling back to a
+      // name-only chip if the payload is missing/undecodable.
+      const fileName = bridgeFileName(raw) ?? "file";
+      const fileData = bridgeFileData(raw);
+      app.log.info(
+        { connectionId: connId, keys: Object.keys(raw), fileName, hasData: !!fileData, dataLen: fileData?.length ?? 0 },
+        "Bridge file frame received",
+      );
+      let attachment: FileAttachment = { id: `file-${Date.now()}`, name: fileName, size: 0 };
+      if (fileData) {
         try {
-          attachment = saveBase64File(DATA_DIR, msg.name, msg.data);
+          attachment = saveBase64File(DATA_DIR, fileName, fileData);
         } catch (err) {
-          app.log.error({ err, connectionId: connId, name: msg.name }, "Failed to persist bridge file attachment");
+          app.log.error({ err, connectionId: connId, name: fileName }, "Failed to persist bridge file attachment");
         }
       }
       messageStore.save({
         id: `msg-${Date.now()}`,
         role: "assistant",
-        content: msg.name,
+        content: fileName,
         files: [attachment],
         timestamp: Date.now(),
         connectionId: connId,
         sessionKey,
       });
-      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name, file: attachment });
+      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: fileName, file: attachment });
       break;
     }
     case "card":
