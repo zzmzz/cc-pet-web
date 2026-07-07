@@ -341,7 +341,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       const fileName = bridgeFileName(raw) ?? "file";
       const fileData = bridgeFileData(raw);
       app.log.info(
-        { connectionId: connId, keys: Object.keys(raw), fileName, hasData: !!fileData, dataLen: fileData?.length ?? 0 },
+        { connectionId: connId, fileName, hasData: !!fileData },
         "Bridge file frame received",
       );
       let attachment: FileAttachment = { id: `file-${Date.now()}`, name: fileName, size: 0 };
