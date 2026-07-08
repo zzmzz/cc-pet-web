@@ -121,21 +121,17 @@ cc-pet-web bridge client ◀────────────────┘
 
 ## 9. cc-connect cron 配置（运维手册，非本仓库代码）
 
-在**承载绑定 bridge 的那台 cc-connect** 上配置 cron：
+在**承载绑定 bridge 的那台 cc-connect** 上配置 cron（`cc-connect cron add` 支持 `-s/--session-key` 指定任意 session）：
 
 ```bash
-cc-connect cron add \
-  --cron "0 6 * * *" \
-  --prompt "总结今天的 GitHub trending" \
-  --session-mode reuse \
-  --desc "每日 trending"
+cc-connect cron add -c "0 6 * * *" -s resident --session-mode reuse \
+  --prompt "总结今天的 GitHub trending" --desc "每日trending"
 ```
 
 要点（写入实现产物文档）：
-- `session_key` 必须对齐常驻 key（如 `resident`）；
-- `--session-mode reuse` 以保持记忆；
-- 参考 memory 记录的坑：某些 cc-connect 实例加 cron 后需 restart 才加载。
-- 前置：必须先完成 §11 的回流验证，确认该 cc-connect 实例会把 cron 回复广播给 bridge 客户端。
+- `-s <key>` 必须对齐常驻 key（如 `resident`），cron 回复即以该 key fan-out 到 bridge；
+- `--session-mode reuse`（默认）以保持记忆，与 pet-web 手动聊天共享同一 reuse session；
+- 参考 memory 记录的坑：cczm 加 cron 后需 `pm2 restart cczm` 才加载；cczm 上建议 `new-per-run` 可避免 "session is busy"，但那会丢记忆——常驻记忆场景应坚持 `reuse`，需自行错开触发时机。
 
 ## 10. 错误处理
 
@@ -146,17 +142,21 @@ cc-connect cron add \
 - 订阅 endpoint 重复：按 endpoint upsert。
 - `residentSession` 配置非法（bridgeId 不在 token 的 bridgeIds 内）：告警并忽略，不阻断启动。
 
-## 11. ⚠️ 关键验证点
+## 11. ✅ 关键验证点（已验证通过 2026-07-08）
 
-**必须在动手前验证**：cc-connect 的 cron 触发的回复，能否回流到 pet-web 订阅的那个 bridge `session_key`。
+原风险：cc-connect 的 cron 触发的回复，能否回流到 pet-web 订阅的那个 bridge `session_key`。
 
-若 cc-connect 只把 cron 回复发给它自己的原生平台（如创建 cron 的群聊）而**不广播给 bridge 客户端**，则本设计主线不成立，需要改用其他触发路径（例如 pet-web 侧新建调度器 + 复用 `ReplyCollector` 发送原语）。
+**验证结论：通过。** 承载 bridge `cc`(9810) 的实例是 `cczm`（config-zm.toml，项目 `ccode2`，同时挂 weixin/telegram/feishu 平台 + bridge）。
 
-验证方法：在承载 bridge `cc` 的 cc-connect 上配一个测试 cron，target `session_key = resident`，观察 pet-web 的 bridge client 是否收到回复消息。
+- **fan-out 成立**：通过 weixin（非 bridge 平台）触发的 session 输出，pet-web 的 `cc` bridge client 全量收到（`reply`/`preview_start` 等）。cc-connect 对项目内 session 输出 fan-out 给所有 bridge 订阅者，与触发源无关 → cron 作为另一种非 bridge 触发同样必达。
+- **带 session_key**：回流消息带 session_key；当前 weixin 对话在 pet-web 存为 `cc` + `session-<ts>`，路由/存档正常。
+- **可对齐 key**：`cc-connect cron add -s <key>` 可指定任意 session_key，配合 `--session-mode reuse` 使 cron 与 pet-web 手动聊天共享同一 reuse session（记忆共享）。
+
+结论：方案 B 主线成立，无需备选调度路径。
 
 ## 12. 分期计划
 
-- **P0**：验证 cron → bridge 回流（§11）。这是 go/no-go 关卡。
+- **P0**：验证 cron → bridge 回流（§11）。**✅ 已完成（go）**。
 - **P1**：常驻 session —— config schema、`ResidentRegistry`、置顶 UI、豁免清理、未读徒标 + 宠物动效。
 - **P2**：Web Push 全链路 —— `push_subscriptions` 存储、`WebPushService`、`api/push`、自定义 SW、订阅 UI、`ProactiveDetector` 接线。
 - **后续**：方案 C 的 cron 管理 UI（在 pet 内查看/增删 cc-connect 定时任务）+ 记忆 bootstrap 系统提示 + 定期摘要。
