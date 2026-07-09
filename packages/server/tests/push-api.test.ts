@@ -40,4 +40,34 @@ describe("push API", () => {
     const res = await app.inject({ method: "POST", url: "/api/push/subscribe", payload: { endpoint: "e" } });
     expect(res.statusCode).toBe(400);
   });
+
+  it("requires auth for subscribe and unsubscribe", async () => {
+    const unauthApp = Fastify();
+    const webPush = new WebPushService(store, { vapidPublicKey: "PUB", vapidPrivateKey: "p", subject: "mailto:a@b.c" }, { sender: { sendNotification: async () => ({}) } });
+    registerPushRoutes(unauthApp, { store, webPush, getAuthIdentity: () => null });
+    await unauthApp.ready();
+    try {
+      const r1 = await unauthApp.inject({
+        method: "POST",
+        url: "/api/push/subscribe",
+        payload: { endpoint: "e", keys: { p256dh: "k", auth: "a" } },
+      });
+      expect(r1.statusCode).toBe(401);
+      const r2 = await unauthApp.inject({ method: "POST", url: "/api/push/unsubscribe", payload: { endpoint: "e" } });
+      expect(r2.statusCode).toBe(401);
+    } finally {
+      await unauthApp.close();
+    }
+  });
+
+  it("scopes unsubscribe deletes to the owning token", () => {
+    store.upsert({ tokenName: "Z", endpoint: "e1", p256dh: "k", auth: "a" });
+    store.upsert({ tokenName: "Y", endpoint: "e2", p256dh: "k", auth: "a" });
+
+    store.deleteByEndpoint("e1", "Y");
+    expect(store.listByToken("Z").map((s) => s.endpoint)).toEqual(["e1"]);
+
+    store.deleteByEndpoint("e1", "Z");
+    expect(store.listByToken("Z")).toHaveLength(0);
+  });
 });

@@ -42,7 +42,11 @@ export class PushSubscriptionStore {
     return rows.map((r) => ({ tokenName: r.token_name, endpoint: r.endpoint, p256dh: r.p256dh, auth: r.auth }));
   }
 
-  deleteByEndpoint(endpoint: string): void {
+  deleteByEndpoint(endpoint: string, tokenName?: string): void {
+    if (tokenName !== undefined) {
+      this.db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ? AND token_name = ?`).run(endpoint, tokenName);
+      return;
+    }
     this.db.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`).run(endpoint);
   }
 }

@@ -35,7 +35,7 @@ export function registerPushRoutes(app: FastifyInstance, deps: PushRoutesDeps): 
     if (!auth) return reply.code(401).send({ error: "Unauthorized" });
     const endpoint = req.body?.endpoint;
     if (!endpoint) return reply.code(400).send({ error: "endpoint is required" });
-    store.deleteByEndpoint(endpoint);
+    store.deleteByEndpoint(endpoint, auth.tokenName);
     return { ok: true };
   });
 }
