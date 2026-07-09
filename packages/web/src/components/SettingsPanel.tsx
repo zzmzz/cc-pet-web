@@ -11,7 +11,13 @@ import {
   requestNotificationPermission,
   updateNotificationSettings,
 } from "../lib/notification.js";
-import { isPushSupported, subscribePush, unsubscribePush } from "../lib/push.js";
+import {
+  getVapidPublicKey,
+  isPushSubscribed,
+  isPushSupported,
+  subscribePush,
+  unsubscribePush,
+} from "../lib/push.js";
 import { AIVolumeDisplay } from "./AIVolumeDisplay.js";
 
 export function SettingsPanel() {
@@ -28,12 +34,15 @@ export function SettingsPanel() {
   const [activeTab, setActiveTab] = useState("general");
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  const [pushAvailable, setPushAvailable] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setTokenDraft(localStorage.getItem(CC_PET_TOKEN_KEY)?.trim() ?? "");
     setTokenError(null);
     setNotifyEnabled(getNotificationSettings().enabled);
+    void getVapidPublicKey().then((k) => setPushAvailable(!!k));
+    if (isPushSupported()) void isPushSubscribed().then(setPushOn);
   }, [open]);
 
   const close = useCallback(() => {
@@ -226,7 +235,7 @@ export function SettingsPanel() {
                 </section>
               ) : null}
 
-              {isPushSupported() ? (
+              {isPushSupported() && pushAvailable ? (
                 <section className="mb-5 border-b border-border pb-5">
                   <h3 className="mb-2 text-sm font-medium text-text-primary">后台推送</h3>
                   <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">

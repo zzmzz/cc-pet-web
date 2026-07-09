@@ -44,6 +44,24 @@ export async function subscribePush(): Promise<boolean> {
   return true;
 }
 
+/** Returns the server VAPID public key, or null if push is not configured server-side. */
+export async function getVapidPublicKey(): Promise<string | null> {
+  try {
+    const res = await getPlatform().fetchApi<{ publicKey: string | null }>("/api/push/vapid-public-key");
+    return res.publicKey ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** True if this browser currently has an active push subscription. */
+export async function isPushSubscribed(): Promise<boolean> {
+  if (!isPushSupported()) return false;
+  const reg = await getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  return !!sub;
+}
+
 export async function unsubscribePush(): Promise<void> {
   if (!isPushSupported()) return;
   const reg = await getRegistration();
