@@ -40,4 +40,15 @@ describe("WebPushService", () => {
     await svc.sendToToken("Z", { title: "t", body: "b" });
     expect(sender.sendNotification).not.toHaveBeenCalled();
   });
+
+  it("disables gracefully instead of throwing on invalid VAPID config", () => {
+    const badConfig = { vapidPublicKey: "not-valid", vapidPrivateKey: "nope", subject: "zmzhu@fintopia.tech" };
+    const warn = vi.fn();
+    let svc: WebPushService | undefined;
+    expect(() => {
+      svc = new WebPushService(store, badConfig, { logger: { warn } });
+    }).not.toThrow();
+    expect(svc!.enabled).toBe(false);
+    expect(svc!.publicKey()).toBeNull();
+  });
 });

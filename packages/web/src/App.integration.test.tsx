@@ -964,6 +964,55 @@ describe("App integration", () => {
     });
   });
 
+  it("does not clear/persist resident unread when the matching session is active on a non-focused connection", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+    // cc-connect has the globally-newest session so it becomes the focused connection;
+    // cs-connect's only (and thus "active") session is the resident one. The user is
+    // NOT actually looking at cs-connect, so a RESIDENT_UNREAD broadcast for it must
+    // not be treated as "currently viewing" even though its activeSessionKey matches.
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return { sessions: [{ key: "default", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 }] };
+      }
+      if (path.includes("connectionId=cs-connect")) {
+        return {
+          sessions: [
+            { key: "resident-key", connectionId: "cs-connect", createdAt: 1, lastActiveAt: 100, isResident: true },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await waitFor(() => {
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
+      expect(useSessionStore.getState().activeSessionKey["cs-connect"]).toBe("resident-key");
+    });
+
+    adapter.fetchApi.mockClear();
+    adapter.emit(WS_EVENTS.RESIDENT_UNREAD, {
+      connectionId: "cs-connect",
+      sessionKey: "resident-key",
+      unreadCount: 3,
+    });
+
+    const residentChatKey = makeChatKey("cs-connect", "resident-key");
+    await waitFor(() => {
+      expect(useSessionStore.getState().unread[residentChatKey]).toBe(3);
+    });
+    expect(
+      adapter.fetchApi.mock.calls.some((call) => typeof call[0] === "string" && call[0].includes("/read")),
+    ).toBe(false);
+  });
+
   it("routes incoming text by replyCtx when payload sessionKey is missing", async () => {
     useSessionStore.setState({
       sessions: {

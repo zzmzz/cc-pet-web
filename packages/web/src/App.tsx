@@ -439,7 +439,11 @@ export default function App() {
             const ck = makeChatKey(cid, sKey);
             const active = useSessionStore.getState().activeSessionKey[cid] ?? "default";
             // If the user is currently viewing it, keep it read (and tell the server).
-            if (active === sKey && (typeof document === "undefined" || !document.hidden)) {
+            if (
+              active === sKey &&
+              useConnectionStore.getState().activeConnectionId === cid &&
+              (typeof document === "undefined" || !document.hidden)
+            ) {
               void getPlatform()
                 .fetchApi(`/api/sessions/${encodeURIComponent(cid)}/${encodeURIComponent(sKey)}/read`, { method: "POST" })
                 .catch(() => {});

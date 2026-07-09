@@ -26,10 +26,16 @@ export class WebPushService {
     config: WebPushConfig | undefined,
     opts?: { sender?: WebPushSender; logger?: ServiceLogger },
   ) {
-    this.config = config;
     this.log = opts?.logger;
     if (config && !opts?.sender) {
-      webpush.setVapidDetails(config.subject, config.vapidPublicKey, config.vapidPrivateKey);
+      try {
+        webpush.setVapidDetails(config.subject, config.vapidPublicKey, config.vapidPrivateKey);
+        this.config = config;
+      } catch (err) {
+        this.log?.warn({ err }, "invalid VAPID config; disabling web push");
+      }
+    } else {
+      this.config = config;
     }
     this.sender = opts?.sender ?? {
       sendNotification: (sub, payload) =>
