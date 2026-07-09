@@ -40,6 +40,9 @@ import { registerWorkspaceRoutes } from "./api/workspace.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 import { ReplyCollector } from "./siri/reply-collector.js";
+import { ResidentRegistry } from "./resident/registry.js";
+import { onResidentAssistantMessage } from "./resident/incoming.js";
+import { ProactiveDetector } from "./resident/proactive-detector.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -113,6 +116,9 @@ const app = Fastify({
     : { level: process.env.LOG_LEVEL ?? "info" },
 });
 bridgeManager.setLogger(app.log);
+const residentRegistry = new ResidentRegistry(initialConfig, app.log);
+residentRegistry.bootstrap(sessionStore);
+const proactiveDetector = new ProactiveDetector();
 await app.register(cors, { origin: true });
 await app.register(multipart);
 
@@ -160,6 +166,11 @@ registerSiriRoutes(app, {
   replyCollector,
   getAuthIdentity: getRequestAuthIdentity,
   getDefaultConnectionId: (bridgeIds) => [...bridgeIds][0],
+  onUserSend: (connectionId, sessionKey) => {
+    if (residentRegistry.isResident(connectionId, sessionKey)) {
+      proactiveDetector.markUserSend(connectionId, sessionKey);
+    }
+  },
 });
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
@@ -244,6 +255,18 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
 
+  const bumpResidentUnread = (): void => {
+    if (!sessionKey) return;
+    const r = onResidentAssistantMessage({ registry: residentRegistry, sessionStore }, connId, sessionKey);
+    if (!r) return;
+    hub.broadcast(WS_EVENTS.RESIDENT_UNREAD, {
+      connectionId: connId,
+      sessionKey,
+      unreadCount: r.unreadCount,
+    });
+    // Push (proactive-only) is wired in Task 14.
+  };
+
   switch (msg.type) {
     case "register_ack":
       app.log.info({ connectionId: connId, ok: msg.ok, error: msg.error }, "Bridge register acknowledged");
@@ -272,6 +295,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         id: `msg-${Date.now()}`, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
+      bumpResidentUnread();
       hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, {
         connectionId: connId,
         sessionKey,
@@ -314,6 +338,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
             id: `msg-${Date.now()}`, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
+          bumpResidentUnread();
         }
         hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText });
         replyCollector.onDone(connId, sessionKey ?? "default", fullText);
@@ -361,6 +386,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         connectionId: connId,
         sessionKey,
       });
+      bumpResidentUnread();
       hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: fileName, file: attachment });
       break;
     }
@@ -390,6 +416,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
+      bumpResidentUnread();
       hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
         connectionId: connId, sessionKey, card: normalizedCard,
       });
@@ -457,6 +484,9 @@ hub.onMessage = (msg: any, client) => {
         reply_ctx: sessionKey,
         content,
       });
+      if (residentRegistry.isResident(connectionId, sessionKey)) {
+        proactiveDetector.markUserSend(connectionId, sessionKey);
+      }
       break;
     case WS_EVENTS.SEND_BUTTON:
       app.log.info({ connectionId, sessionKey, buttonId }, "Dashboard sent button response");

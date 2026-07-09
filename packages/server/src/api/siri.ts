@@ -13,6 +13,7 @@ interface SiriDeps {
   replyCollector: ReplyCollector;
   getAuthIdentity: (req: FastifyRequest) => AuthIdentity | null;
   getDefaultConnectionId: (bridgeIds: Set<string>) => string | undefined;
+  onUserSend?: (connectionId: string, sessionKey: string) => void;
 }
 
 export function registerSiriRoutes(app: FastifyInstance, deps: SiriDeps): void {
@@ -64,6 +65,7 @@ export function registerSiriRoutes(app: FastifyInstance, deps: SiriDeps): void {
         reply_ctx: sessionKey,
         content: wrapWithVoicePrompt(content),
       });
+      deps.onUserSend?.(connectionId, sessionKey);
 
       return { msgId, connectionId, sessionKey };
     },
