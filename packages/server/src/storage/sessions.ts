@@ -48,6 +48,8 @@ export class SessionStore {
       label: deriveSessionLabel(r.label, r.first_user_content),
       createdAt: r.created_at,
       lastActiveAt: r.last_active_at,
+      isResident: (r.is_resident ?? 0) === 1,
+      unreadCount: r.unread_count ?? 0,
     }));
   }
 
@@ -61,5 +63,36 @@ export class SessionStore {
 
   touchActive(connectionId: string, key: string): void {
     this.db.prepare(`UPDATE sessions SET last_active_at = ? WHERE connection_id = ? AND key = ?`).run(Date.now(), connectionId, key);
+  }
+
+  markResident(connectionId: string, key: string, label?: string): void {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO sessions (connection_id, key, label, created_at, last_active_at, is_resident, unread_count)
+       VALUES (?, ?, ?, ?, ?, 1, 0)
+       ON CONFLICT(connection_id, key) DO UPDATE SET
+         is_resident = 1,
+         label = COALESCE(excluded.label, sessions.label)`
+    ).run(connectionId, key, label ?? null, now, now);
+  }
+
+  incrementUnread(connectionId: string, key: string): number {
+    this.db.prepare(
+      `UPDATE sessions SET unread_count = unread_count + 1 WHERE connection_id = ? AND key = ?`
+    ).run(connectionId, key);
+    return this.getUnread(connectionId, key);
+  }
+
+  clearUnread(connectionId: string, key: string): void {
+    this.db.prepare(
+      `UPDATE sessions SET unread_count = 0 WHERE connection_id = ? AND key = ?`
+    ).run(connectionId, key);
+  }
+
+  getUnread(connectionId: string, key: string): number {
+    const row = this.db.prepare(
+      `SELECT unread_count FROM sessions WHERE connection_id = ? AND key = ?`
+    ).get(connectionId, key) as { unread_count?: number } | undefined;
+    return row?.unread_count ?? 0;
   }
 }
