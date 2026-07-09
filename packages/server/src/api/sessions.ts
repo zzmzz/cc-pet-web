@@ -25,4 +25,13 @@ export function registerSessionRoutes(app: FastifyInstance, store: SessionStore,
     messageStore.deleteByChatKey(makeChatKey(connectionId, key));
     return { ok: true };
   });
+
+  app.post<{ Params: { connectionId: string; key: string } }>(
+    "/api/sessions/:connectionId/:key/read",
+    async (req) => {
+      const { connectionId, key } = req.params;
+      store.clearUnread(connectionId, key);
+      return { ok: true };
+    },
+  );
 }
