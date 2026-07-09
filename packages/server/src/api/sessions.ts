@@ -19,8 +19,12 @@ export function registerSessionRoutes(app: FastifyInstance, store: SessionStore,
     return { ok: true };
   });
 
-  app.delete<{ Params: { connectionId: string; key: string } }>("/api/sessions/:connectionId/:key", async (req) => {
+  app.delete<{ Params: { connectionId: string; key: string } }>("/api/sessions/:connectionId/:key", async (req, reply) => {
     const { connectionId, key } = req.params;
+    // 常驻会话不允许删除（前端也不显示删除入口，这里兜底防绕过）
+    if (store.isResident(connectionId, key)) {
+      return reply.code(403).send({ error: "resident session cannot be deleted" });
+    }
     store.delete(connectionId, key);
     messageStore.deleteByChatKey(makeChatKey(connectionId, key));
     return { ok: true };

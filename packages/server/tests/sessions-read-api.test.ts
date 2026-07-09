@@ -27,4 +27,19 @@ describe("POST /api/sessions/:connectionId/:key/read", () => {
     expect(res.statusCode).toBe(200);
     expect(store.getUnread("cc", "resident")).toBe(0);
   });
+
+  it("refuses to delete a resident session (403) and keeps it", async () => {
+    store.markResident("cc", "resident");
+    const res = await app.inject({ method: "DELETE", url: "/api/sessions/cc/resident" });
+    expect(res.statusCode).toBe(403);
+    expect(store.listByConnection("cc").some((s) => s.key === "resident")).toBe(true);
+  });
+
+  it("still deletes a normal session", async () => {
+    const now = Date.now();
+    store.create({ key: "s1", connectionId: "cc", createdAt: now, lastActiveAt: now });
+    const res = await app.inject({ method: "DELETE", url: "/api/sessions/cc/s1" });
+    expect(res.statusCode).toBe(200);
+    expect(store.listByConnection("cc").some((s) => s.key === "s1")).toBe(false);
+  });
 });

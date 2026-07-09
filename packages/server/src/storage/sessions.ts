@@ -95,4 +95,11 @@ export class SessionStore {
     ).get(connectionId, key) as { unread_count?: number } | undefined;
     return row?.unread_count ?? 0;
   }
+
+  isResident(connectionId: string, key: string): boolean {
+    const row = this.db.prepare(
+      `SELECT is_resident FROM sessions WHERE connection_id = ? AND key = ?`
+    ).get(connectionId, key) as { is_resident?: number } | undefined;
+    return (row?.is_resident ?? 0) === 1;
+  }
 }
