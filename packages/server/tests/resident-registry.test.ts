@@ -11,8 +11,16 @@ describe("residentSessionKey", () => {
     expect(residentSessionKey("cc", "resident")).toBe("cc:resident:resident");
   });
 
-  it("已含冒号的完整 key 原样使用", () => {
+  it("已含冒号的完整合规 key（三段且首段==bridgeId）原样使用", () => {
     expect(residentSessionKey("cc", "cc:scope:user")).toBe("cc:scope:user");
+  });
+
+  it("含冒号但首段不是 bridgeId：消毒冒号并强制首段为 bridgeId", () => {
+    expect(residentSessionKey("cc", "other:scope:user")).toBe("cc:other_scope_user:other_scope_user");
+  });
+
+  it("含冒号但段数不对：消毒后组装", () => {
+    expect(residentSessionKey("cc", "cc:resident")).toBe("cc:cc_resident:cc_resident");
   });
 });
 

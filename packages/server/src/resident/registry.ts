@@ -19,9 +19,18 @@ interface ResidentMarker {
 
 /** 组装 cc-connect 合规的 bridge session_key：{platform}:{scope}:{user}。
  *  platform 段必须等于 bridge 的 connectionId（=adapter 名），cron 才能路由回本 bridge。
- *  若配置里已写成含 ":" 的完整 key，则原样使用。 */
+ *  - 无 ":"：按 {bridgeId}:{key}:{key} 组装（推荐写法，配置里 key 只写 scope 段如 "resident"）。
+ *  - 含 ":" 且恰好三段、首段==bridgeId：视为已合规，原样使用。
+ *  - 含 ":" 但不合规（段数不对或首段不是 bridgeId）：把 ":" 消毒为 "_" 再组装，
+ *    强制首段为 bridgeId，避免手写错误导致 cron 静默路由失败。 */
 export function residentSessionKey(bridgeId: string, key: string): string {
-  return key.includes(":") ? key : `${bridgeId}:${key}:${key}`;
+  if (key.includes(":")) {
+    const parts = key.split(":");
+    if (parts.length === 3 && parts[0] === bridgeId) return key;
+    const safe = key.replace(/:/g, "_");
+    return `${bridgeId}:${safe}:${safe}`;
+  }
+  return `${bridgeId}:${key}:${key}`;
 }
 
 export class ResidentRegistry {

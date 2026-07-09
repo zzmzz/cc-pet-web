@@ -121,17 +121,24 @@ cc-pet-web bridge client ◀────────────────┘
 
 ## 9. cc-connect cron 配置（运维手册，非本仓库代码）
 
-在**承载绑定 bridge 的那台 cc-connect** 上配置 cron（`cc-connect cron add` 支持 `-s/--session-key` 指定任意 session）：
+> **重要（方案 D，2026-07-09 查实并修正）**：cc-connect 的 cron/timer 触发后，按 session_key 的**第一段**（`:` 前）去匹配已连接的 bridge adapter 名（`BridgeServer.platformFromSessionKey`），并要求 bridge 客户端在 register 时声明 **`reconstruct_reply` capability**（文档："Enables cron/heartbeat messages"）。因此：
+> - 常驻会话的 session_key **必须是合规格式 `{connectionId}:{scope}:{user}`**（本项目里 pet-web 已自动组装成 `{bridgeId}:resident:resident`，如 `cc:resident:resident`）。裸 `resident`（无 `:` 前缀）会导致 cron 触发时 `platform "" not found`，内容发不出去。
+> - pet-web 的 bridge 客户端已声明 `reconstruct_reply` capability（见 `bridge/client.ts`）。
+> - **首次前提**：该常驻 session 必须先被"激活"（pet-web 通过 bridge 发过至少一条，含用户在常驻会话聊天）cc-connect 才认识它；全新未用过的常驻会话在首次 cron 触发前需先激活。
+
+在**承载绑定 bridge 的那台 cc-connect** 上配置 cron（session_key 用合规常驻 key）：
 
 ```bash
-cc-connect cron add -c "0 6 * * *" -s resident --session-mode reuse \
+cc-connect cron add -c "0 6 * * *" -s "cc:resident:resident" --session-mode reuse \
   --prompt "总结今天的 GitHub trending" --desc "每日trending"
+# 一次性提醒同理：cc-connect timer add --at "2026-07-09T14:00" -s "cc:resident:resident" --prompt "提醒：xxx"
 ```
 
-要点（写入实现产物文档）：
-- `-s <key>` 必须对齐常驻 key（如 `resident`），cron 回复即以该 key fan-out 到 bridge；
-- `--session-mode reuse`（默认）以保持记忆，与 pet-web 手动聊天共享同一 reuse session；
-- 参考 memory 记录的坑：cczm 加 cron 后需 `pm2 restart cczm` 才加载；cczm 上建议 `new-per-run` 可避免 "session is busy"，但那会丢记忆——常驻记忆场景应坚持 `reuse`，需自行错开触发时机。
+要点：
+- `-s` 必须是合规常驻 key（`{bridgeId}:resident:resident`），cron 才能路由回本 bridge 的常驻会话；
+- `--session-mode reuse`（默认）保持记忆，与 pet-web 手动聊天共享同一 reuse session；
+- 常驻助手在常驻会话里运行时，`CC_SESSION_KEY` 即该合规 key，`cc-connect timer/cron add` 不带 `-s` 也会默认对齐——所以助手用 cc-connect 提示词里教的原生命令**就是对的**，无需自建调度器/防提示词冲突；
+- 坑：cczm 加 cron/timer 后需 `pm2 restart cczm` 才加载（timer 同理）；`new-per-run` 可避免 "session is busy" 但丢记忆，常驻记忆场景坚持 `reuse` 并错开触发时机。
 
 ## 10. 错误处理
 
