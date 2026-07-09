@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach, vi, expect } from 'vitest';
 import Database from 'better-sqlite3';
+import { initSchema } from '../src/storage/db.js';
 import { SessionStore } from '../src/storage/sessions.js';
 import { SessionsCleanup } from '../src/cleanup/sessions-cleanup.js';
 
@@ -11,27 +12,8 @@ describe('SessionsCleanup', () => {
   beforeEach(() => {
     db = new Database(':memory:');
 
-    // 初始化数据库模式
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        connection_id TEXT NOT NULL,
-        key TEXT NOT NULL,
-        label TEXT,
-        created_at INTEGER NOT NULL,
-        last_active_at INTEGER NOT NULL,
-        PRIMARY KEY (connection_id, key)
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        chat_key TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        connection_id TEXT,
-        session_key TEXT,
-        extra TEXT
-      );
-    `);
+    // 用真实 schema（含 is_resident/unread_count 迁移列），避免手写表结构与生产漂移
+    initSchema(db);
 
     sessionStore = new SessionStore(db);
     sessionsCleanup = new SessionsCleanup(sessionStore, db);
