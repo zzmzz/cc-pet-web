@@ -246,6 +246,72 @@ describe("SessionDropdown", () => {
     expect(useConnectionStore.getState().activeConnectionId).toBe("c1");
   });
 
+  it("shows resident session as a standalone top entry, separate from 最近会话, without a delete button", async () => {
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "res", connectionId: "c1", label: "常驻助手", createdAt: 1, lastActiveAt: 100, isResident: true },
+          { key: "a", connectionId: "c1", label: "Alpha", createdAt: 2, lastActiveAt: 200 },
+          { key: "b", connectionId: "c1", label: "Beta", createdAt: 3, lastActiveAt: 300 },
+        ],
+      },
+      activeSessionKey: { c1: "a" },
+      unread: { [makeChatKey("c1", "res")]: 3 },
+    });
+
+    render(<SessionDropdown variant="panel" testShowDeleteButtons />);
+
+    // (a) 常驻 label（含 📌）出现在顶部区块
+    expect(screen.getByText("常驻")).toBeInTheDocument();
+    expect(screen.getByText("📌 常驻助手")).toBeInTheDocument();
+
+    // (b) 常驻不出现在「最近会话」列表：最近会话下只有 Beta，不含常驻的 label
+    const recentHeading = screen.getByText("最近会话");
+    const recentSection = recentHeading.parentElement;
+    expect(recentSection).toHaveTextContent("Beta");
+    expect(recentSection).not.toHaveTextContent("常驻助手");
+
+    // (c) 常驻卡片区不含删除按钮——即便 testShowDeleteButtons 强开了删除按钮，
+    // 而其余会话（最近会话中的 Beta）应能看到删除按钮，证明强开确实生效。
+    const residentHeading = screen.getByText("常驻");
+    const residentSection = residentHeading.parentElement;
+    expect(residentSection?.querySelector('[title="删除会话"]')).toBeNull();
+    expect(residentSection?.querySelector('[title="再次点击确认删除"]')).toBeNull();
+    expect(screen.getAllByTitle("删除会话").length).toBeGreaterThan(0);
+  });
+
+  it("clicking the resident entry switches connection/session, clears unread, and calls the read API", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [
+        { id: "c1", name: "First", connected: true },
+        { id: "c2", name: "Second", connected: true },
+      ],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [{ key: "a", connectionId: "c1", createdAt: 1, lastActiveAt: 1 }],
+        c2: [{ key: "res", connectionId: "c2", label: "常驻助手", createdAt: 1, lastActiveAt: 1, isResident: true }],
+      },
+      activeSessionKey: { c1: "a", c2: "res" },
+      unread: { [makeChatKey("c2", "res")]: 3 },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+
+    await user.click(screen.getByText("📌 常驻助手"));
+
+    expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
+    expect(useSessionStore.getState().activeSessionKey.c2).toBe("res");
+    expect(useSessionStore.getState().unread[makeChatKey("c2", "res")]).toBeFalsy();
+    expect(fetchApi).toHaveBeenCalledWith("/api/sessions/c2/res/read", { method: "POST" });
+  });
+
   it("uses shared theme classes for opened dropdown menu surface", async () => {
     const user = userEvent.setup();
     useConnectionStore.setState({
