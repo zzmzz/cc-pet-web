@@ -18,6 +18,7 @@ export class SessionsCleanup {
       SELECT connection_id, key
       FROM sessions
       WHERE last_active_at < ?
+        AND (is_resident IS NULL OR is_resident = 0)
     `).all(thresholdTime) as { connection_id: string; key: string }[];
 
     let deletedCount = 0;
