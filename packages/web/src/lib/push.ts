@@ -32,7 +32,9 @@ export async function subscribePush(): Promise<boolean> {
   if (!reg) return false;
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(keyRes.publicKey),
+    // TS 6.0 types Uint8Array as generic over its buffer; cast to the DOM BufferSource
+    // the PushManager expects (the runtime value is a valid application server key).
+    applicationServerKey: urlBase64ToUint8Array(keyRes.publicKey) as BufferSource,
   });
   const json = sub.toJSON();
   await getPlatform().fetchApi("/api/push/subscribe", {
