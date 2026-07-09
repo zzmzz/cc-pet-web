@@ -43,6 +43,9 @@ import { ReplyCollector } from "./siri/reply-collector.js";
 import { ResidentRegistry } from "./resident/registry.js";
 import { onResidentAssistantMessage } from "./resident/incoming.js";
 import { ProactiveDetector } from "./resident/proactive-detector.js";
+import { PushSubscriptionStore } from "./storage/push-subscriptions.js";
+import { WebPushService } from "./push/web-push-service.js";
+import { registerPushRoutes } from "./api/push.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -119,6 +122,11 @@ bridgeManager.setLogger(app.log);
 const residentRegistry = new ResidentRegistry(initialConfig, app.log);
 residentRegistry.bootstrap(sessionStore);
 const proactiveDetector = new ProactiveDetector();
+const pushSubscriptionStore = new PushSubscriptionStore(db);
+const webPush = new WebPushService(pushSubscriptionStore, initialConfig.webPush, { logger: app.log });
+if (!webPush.enabled) {
+  app.log.warn("Web push disabled: no valid webPush config; RESIDENT push notifications will not be sent");
+}
 await app.register(cors, { origin: true });
 await app.register(multipart);
 
@@ -142,6 +150,11 @@ app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) =>
 app.addHook("onRequest", authGuard(initialConfig.tokens));
 registerConfigRoutes(app, configStore);
 registerSessionRoutes(app, sessionStore, messageStore);
+registerPushRoutes(app, {
+  store: pushSubscriptionStore,
+  webPush,
+  getAuthIdentity: getRequestAuthIdentity,
+});
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
@@ -255,7 +268,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
 
-  const bumpResidentUnread = (): void => {
+  const bumpResidentUnread = (contentPreview: string): void => {
     if (!sessionKey) return;
     const r = onResidentAssistantMessage({ registry: residentRegistry, sessionStore }, connId, sessionKey);
     if (!r) return;
@@ -264,7 +277,14 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       sessionKey,
       unreadCount: r.unreadCount,
     });
-    // Push (proactive-only) is wired in Task 14.
+    if (r.ownerToken && proactiveDetector.isProactive(connId, sessionKey)) {
+      const label = residentRegistry.pairs().find((p) => p.connectionId === connId && p.key === sessionKey)?.label;
+      void webPush.sendToToken(r.ownerToken, {
+        title: label ? `常驻助手 · ${label}` : "常驻助手",
+        body: contentPreview.slice(0, 120) || "有新的主动消息",
+        data: { connectionId: connId, sessionKey },
+      });
+    }
   };
 
   switch (msg.type) {
@@ -295,7 +315,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         id: `msg-${Date.now()}`, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
-      bumpResidentUnread();
+      bumpResidentUnread(replyContent);
       hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, {
         connectionId: connId,
         sessionKey,
@@ -338,7 +358,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
             id: `msg-${Date.now()}`, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
-          bumpResidentUnread();
+          bumpResidentUnread(fullText ?? "");
         }
         hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText });
         replyCollector.onDone(connId, sessionKey ?? "default", fullText);
@@ -386,7 +406,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         connectionId: connId,
         sessionKey,
       });
-      bumpResidentUnread();
+      bumpResidentUnread(fileName);
       hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: fileName, file: attachment });
       break;
     }
@@ -416,7 +436,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
-      bumpResidentUnread();
+      bumpResidentUnread(msg.card?.header?.title ?? "");
       hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
         connectionId: connId, sessionKey, card: normalizedCard,
       });
