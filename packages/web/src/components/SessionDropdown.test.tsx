@@ -312,6 +312,33 @@ describe("SessionDropdown", () => {
     expect(fetchApi).toHaveBeenCalledWith("/api/sessions/c2/res/read", { method: "POST" });
   });
 
+  it("当激活的就是常驻会话时，不渲染「当前会话」行也不显示裸 key", async () => {
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "First", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "res", connectionId: "c1", label: "常驻助手", createdAt: 1, lastActiveAt: 100, isResident: true },
+          { key: "beta", connectionId: "c1", label: "Beta", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { c1: "res" },
+      unread: {},
+      taskStateByConnection: {},
+    });
+
+    render(<SessionDropdown variant="panel" />);
+
+    // 常驻仍以顶部独立入口呈现
+    expect(screen.getByText("📌 常驻助手")).toBeInTheDocument();
+    // 激活项是常驻 → listSessions 无对应项 → 不渲染「当前会话」行
+    expect(screen.queryByText("当前会话")).toBeNull();
+    // 不出现裸露的 session key 文案
+    expect(screen.queryByText("res")).toBeNull();
+  });
+
   it("uses shared theme classes for opened dropdown menu surface", async () => {
     const user = userEvent.setup();
     useConnectionStore.setState({
