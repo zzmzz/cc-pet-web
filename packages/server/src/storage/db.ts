@@ -63,7 +63,17 @@ export function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_ai_quota_timestamp ON ai_quota_history(timestamp);
   `);
 
+  ensureColumn(db, "sessions", "is_resident", "is_resident INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "sessions", "unread_count", "unread_count INTEGER NOT NULL DEFAULT 0");
+
   initFts(db);
+}
+
+/** Add a column if the table lacks it. ALTER TABLE ADD COLUMN is idempotent-safe only via this guard. */
+function ensureColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 
 function initFts(db: Database.Database): void {
