@@ -161,6 +161,9 @@ interface SessionState {
   setSessionTaskPhase: (connectionId: string, sessionKey: string, phase: TaskPhase) => void;
   touchSessionLastActive: (connectionId: string, sessionKey: string) => void;
   incrementUnread: (chatKey: string) => void;
+  /** chatKeys whose unread is server-driven (resident sessions); client increments are ignored. */
+  residentChatKeys: Set<string>;
+  setUnread: (chatKey: string, count: number) => void;
   clearUnread: (chatKey: string) => void;
   clearSessionUnread: (connectionId: string, sessionKey: string) => void;
   /** True if any chatKey has unread count > 0. */
@@ -186,9 +189,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   lazyLoadChat: null,
   pendingScrollMessageId: null,
   stickySessionByConnection: {},
+  residentChatKeys: new Set(),
 
   setSessions: (connectionId, sessions) =>
-    set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
+    set((s) => {
+      const nextSessions = { ...s.sessions, [connectionId]: sessions };
+      const residentChatKeys = new Set<string>();
+      for (const [cid, list] of Object.entries(nextSessions)) {
+        for (const sess of list) {
+          if (sess.isResident) residentChatKeys.add(makeChatKey(cid, sess.key));
+        }
+      }
+      return { sessions: nextSessions, residentChatKeys };
+    }),
   noteStickySession: (connectionId, sessionKey) =>
     set((s) =>
       s.stickySessionByConnection[connectionId] === sessionKey
@@ -292,10 +305,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: { ...s.sessions, [connectionId]: next } };
     }),
   incrementUnread: (chatKey) => {
+    if (get().residentChatKeys.has(chatKey)) return; // server-driven via RESIDENT_UNREAD
     set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } }));
     const processing = get().hasProcessingSessions();
     useUIStore.getState().setPetState(processing ? "thinking" : "talking");
   },
+  setUnread: (chatKey, count) =>
+    set((s) => ({ unread: { ...s.unread, [chatKey]: Math.max(0, count) } })),
   clearUnread: (chatKey) =>
     set((s) => {
       const nextUnread = { ...s.unread, [chatKey]: 0 };

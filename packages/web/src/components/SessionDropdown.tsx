@@ -43,7 +43,8 @@ function formatUnread(count: number): string {
 }
 
 function sessionLabelText(s: Session): string {
-  return s.label?.trim() || s.key.split(":").pop() || s.key;
+  const base = s.label?.trim() || s.key.split(":").pop() || s.key;
+  return s.isResident ? `📌 ${base}` : base;
 }
 
 /** Shown next to session title: last message time, not “last opened”. */
@@ -199,11 +200,13 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
 
   const inactive = sessions
     .filter((s) => s.key !== activeKey)
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      if (!!a.isResident !== !!b.isResident) return a.isResident ? -1 : 1;
+      return (
         lastMessageOrCreatedAt(activeConnectionId, b, messagesByChat) -
-        lastMessageOrCreatedAt(activeConnectionId, a, messagesByChat),
-    );
+        lastMessageOrCreatedAt(activeConnectionId, a, messagesByChat)
+      );
+    });
 
   const recentInactive = showAll ? inactive : inactive.slice(0, RECENT_VISIBLE);
   const hiddenCount = inactive.length - RECENT_VISIBLE;
@@ -214,6 +217,12 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     if (!activeConnectionId) return;
     setActiveSession(activeConnectionId, key);
     clearSessionUnread(activeConnectionId, key);
+    const sess = sessions.find((s) => s.key === key);
+    if (sess?.isResident) {
+      void getPlatform()
+        .fetchApi(`/api/sessions/${encodeURIComponent(activeConnectionId)}/${encodeURIComponent(key)}/read`, { method: "POST" })
+        .catch((err) => console.error("mark resident read failed:", err));
+    }
     setOpen(false);
     setShowAll(false);
     setConfirmDeleteId(null);

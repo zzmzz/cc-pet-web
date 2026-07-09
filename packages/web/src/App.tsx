@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
-import { setPlatform, type PlatformAPI } from "./lib/platform.js";
+import { setPlatform, getPlatform, type PlatformAPI } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
@@ -211,7 +211,7 @@ export default function App() {
 
         const trySendNotification = (cid: string, sKey: string): void => {
           if (!cid || !sKey) return;
-
+          if (useSessionStore.getState().residentChatKeys.has(makeChatKey(cid, sKey))) return; // resident → Web Push handles it
           if (shouldShowNotification(cid, sKey, isPageHidden)) {
             const ck = makeChatKey(cid, sKey);
             const content = getLastMessageContent(ck);
@@ -429,6 +429,25 @@ export default function App() {
             if (!cid) break;
             const cmds = normalizeBridgeSlashCommands(payload.commands as unknown[]);
             useCommandStore.getState().setAgentCommands(cid, cmds);
+            break;
+          }
+          case WS_EVENTS.RESIDENT_UNREAD: {
+            const cid = (payload as { connectionId?: string }).connectionId;
+            const sKey = (payload as { sessionKey?: string }).sessionKey;
+            const count = (payload as { unreadCount?: number }).unreadCount ?? 0;
+            if (!cid || !sKey) break;
+            const ck = makeChatKey(cid, sKey);
+            const active = useSessionStore.getState().activeSessionKey[cid] ?? "default";
+            // If the user is currently viewing it, keep it read (and tell the server).
+            if (active === sKey && (typeof document === "undefined" || !document.hidden)) {
+              void getPlatform()
+                .fetchApi(`/api/sessions/${encodeURIComponent(cid)}/${encodeURIComponent(sKey)}/read`, { method: "POST" })
+                .catch(() => {});
+              useSessionStore.getState().setUnread(ck, 0);
+            } else {
+              useSessionStore.getState().setUnread(ck, count);
+              setPetStateSafely("talking");
+            }
             break;
           }
           case WS_EVENTS.BRIDGE_ERROR:

@@ -171,6 +171,11 @@ export async function hydrateSessionsAndHistory(
 
       sessions.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
       useSessionStore.getState().setSessions(connectionId, sessions);
+      for (const sess of sessions) {
+        if (sess.isResident && (sess.unreadCount ?? 0) > 0) {
+          useSessionStore.getState().setUnread(makeChatKey(connectionId, sess.key), sess.unreadCount ?? 0);
+        }
+      }
 
       const persistedActive = useSessionStore.getState().activeSessionKey[connectionId];
       const activeKey = pickActiveSessionKey(sessions, persistedActive);
