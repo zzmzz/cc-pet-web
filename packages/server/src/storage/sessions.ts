@@ -102,4 +102,21 @@ export class SessionStore {
     ).get(connectionId, key) as { is_resident?: number } | undefined;
     return (row?.is_resident ?? 0) === 1;
   }
+
+  /** 把 is_resident=1 但不在 validChatKeys(`${conn}::${key}`) 里的会话降级为普通会话（is_resident=0），
+   *  保留其历史消息（不删除），用于常驻 key 变更后的迁移。返回降级数量。 */
+  demoteResidentExcept(validChatKeys: Set<string>): number {
+    const rows = this.db.prepare(
+      `SELECT connection_id, key FROM sessions WHERE is_resident = 1`
+    ).all() as { connection_id: string; key: string }[];
+    let demoted = 0;
+    for (const row of rows) {
+      if (validChatKeys.has(`${row.connection_id}::${row.key}`)) continue;
+      this.db.prepare(
+        `UPDATE sessions SET is_resident = 0 WHERE connection_id = ? AND key = ?`
+      ).run(row.connection_id, row.key);
+      demoted += 1;
+    }
+    return demoted;
+  }
 }

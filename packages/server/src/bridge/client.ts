@@ -246,7 +246,7 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       JSON.stringify({
         type: "register",
         platform: this.connectionId,
-        capabilities: ["text", "buttons", "typing", "update_message", "preview", "delete_message", "file", "card", "audio"],
+        capabilities: ["text", "buttons", "typing", "update_message", "preview", "delete_message", "file", "card", "audio", "reconstruct_reply"],
         metadata: { protocol_version: 1, source: "cc-pet-web" },
       })
     );

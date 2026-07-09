@@ -13,6 +13,15 @@ interface RegistryLogger {
 
 interface ResidentMarker {
   markResident(connectionId: string, key: string, label?: string): void;
+  /** 把 is_resident=1 但不在 valid 集合里的会话降级为普通会话，用于常驻 key 变更后的迁移 */
+  demoteResidentExcept?(valid: Set<string>): void;
+}
+
+/** 组装 cc-connect 合规的 bridge session_key：{platform}:{scope}:{user}。
+ *  platform 段必须等于 bridge 的 connectionId（=adapter 名），cron 才能路由回本 bridge。
+ *  若配置里已写成含 ":" 的完整 key，则原样使用。 */
+export function residentSessionKey(bridgeId: string, key: string): string {
+  return key.includes(":") ? key : `${bridgeId}:${key}:${key}`;
 }
 
 export class ResidentRegistry {
@@ -32,7 +41,7 @@ export class ResidentRegistry {
       }
       const pair: ResidentPair = {
         connectionId: rs.bridgeId,
-        key: rs.key,
+        key: residentSessionKey(rs.bridgeId, rs.key),
         label: rs.label,
         tokenName: token.name,
       };
@@ -54,8 +63,11 @@ export class ResidentRegistry {
   }
 
   bootstrap(store: ResidentMarker): void {
+    const valid = new Set<string>();
     for (const p of this._pairs) {
       store.markResident(p.connectionId, p.key, p.label);
+      valid.add(`${p.connectionId}::${p.key}`);
     }
+    store.demoteResidentExcept?.(valid);
   }
 }

@@ -47,4 +47,22 @@ describe("SessionStore resident + unread", () => {
     store.create({ key: "s1", connectionId: "cc", createdAt: now, lastActiveAt: now });
     expect(store.listByConnection("cc")[0].isResident).toBe(false);
   });
+
+  it("demoteResidentExcept 只保留合规集合内的常驻会话，其余降级但保留历史", () => {
+    store.markResident("cc", "cc:resident:resident", "脑");
+    store.markResident("cc", "resident", "旧脑"); // 旧的裸 key，即将被降级
+
+    const demoted = store.demoteResidentExcept(new Set(["cc::cc:resident:resident"]));
+    expect(demoted).toBe(1);
+
+    const list = store.listByConnection("cc");
+    expect(list).toHaveLength(2);
+    const kept = list.find((s) => s.key === "cc:resident:resident");
+    const dropped = list.find((s) => s.key === "resident");
+    expect(kept?.isResident).toBe(true);
+    expect(dropped?.isResident).toBe(false);
+    // 会话与历史仍在（listByConnection 仍含它，只是 isResident 变 false）
+    expect(dropped).toBeDefined();
+    expect(dropped?.label).toBe("旧脑");
+  });
 });
