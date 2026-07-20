@@ -1443,4 +1443,38 @@ describe("App integration", () => {
       );
     });
   });
+
+  it("attaches a file dropped onto the input area", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const dropZone = (document.querySelector('input[type="file"]') as HTMLInputElement)
+      .parentElement as HTMLElement;
+    const file = new File(["dropped"], "dropped.txt", { type: "text/plain" });
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        types: ["Files"],
+        files: [file],
+        items: [{ kind: "file", getAsFile: () => file }],
+      },
+    });
+
+    expect(await screen.findByText(/dropped\.txt/)).toBeInTheDocument();
+  });
+
+  it("attaches a clipboard image pasted into the textarea with a generated name", async () => {
+    render(<App />);
+    const textarea = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const img = new File(["img-bytes"], "image.png", { type: "image/png" });
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        types: ["Files"],
+        files: [img],
+        items: [{ kind: "file", getAsFile: () => img }],
+      },
+    });
+
+    expect(await screen.findByText(/pasted-.*\.png/)).toBeInTheDocument();
+  });
 });
