@@ -7,6 +7,7 @@ import { useMessageStore } from "../lib/store/message.js";
 import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
+import { extractFiles, dragHasFiles } from "../lib/file-transfer.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -267,6 +268,44 @@ export function ChatWindow() {
     );
   }, []);
 
+  // Drag-and-drop over the whole chat page (not just the input box).
+  const [isDragging, setIsDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const canDropFiles = !!activeConnectionId;
+
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!canDropFiles || !dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setIsDragging(true);
+  }, [canDropFiles]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!canDropFiles || !dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, [canDropFiles]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (dragDepth.current === 0) return;
+    e.preventDefault();
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0;
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    dragDepth.current = 0;
+    setIsDragging(false);
+    if (!canDropFiles) return;
+    const files = extractFiles(e.dataTransfer);
+    if (files.length === 0) return;
+    e.preventDefault();
+    handleFilesSelected(files);
+  }, [canDropFiles, handleFilesSelected]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (slashMenuVisible) {
@@ -331,7 +370,20 @@ export function ChatWindow() {
   );
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="relative flex flex-col h-full"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center border-2 border-dashed border-indigo-400 bg-indigo-50/80 backdrop-blur-[1px]">
+          <span className="rounded-xl bg-white/90 px-5 py-3 text-base font-medium text-indigo-600 shadow-sm">
+            📎 松开鼠标以添加文件
+          </span>
+        </div>
+      )}
       <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} />
       <MessageInput
         ref={inputRef}

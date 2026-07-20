@@ -1444,10 +1444,16 @@ describe("App integration", () => {
     });
   });
 
-  it("attaches a file dropped onto the input area", async () => {
+  it("attaches a file dropped anywhere on the chat page", async () => {
     render(<App />);
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
+      connectionId: "cc-connect",
+      connected: true,
+    });
 
+    // Drop on the input container; the handler lives on the chat-page root, so
+    // the event must bubble up and still register — proving the whole page is a drop zone.
     const dropZone = (document.querySelector('input[type="file"]') as HTMLInputElement)
       .parentElement as HTMLElement;
     const file = new File(["dropped"], "dropped.txt", { type: "text/plain" });
