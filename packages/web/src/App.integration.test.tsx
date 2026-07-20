@@ -18,6 +18,7 @@ class FakeAdapter implements PlatformAPI {
   connectWs = vi.fn();
   disconnectWs = vi.fn();
   sendWsMessage = vi.fn();
+  getWsBufferedAmount = vi.fn(() => 0);
 
   fetchApi = vi.fn();
   fetchApiRaw = vi.fn();

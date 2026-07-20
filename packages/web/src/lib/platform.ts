@@ -3,6 +3,8 @@ export interface PlatformAPI {
   disconnectWs(): void;
   onWsEvent(handler: (type: string, payload: any) => void): () => void;
   sendWsMessage(msg: any): void;
+  /** Bytes still queued in the WebSocket send buffer (0 if not open). */
+  getWsBufferedAmount(): number;
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
   /** Like fetchApi but returns the raw Response so callers can read blobs/streams. */

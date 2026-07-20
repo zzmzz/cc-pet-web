@@ -15,6 +15,35 @@ import { getFilteredCommands, useSlashMenu, type SlashCommandSpec } from "../lib
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_AGENT_COMMANDS: SlashCommand[] = [];
 
+/** Below this many queued bytes the WS flush is effectively instant — skip the indicator. */
+const UPLOAD_PROGRESS_MIN_BYTES = 1_000_000;
+
+/**
+ * Attachments are base64-encoded and pushed as a single large WebSocket frame.
+ * On a slow link that frame can take minutes to drain, during which the UI would
+ * otherwise look frozen. Poll the socket's buffered byte count to surface progress
+ * on the optimistic message bubble, then clear the flag once fully flushed.
+ */
+function trackUploadProgress(chatKey: string, messageId: string): void {
+  const platform = getPlatform();
+  const total = platform.getWsBufferedAmount();
+  const { patchMessage } = useMessageStore.getState();
+  if (total < UPLOAD_PROGRESS_MIN_BYTES) return;
+
+  patchMessage(chatKey, messageId, { uploading: true, uploadProgress: 0 });
+  const timer = window.setInterval(() => {
+    const remaining = platform.getWsBufferedAmount();
+    if (remaining <= 0) {
+      window.clearInterval(timer);
+      patchMessage(chatKey, messageId, { uploading: false, uploadProgress: 100 });
+      return;
+    }
+    const sent = Math.max(0, total - remaining);
+    const pct = Math.min(99, Math.floor((sent / total) * 100));
+    patchMessage(chatKey, messageId, { uploading: true, uploadProgress: pct });
+  }, 250);
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -159,8 +188,9 @@ export function ChatWindow() {
       );
       setInput("");
       setPendingAttachments([]);
+      const uploadMessageId = `file-${Date.now()}`;
       useMessageStore.getState().addMessage(chatKey, {
-        id: `file-${Date.now()}`,
+        id: uploadMessageId,
         role: "user",
         content: caption ?? "",
         files: filesToSend.map((file) => ({
@@ -184,6 +214,7 @@ export function ChatWindow() {
         content: caption ?? "",
         files: encodedFiles,
       });
+      trackUploadProgress(chatKey, uploadMessageId);
       return;
     }
 

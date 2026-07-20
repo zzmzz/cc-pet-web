@@ -10,6 +10,8 @@ interface MessageState {
   loadedChatKeys: Set<string>;
 
   addMessage: (chatKey: string, msg: ChatMessage) => void;
+  /** Shallow-merge a patch into an existing message by id (no-op if absent). */
+  patchMessage: (chatKey: string, id: string, patch: Partial<ChatMessage>) => void;
   setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
   finalizeStream: (chatKey: string, fullText: string) => void;
@@ -41,6 +43,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         [chatKey]: [...(s.messagesByChat[chatKey] ?? []), msg],
       },
     })),
+  patchMessage: (chatKey, id, patch) =>
+    set((s) => {
+      const list = s.messagesByChat[chatKey];
+      if (!list) return s;
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.id !== id) return m;
+        changed = true;
+        return { ...m, ...patch };
+      });
+      if (!changed) return s;
+      return { messagesByChat: { ...s.messagesByChat, [chatKey]: next } };
+    }),
   setMessages: (chatKey, msgs) =>
     set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: msgs } })),
   appendStreamDelta: (chatKey, delta) =>

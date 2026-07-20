@@ -660,6 +660,19 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               <FileAttachmentView key={file.id} file={file} isUser={isUser} />
             ))}
           </div>
+          {message.uploading ? (
+            <div className="mt-1.5 flex items-center gap-2">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-blue-200">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all duration-200"
+                  style={{ width: `${message.uploadProgress ?? 0}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-[10px] text-blue-500">
+                上传中 {message.uploadProgress ?? 0}%
+              </span>
+            </div>
+          ) : null}
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
             {formatMessageTime(message.timestamp)}
           </div>
