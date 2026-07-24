@@ -454,7 +454,12 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       return;
     }
     if (stickToBottomRef.current) {
-      scrollToLatest("smooth");
+      // Streaming/typewriter text grows every frame; a smooth scroll can't keep
+      // up and the scroll listener would misread the mid-animation position as
+      // "not at bottom", flipping stickToBottom off and killing auto-follow.
+      // Pin instantly while streaming content is present so the view stays
+      // glued to the newest text.
+      scrollToLatest(streamingContent ? "auto" : "smooth");
       return;
     }
     setShowBackToLatest(true);
