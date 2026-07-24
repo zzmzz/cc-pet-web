@@ -823,6 +823,27 @@ describe("App integration", () => {
     });
   });
 
+  it("commits tool-call messages immediately without the typewriter reveal", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const key = makeChatKey("cc-connect", "default");
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+
+    // Tool content must land in the message list right away (rendered live via
+    // ActivityBlock) and must never be routed through streamingContent, which
+    // would hide it mid-turn.
+    await waitFor(() => {
+      const st = useMessageStore.getState();
+      expect((st.messagesByChat[key] ?? []).some((m) => m.content.startsWith("🔧"))).toBe(true);
+    });
+    expect(useMessageStore.getState().streamingContent[key] ?? "").toBe("");
+  });
+
   it("routes fallback typing_stop to in-flight session after user switches active session", async () => {
     useSessionStore.setState({
       sessions: {

@@ -14,7 +14,8 @@ import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
-import { revealTypewriter } from "./lib/typewriter.js";
+import { revealTypewriter, flushTypewriter } from "./lib/typewriter.js";
+import { isToolCallContent, isToolResultContent } from "./lib/tool-call.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -247,6 +248,7 @@ export default function App() {
               useSessionStore.getState().incrementUnread(chatKey);
             }
             setTaskPhase("working");
+            const content = payload.content ?? "";
             const finalMessage = {
               id: `msg-${Date.now()}`,
               role: "assistant" as const,
@@ -255,41 +257,45 @@ export default function App() {
               connectionId,
               sessionKey: resolvedSessionKey,
             };
-            // Reveal the (already-complete) reply with a typewriter effect, then
-            // commit the full message. cc-connect can't stream claudecode token
-            // deltas, so this is a purely visual reveal — the committed content
-            // is identical. onDone runs synchronously when the reveal is
-            // disabled or prefers-reduced-motion, preserving legacy behavior.
-            setPetStateSafely("talking");
-            revealTypewriter(
-              chatKey,
-              payload.content ?? "",
-              {
+            const commit = () => {
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              const isCompleted = !isTypingActiveForSession();
+              setTaskPhase(isCompleted ? "completed" : "working");
+              if (isCompleted && connectionId && resolvedSessionKey) {
+                trySendNotification(connectionId, resolvedSessionKey);
+              }
+              if (
+                !connectionId ||
+                !resolvedSessionKey ||
+                !shouldMarkUnread(connectionId, resolvedSessionKey)
+              ) {
+                setPetStateSafely("idle");
+              } else {
+                // Background session with fresh unread: keep the pet "talking".
+                // Runs after setTaskPhase so the session is no longer processing
+                // and won't be forced to "thinking" by setPetStateSafely.
+                setPetStateSafely("talking");
+              }
+            };
+            // Tool-call / tool-result messages render live via ActivityBlock and
+            // must NOT be typewritered — group-messages hides tool content in the
+            // streaming bubble, so animating it would make tool steps vanish
+            // mid-turn. Only plain assistant text gets the reveal effect.
+            const isStructured = isToolCallContent(content) || isToolResultContent(content);
+            if (isStructured || content.length === 0) {
+              flushTypewriter(chatKey); // commit any in-flight text reveal first, preserving order
+              commit();
+            } else {
+              // Reveal the (already-complete) reply with a typewriter effect. The
+              // committed content is identical; onDone runs synchronously when the
+              // reveal is disabled or prefers-reduced-motion (legacy behavior).
+              setPetStateSafely("talking");
+              revealTypewriter(chatKey, content, {
                 onFrame: (text) => useMessageStore.getState().setStreaming(chatKey, text),
-                onDone: () => {
-                  useMessageStore.getState().clearStreaming(chatKey);
-                  useMessageStore.getState().addMessage(chatKey, finalMessage);
-                  const isCompleted = !isTypingActiveForSession();
-                  setTaskPhase(isCompleted ? "completed" : "working");
-                  if (isCompleted && connectionId && resolvedSessionKey) {
-                    trySendNotification(connectionId, resolvedSessionKey);
-                  }
-                  if (
-                    !connectionId ||
-                    !resolvedSessionKey ||
-                    !shouldMarkUnread(connectionId, resolvedSessionKey)
-                  ) {
-                    setPetStateSafely("idle");
-                  } else {
-                    // Background session with fresh unread: keep the pet
-                    // "talking". Runs after setTaskPhase("completed") so the
-                    // session is no longer processing and won't be forced to
-                    // "thinking" by setPetStateSafely.
-                    setPetStateSafely("talking");
-                  }
-                },
-              },
-            );
+                onDone: commit,
+              });
+            }
             break;
           }
           case WS_EVENTS.BRIDGE_STREAM_DELTA: {
