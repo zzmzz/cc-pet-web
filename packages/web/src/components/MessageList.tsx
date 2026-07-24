@@ -49,13 +49,13 @@ interface Props {
 function ProcessingIndicator() {
   return (
     <div className="flex justify-start px-3 py-1" aria-live="polite" aria-label="处理中">
-      <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-secondary px-3 py-2 text-sm text-gray-600">
+        <span>处理中</span>
         <span className="flex gap-1" aria-hidden="true">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-green-500 [animation-delay:-0.3s] motion-reduce:animate-none" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-green-500 [animation-delay:-0.15s] motion-reduce:animate-none" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-green-500 motion-reduce:animate-none" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s] motion-reduce:animate-none" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s] motion-reduce:animate-none" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 motion-reduce:animate-none" />
         </span>
-        <span>处理中…</span>
       </div>
     </div>
   );
