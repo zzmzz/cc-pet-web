@@ -860,6 +860,45 @@ describe("App integration", () => {
     });
   });
 
+  it("tool messages keep the session working; only a text reply completes it", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const phase = () =>
+      useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+
+    // Mid-turn tool call/result (no typing active) must NOT complete the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+    await waitFor(() => expect(phase()).toBe("working"));
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🧾\n🟢 状态: ok",
+    });
+    await waitFor(() =>
+      expect(
+        (useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "default")] ?? []).some((m) =>
+          m.content.startsWith("🧾"),
+        ),
+      ).toBe(true),
+    );
+    // Still working after the tool result — the turn is not done.
+    expect(phase()).toBe("working");
+
+    // The final text reply (typing inactive) completes the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "运行完成，目录里有 3 个文件。",
+    });
+    await waitFor(() => expect(phase()).toBe("completed"));
+  });
+
   it("commits tool-call messages immediately without the typewriter reveal", async () => {
     render(<App />);
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);

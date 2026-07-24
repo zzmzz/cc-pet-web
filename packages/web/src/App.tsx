@@ -244,10 +244,6 @@ export default function App() {
             }
             break;
           case WS_EVENTS.BRIDGE_MESSAGE: {
-            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              useSessionStore.getState().incrementUnread(chatKey);
-            }
-            setTaskPhase("working");
             const content = payload.content ?? "";
             const finalMessage = {
               id: `msg-${Date.now()}`,
@@ -257,6 +253,27 @@ export default function App() {
               connectionId,
               sessionKey: resolvedSessionKey,
             };
+            // Tool-call / tool-result messages are mid-turn progress. They render
+            // live via ActivityBlock but must NOT drive session state: no unread
+            // bump, no completion check, no notification. Before tool progress was
+            // delivered as individual replies, it flowed through a (discarded)
+            // preview card and never reached this handler, so completion was only
+            // ever decided by the final text reply. Running the completion check
+            // on every tool step (as separate replies) is what made in-flight
+            // turns flip to "completed" mid-way. Keep the session "working".
+            const isStructured = isToolCallContent(content) || isToolResultContent(content);
+            if (isStructured || content.length === 0) {
+              flushTypewriter(chatKey); // commit any in-flight text reveal first, preserving order
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              setTaskPhase("working");
+              break;
+            }
+            // Plain text reply: this is what decides unread + completion.
+            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              useSessionStore.getState().incrementUnread(chatKey);
+            }
+            setTaskPhase("working");
             const commit = () => {
               useMessageStore.getState().clearStreaming(chatKey);
               useMessageStore.getState().addMessage(chatKey, finalMessage);
@@ -278,15 +295,7 @@ export default function App() {
                 setPetStateSafely("talking");
               }
             };
-            // Tool-call / tool-result messages render live via ActivityBlock and
-            // must NOT be typewritered — group-messages hides tool content in the
-            // streaming bubble, so animating it would make tool steps vanish
-            // mid-turn. Only plain assistant text gets the reveal effect.
-            const isStructured = isToolCallContent(content) || isToolResultContent(content);
-            if (isStructured || content.length === 0) {
-              flushTypewriter(chatKey); // commit any in-flight text reveal first, preserving order
-              commit();
-            } else {
+            {
               // Reveal the (already-complete) reply with a typewriter effect. The
               // committed content is identical; onDone runs synchronously when the
               // reveal is disabled or prefers-reduced-motion (legacy behavior).
