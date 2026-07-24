@@ -14,6 +14,7 @@ import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
+import { revealTypewriter } from "./lib/typewriter.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -241,28 +242,56 @@ export default function App() {
               happyAfterConnectTimer = null;
             }
             break;
-          case WS_EVENTS.BRIDGE_MESSAGE:
+          case WS_EVENTS.BRIDGE_MESSAGE: {
             if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
               useSessionStore.getState().incrementUnread(chatKey);
             }
             setTaskPhase("working");
-            useMessageStore.getState().addMessage(chatKey, {
+            const finalMessage = {
               id: `msg-${Date.now()}`,
-              role: "assistant",
+              role: "assistant" as const,
               content: payload.content,
               timestamp: Date.now(),
               connectionId,
               sessionKey: resolvedSessionKey,
-            });
-            const isCompleted = !isTypingActiveForSession();
-            setTaskPhase(isCompleted ? "completed" : "working");
-            if (isCompleted && connectionId && resolvedSessionKey) {
-              trySendNotification(connectionId, resolvedSessionKey);
-            }
-            if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              setPetStateSafely("idle");
-            }
+            };
+            // Reveal the (already-complete) reply with a typewriter effect, then
+            // commit the full message. cc-connect can't stream claudecode token
+            // deltas, so this is a purely visual reveal — the committed content
+            // is identical. onDone runs synchronously when the reveal is
+            // disabled or prefers-reduced-motion, preserving legacy behavior.
+            setPetStateSafely("talking");
+            revealTypewriter(
+              chatKey,
+              payload.content ?? "",
+              {
+                onFrame: (text) => useMessageStore.getState().setStreaming(chatKey, text),
+                onDone: () => {
+                  useMessageStore.getState().clearStreaming(chatKey);
+                  useMessageStore.getState().addMessage(chatKey, finalMessage);
+                  const isCompleted = !isTypingActiveForSession();
+                  setTaskPhase(isCompleted ? "completed" : "working");
+                  if (isCompleted && connectionId && resolvedSessionKey) {
+                    trySendNotification(connectionId, resolvedSessionKey);
+                  }
+                  if (
+                    !connectionId ||
+                    !resolvedSessionKey ||
+                    !shouldMarkUnread(connectionId, resolvedSessionKey)
+                  ) {
+                    setPetStateSafely("idle");
+                  } else {
+                    // Background session with fresh unread: keep the pet
+                    // "talking". Runs after setTaskPhase("completed") so the
+                    // session is no longer processing and won't be forced to
+                    // "thinking" by setPetStateSafely.
+                    setPetStateSafely("talking");
+                  }
+                },
+              },
+            );
             break;
+          }
           case WS_EVENTS.BRIDGE_STREAM_DELTA: {
             const firstChunk =
               connectionId && resolvedSessionKey

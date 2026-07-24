@@ -104,6 +104,13 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
         this.startSkillsProbe(sessionKey);
         this.sendCommandsListProbe(sessionKey);
       }
+      // cc-connect 的流式预览握手：收到 preview_start 必须立即回 preview_ack，
+      // 否则 cc-connect 的 SendPreviewStart 会阻塞 10 秒超时并降级，导致每轮回复
+      // 都被平白拖慢 10 秒。ack 后 cc-connect 会走 delete_message + reply 收尾，
+      // 最终内容仍以 reply(BRIDGE_MESSAGE) 到达。见 core/bridge.go SendPreviewStart。
+      if (envelope.type === "preview_start") {
+        this.sendPreviewAck(envelope);
+      }
       if (this.isSkillsProbeReply(envelope)) {
         this.emit("skillsProbe", this.connectionId, {
           phase: "reply_matched",
@@ -197,6 +204,19 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       "⬆ Bridge outgoing sent",
     );
     this.ws.send(payload);
+  }
+
+  /** 回执 cc-connect 的 preview_start，解开其 SendPreviewStart 的 10 秒阻塞。 */
+  private sendPreviewAck(envelope: Record<string, unknown>): void {
+    const refId = typeof envelope.ref_id === "string" ? envelope.ref_id : "";
+    if (!refId) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const ack = { type: "preview_ack", ref_id: refId, preview_handle: `petweb-${refId}` };
+    this.log?.info(
+      { connectionId: this.connectionId, type: "preview_ack", refId },
+      "⬆ Bridge preview_ack sent",
+    );
+    this.ws.send(JSON.stringify(ack));
   }
 
   private scheduleReconnect(): void {
