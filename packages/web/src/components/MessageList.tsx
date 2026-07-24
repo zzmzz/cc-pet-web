@@ -41,6 +41,24 @@ interface Props {
   streamingContent?: string;
   sessionKey?: string;
   previews?: PreviewEntry[];
+  /** Show the "处理中…" indicator (session is working and no text is streaming yet). */
+  processing?: boolean;
+}
+
+/** Assistant-aligned "处理中…" bubble with animated dots, shown while the agent works. */
+function ProcessingIndicator() {
+  return (
+    <div className="flex justify-start px-3 py-1" aria-live="polite" aria-label="处理中">
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-secondary px-3 py-2 text-sm text-gray-600">
+        <span>处理中</span>
+        <span className="flex gap-1" aria-hidden="true">
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s] motion-reduce:animate-none" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s] motion-reduce:animate-none" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 motion-reduce:animate-none" />
+        </span>
+      </div>
+    </div>
+  );
 }
 
 interface LinkPreviewData {
@@ -351,7 +369,7 @@ function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactN
   );
 }
 
-export const MessageList = memo(function MessageList({ messages, streamingContent, sessionKey, previews }: Props) {
+export const MessageList = memo(function MessageList({ messages, streamingContent, sessionKey, previews, processing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
@@ -454,11 +472,16 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       return;
     }
     if (stickToBottomRef.current) {
-      scrollToLatest("smooth");
+      // Streaming/typewriter text grows every frame; a smooth scroll can't keep
+      // up and the scroll listener would misread the mid-animation position as
+      // "not at bottom", flipping stickToBottom off and killing auto-follow.
+      // Pin instantly while streaming content is present so the view stays
+      // glued to the newest text.
+      scrollToLatest(streamingContent ? "auto" : "smooth");
       return;
     }
     setShowBackToLatest(true);
-  }, [messages, streamingContent, previews, scrollToLatest]);
+  }, [messages, streamingContent, previews, processing, scrollToLatest]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -508,6 +531,7 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
             message={{ id: "streaming", role: "assistant", content: streamingContent, timestamp: Date.now() }}
           />
         )}
+        {processing && !streamingContent && <ProcessingIndicator />}
         <div ref={bottomRef} />
       </div>
       {showBackToLatest ? (

@@ -14,6 +14,8 @@ import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
+import { revealTypewriter, flushTypewriter } from "./lib/typewriter.js";
+import { isToolCallContent, isToolResultContent, looksLikeToolProgress } from "./lib/tool-call.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -241,28 +243,70 @@ export default function App() {
               happyAfterConnectTimer = null;
             }
             break;
-          case WS_EVENTS.BRIDGE_MESSAGE:
-            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              useSessionStore.getState().incrementUnread(chatKey);
-            }
-            setTaskPhase("working");
-            useMessageStore.getState().addMessage(chatKey, {
+          case WS_EVENTS.BRIDGE_MESSAGE: {
+            const content = payload.content ?? "";
+            const finalMessage = {
               id: `msg-${Date.now()}`,
-              role: "assistant",
+              role: "assistant" as const,
               content: payload.content,
               timestamp: Date.now(),
               connectionId,
               sessionKey: resolvedSessionKey,
-            });
-            const isCompleted = !isTypingActiveForSession();
-            setTaskPhase(isCompleted ? "completed" : "working");
-            if (isCompleted && connectionId && resolvedSessionKey) {
-              trySendNotification(connectionId, resolvedSessionKey);
+            };
+            // Tool-call / tool-result messages are mid-turn progress. They render
+            // live via ActivityBlock but must NOT drive session state: no unread
+            // bump, no completion check, no notification. Before tool progress was
+            // delivered as individual replies, it flowed through a (discarded)
+            // preview card and never reached this handler, so completion was only
+            // ever decided by the final text reply. Running the completion check
+            // on every tool step (as separate replies) is what made in-flight
+            // turns flip to "completed" mid-way. Keep the session "working".
+            const isStructured = isToolCallContent(content) || isToolResultContent(content);
+            if (isStructured || content.length === 0) {
+              flushTypewriter(chatKey); // commit any in-flight text reveal first, preserving order
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              setTaskPhase("working");
+              break;
             }
-            if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              setPetStateSafely("idle");
+            // Plain text reply: this is what decides unread + completion.
+            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              useSessionStore.getState().incrementUnread(chatKey);
+            }
+            setTaskPhase("working");
+            const commit = () => {
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              const isCompleted = !isTypingActiveForSession();
+              setTaskPhase(isCompleted ? "completed" : "working");
+              if (isCompleted && connectionId && resolvedSessionKey) {
+                trySendNotification(connectionId, resolvedSessionKey);
+              }
+              if (
+                !connectionId ||
+                !resolvedSessionKey ||
+                !shouldMarkUnread(connectionId, resolvedSessionKey)
+              ) {
+                setPetStateSafely("idle");
+              } else {
+                // Background session with fresh unread: keep the pet "talking".
+                // Runs after setTaskPhase so the session is no longer processing
+                // and won't be forced to "thinking" by setPetStateSafely.
+                setPetStateSafely("talking");
+              }
+            };
+            {
+              // Reveal the (already-complete) reply with a typewriter effect. The
+              // committed content is identical; onDone runs synchronously when the
+              // reveal is disabled or prefers-reduced-motion (legacy behavior).
+              setPetStateSafely("talking");
+              revealTypewriter(chatKey, content, {
+                onFrame: (text) => useMessageStore.getState().setStreaming(chatKey, text),
+                onDone: commit,
+              });
             }
             break;
+          }
           case WS_EVENTS.BRIDGE_STREAM_DELTA: {
             const firstChunk =
               connectionId && resolvedSessionKey
@@ -407,16 +451,18 @@ export default function App() {
               setPetStateSafely("idle");
             }
             break;
+          // cc-connect streams a live-updating progress card (tool steps) via the
+          // preview channel. We render only progress/tool-like content as a live
+          // preview bubble (keyed per session) so tool activity is visible; text
+          // previews are ignored because the final reply delivers the text (and
+          // the typewriter reveals it), which would otherwise double up.
           case WS_EVENTS.BRIDGE_PREVIEW_START:
-            if (chatKey && payload.previewId) {
+          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
+            if (chatKey && payload.previewId && looksLikeToolProgress(payload.content)) {
+              // startPreview upserts: creates on first sight, replaces content thereafter.
               useMessageStore.getState().startPreview(chatKey, payload.previewId, payload.content ?? "");
               setTaskPhase("working");
               setPetStateSafely("talking");
-            }
-            break;
-          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
-            if (payload.previewId) {
-              useMessageStore.getState().updatePreview(payload.previewId, payload.content ?? "");
             }
             break;
           case WS_EVENTS.BRIDGE_PREVIEW_DELETE:

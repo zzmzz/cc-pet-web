@@ -384,7 +384,7 @@ export function ChatWindow() {
           </span>
         </div>
       )}
-      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} />
+      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} processing={showStopButton} />
       <MessageInput
         ref={inputRef}
         value={input}

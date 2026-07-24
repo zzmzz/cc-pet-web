@@ -14,6 +14,10 @@ interface MessageState {
   patchMessage: (chatKey: string, id: string, patch: Partial<ChatMessage>) => void;
   setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
+  /** Set the live streaming text for a chat to an absolute value (used by the typewriter reveal). */
+  setStreaming: (chatKey: string, text: string) => void;
+  /** Drop the live streaming text for a chat without committing it to the message list. */
+  clearStreaming: (chatKey: string) => void;
   finalizeStream: (chatKey: string, fullText: string) => void;
   clearMessages: (chatKey: string) => void;
   /** Remove chatKey from message + streaming maps (e.g. session delete). */
@@ -65,6 +69,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         [chatKey]: (s.streamingContent[chatKey] ?? "") + delta,
       },
     })),
+  setStreaming: (chatKey, text) =>
+    set((s) => ({ streamingContent: { ...s.streamingContent, [chatKey]: text } })),
+  clearStreaming: (chatKey) =>
+    set((s) => {
+      if (!(chatKey in s.streamingContent)) return s;
+      const { [chatKey]: _drop, ...rest } = s.streamingContent;
+      return { streamingContent: rest };
+    }),
   finalizeStream: (chatKey, fullText) =>
     set((s) => {
       const { [chatKey]: _, ...rest } = s.streamingContent;

@@ -83,6 +83,24 @@ describe("MessageList", () => {
     expect(screen.queryByRole("button", { name: "回到最新" })).not.toBeInTheDocument();
   });
 
+  it("shows the 处理中 indicator only when processing and nothing is streaming", () => {
+    const messages = buildMessages(2);
+    const { rerender } = render(<MessageList messages={messages} sessionKey="s" processing={false} />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+
+    // Processing with no streaming text yet → indicator visible.
+    rerender(<MessageList messages={messages} sessionKey="s" processing />);
+    expect(screen.getByLabelText("处理中")).toBeInTheDocument();
+
+    // Once text starts streaming, the indicator yields to the streaming bubble.
+    rerender(<MessageList messages={messages} sessionKey="s" processing streamingContent="部分正文…" />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+
+    // Processing ends → indicator gone.
+    rerender(<MessageList messages={messages} sessionKey="s" processing={false} />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+  });
+
   it("copies fenced code block content with one click", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {

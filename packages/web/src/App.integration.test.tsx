@@ -823,6 +823,103 @@ describe("App integration", () => {
     });
   });
 
+  it("renders tool-progress preview updates but ignores text previews", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    // A plain-text preview must be ignored (the final reply delivers the text).
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "这是普通正文预览，应该被忽略",
+    });
+    expect(Object.keys(useMessageStore.getState().previewMessages)).toHaveLength(0);
+
+    // A progress card (tool steps) must render as a live preview.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**",
+    });
+    await waitFor(() => {
+      const pv = useMessageStore.getState().previewMessages["pv-cc-connect-default"];
+      expect(pv?.content).toContain("工具 #1");
+    });
+
+    // Subsequent update upserts (replaces) the same preview in place.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**\n2. 🧾 ok",
+    });
+    await waitFor(() => {
+      expect(useMessageStore.getState().previewMessages["pv-cc-connect-default"]?.content).toContain("🧾");
+    });
+  });
+
+  it("tool messages keep the session working; only a text reply completes it", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const phase = () =>
+      useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+
+    // Mid-turn tool call/result (no typing active) must NOT complete the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+    await waitFor(() => expect(phase()).toBe("working"));
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🧾\n🟢 状态: ok",
+    });
+    await waitFor(() =>
+      expect(
+        (useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "default")] ?? []).some((m) =>
+          m.content.startsWith("🧾"),
+        ),
+      ).toBe(true),
+    );
+    // Still working after the tool result — the turn is not done.
+    expect(phase()).toBe("working");
+
+    // The final text reply (typing inactive) completes the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "运行完成，目录里有 3 个文件。",
+    });
+    await waitFor(() => expect(phase()).toBe("completed"));
+  });
+
+  it("commits tool-call messages immediately without the typewriter reveal", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const key = makeChatKey("cc-connect", "default");
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+
+    // Tool content must land in the message list right away (rendered live via
+    // ActivityBlock) and must never be routed through streamingContent, which
+    // would hide it mid-turn.
+    await waitFor(() => {
+      const st = useMessageStore.getState();
+      expect((st.messagesByChat[key] ?? []).some((m) => m.content.startsWith("🔧"))).toBe(true);
+    });
+    expect(useMessageStore.getState().streamingContent[key] ?? "").toBe("");
+  });
+
   it("routes fallback typing_stop to in-flight session after user switches active session", async () => {
     useSessionStore.setState({
       sessions: {
