@@ -456,14 +456,25 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: msg.commands });
       break;
     case "preview_start":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_START, { connectionId: connId, sessionKey, previewId: msg.preview_id, content: msg.content });
-      break;
     case "update_message":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, { connectionId: connId, sessionKey, previewId: msg.preview_id, content: msg.content });
+    case "delete_message": {
+      // cc-connect pushes a live-updating progress card (tool steps) through the
+      // preview channel. It sends ref_id (preview_start) / preview_handle
+      // (update/delete) rather than a stable "preview_id"; correlating those is
+      // brittle, and there is at most one progress card per session at a time,
+      // so we key by session. The frontend renders progress-like content (tool
+      // steps) and ignores text previews (the final reply carries the text).
+      const previewId = `pv-${connId}-${sessionKey ?? "default"}`;
+      const evt =
+        msg.type === "preview_start"
+          ? WS_EVENTS.BRIDGE_PREVIEW_START
+          : msg.type === "update_message"
+            ? WS_EVENTS.BRIDGE_PREVIEW_UPDATE
+            : WS_EVENTS.BRIDGE_PREVIEW_DELETE;
+      const content = msg.type === "delete_message" ? undefined : msg.content;
+      hub.broadcast(evt, { connectionId: connId, sessionKey, previewId, content });
       break;
-    case "delete_message":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_DELETE, { connectionId: connId, sessionKey, previewId: msg.preview_id });
-      break;
+    }
     case "error":
       hub.broadcast(WS_EVENTS.BRIDGE_ERROR, { connectionId: connId, error: msg.message });
       break;

@@ -8,6 +8,19 @@ export function isToolResultContent(content: string): boolean {
   return content.trimStart().startsWith("🧾");
 }
 
+/**
+ * True when preview content is cc-connect's live progress card (⏳ Progress) or
+ * otherwise carries tool-call/tool-result markers. Used to decide which preview
+ * updates to render — text previews (the plain answer) are ignored because the
+ * final reply already delivers the text.
+ */
+export function looksLikeToolProgress(content: string | undefined): boolean {
+  const t = (content ?? "").trimStart();
+  if (t.length === 0) return false;
+  return t.startsWith("⏳") || t.startsWith("🔧") || t.startsWith("💭") || t.startsWith("🧾") ||
+    t.includes("🔧") || t.includes("🧾");
+}
+
 export interface ToolResult {
   status: "ok" | "error";
   exitCode: number | null;

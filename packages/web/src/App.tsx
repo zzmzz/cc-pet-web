@@ -15,7 +15,7 @@ import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
 import { revealTypewriter, flushTypewriter } from "./lib/typewriter.js";
-import { isToolCallContent, isToolResultContent } from "./lib/tool-call.js";
+import { isToolCallContent, isToolResultContent, looksLikeToolProgress } from "./lib/tool-call.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -442,16 +442,18 @@ export default function App() {
               setPetStateSafely("idle");
             }
             break;
+          // cc-connect streams a live-updating progress card (tool steps) via the
+          // preview channel. We render only progress/tool-like content as a live
+          // preview bubble (keyed per session) so tool activity is visible; text
+          // previews are ignored because the final reply delivers the text (and
+          // the typewriter reveals it), which would otherwise double up.
           case WS_EVENTS.BRIDGE_PREVIEW_START:
-            if (chatKey && payload.previewId) {
+          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
+            if (chatKey && payload.previewId && looksLikeToolProgress(payload.content)) {
+              // startPreview upserts: creates on first sight, replaces content thereafter.
               useMessageStore.getState().startPreview(chatKey, payload.previewId, payload.content ?? "");
               setTaskPhase("working");
               setPetStateSafely("talking");
-            }
-            break;
-          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
-            if (payload.previewId) {
-              useMessageStore.getState().updatePreview(payload.previewId, payload.content ?? "");
             }
             break;
           case WS_EVENTS.BRIDGE_PREVIEW_DELETE:

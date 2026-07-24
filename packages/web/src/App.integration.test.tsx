@@ -823,6 +823,43 @@ describe("App integration", () => {
     });
   });
 
+  it("renders tool-progress preview updates but ignores text previews", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    // A plain-text preview must be ignored (the final reply delivers the text).
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "这是普通正文预览，应该被忽略",
+    });
+    expect(Object.keys(useMessageStore.getState().previewMessages)).toHaveLength(0);
+
+    // A progress card (tool steps) must render as a live preview.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**",
+    });
+    await waitFor(() => {
+      const pv = useMessageStore.getState().previewMessages["pv-cc-connect-default"];
+      expect(pv?.content).toContain("工具 #1");
+    });
+
+    // Subsequent update upserts (replaces) the same preview in place.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**\n2. 🧾 ok",
+    });
+    await waitFor(() => {
+      expect(useMessageStore.getState().previewMessages["pv-cc-connect-default"]?.content).toContain("🧾");
+    });
+  });
+
   it("commits tool-call messages immediately without the typewriter reveal", async () => {
     render(<App />);
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
