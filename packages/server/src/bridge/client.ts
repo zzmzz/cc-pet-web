@@ -266,7 +266,13 @@ export class BridgeClient extends EventEmitter<BridgeClientEvents> {
       JSON.stringify({
         type: "register",
         platform: this.connectionId,
-        capabilities: ["text", "buttons", "typing", "update_message", "preview", "delete_message", "file", "card", "audio", "reconstruct_reply"],
+        // Intentionally NOT advertising "preview": cc-pet-web cannot render
+        // cc-connect's streaming-preview / progress-card protocol, and doing so
+        // made cc-connect route tool progress through a preview card we discard
+        // (hiding all tool activity). Without it, cc-connect degrades to plain
+        // reply messages (tools render as ActivityBlock, text via typewriter)
+        // and SendPreviewStart fails fast with no 10s ack stall.
+        capabilities: ["text", "buttons", "typing", "update_message", "delete_message", "file", "card", "audio", "reconstruct_reply"],
         metadata: { protocol_version: 1, source: "cc-pet-web" },
       })
     );
