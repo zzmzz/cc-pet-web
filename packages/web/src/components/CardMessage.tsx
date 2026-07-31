@@ -10,6 +10,8 @@ import { AskQuestionCard, detectAskQuestion } from "./AskQuestionCard.js";
 
 interface Props {
   card: ChatCard;
+  /** Reply that already answered this AskUserQuestion card, if any. */
+  answeredWith?: string;
 }
 
 const HEADER_COLORS: Record<string, string> = {
@@ -126,7 +128,7 @@ function CardElement({ element }: { element: ChatCardElement }) {
   }
 }
 
-export function CardMessage({ card }: Props) {
+export function CardMessage({ card, answeredWith }: Props) {
   const headerColor = card.header?.color ?? "blue";
   const headerClass = HEADER_COLORS[headerColor] ?? HEADER_COLORS.blue;
   const askData = detectAskQuestion(card);
@@ -140,7 +142,7 @@ export function CardMessage({ card }: Props) {
       )}
       <div className="px-3 py-2 space-y-2">
         {askData ? (
-          <AskQuestionCard data={askData} />
+          <AskQuestionCard data={askData} answeredWith={answeredWith} />
         ) : (
           card.elements.map((el, i) => <CardElement key={i} element={el} />)
         )}

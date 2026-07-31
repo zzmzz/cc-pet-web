@@ -9,6 +9,7 @@ import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
 import { useSessionStore } from "../lib/store/session.js";
 import { groupMessages } from "../lib/group-messages.js";
+import { buildAskAnswerMap } from "../lib/ask-answers.js";
 import { splitUsageFooter } from "../lib/footer.js";
 import { ActivityBlock } from "./ActivityBlock.js";
 import { CardMessage } from "./CardMessage.js";
@@ -420,6 +421,8 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     [messages, streamingContent],
   );
 
+  const askAnswers = useMemo(() => buildAskAnswerMap(messages), [messages]);
+
   const prevSessionRef = useRef(sessionKey);
   useEffect(() => {
     if (prevSessionRef.current !== sessionKey) {
@@ -516,7 +519,7 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
               ref={(el) => registerBubble(item.message.id, el)}
               className={flashId === item.message.id ? "cc-flash" : undefined}
             >
-              <MessageBubble message={item.message} />
+              <MessageBubble message={item.message} answeredWith={askAnswers.get(item.message.id)} />
             </div>
           ),
         )}
@@ -622,7 +625,7 @@ function FileAttachmentView({ file, isUser }: { file: FileAttachment; isUser: bo
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, answeredWith }: { message: ChatMessage; answeredWith?: string }) {
   const isUser = message.role === "user";
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -654,7 +657,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.card) {
     return (
       <div className="flex justify-start px-3 py-1">
-        <CardMessage card={message.card} />
+        <CardMessage card={message.card} answeredWith={answeredWith} />
       </div>
     );
   }
