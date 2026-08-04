@@ -36,6 +36,7 @@ import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
 import { registerSearchRoutes } from "./api/search.js";
 import { registerSiriRoutes } from "./api/siri.js";
+import { registerSiriAskRoute } from "./api/siri-ask.js";
 import { registerWorkspaceRoutes } from "./api/workspace.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
@@ -183,6 +184,22 @@ registerSiriRoutes(app, {
     if (residentRegistry.isResident(connectionId, sessionKey)) {
       proactiveDetector.markUserSend(connectionId, sessionKey);
     }
+  },
+});
+
+// Siri 走的同步通道：直接 spawn claude 跑受限的家居助手会话，一次请求拿到答案，
+// 快捷指令那边不用写轮询循环。超时的活转交常驻会话（见 siri-ask.ts）。
+registerSiriAskRoute(app, {
+  bridgeManager,
+  messageStore,
+  residentRegistry,
+  getAuthIdentity: getRequestAuthIdentity,
+  claude: {
+    bin: process.env.SIRI_CLAUDE_BIN ?? "claude",
+    cwd: process.env.SIRI_CLAUDE_CWD ?? "/code/hass-agent",
+    model: process.env.SIRI_CLAUDE_MODEL ?? "claude-haiku-4-5",
+    // iOS 后台快捷指令的网络超时没有公开确切值，20s 是留了余量的保守取值
+    timeoutMs: Number(process.env.SIRI_CLAUDE_TIMEOUT_MS ?? 20_000),
   },
 });
 
