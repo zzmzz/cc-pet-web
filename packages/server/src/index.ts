@@ -198,9 +198,12 @@ registerSiriAskRoute(app, {
     bin: process.env.SIRI_CLAUDE_BIN ?? "claude",
     cwd: process.env.SIRI_CLAUDE_CWD ?? "/code/hass-agent",
     model: process.env.SIRI_CLAUDE_MODEL ?? "claude-haiku-4-5",
-    // iOS 后台快捷指令的网络超时没有公开确切值，20s 是留了余量的保守取值
-    timeoutMs: Number(process.env.SIRI_CLAUDE_TIMEOUT_MS ?? 20_000),
+    // 这轮整体跑多久算超时（超了转交第二大脑），不是 HTTP 响应时间
+    timeoutMs: Number(process.env.SIRI_CLAUDE_TIMEOUT_MS ?? 90_000),
   },
+  // 同步等这么久还没结果就改发 pollId。iOS 的「获取 URL 内容」超过 25 秒会报错，
+  // 而实测一轮家居查询要 15～25 秒，所以这里取 10 秒留足余量。
+  handoffMs: Number(process.env.SIRI_ASK_HANDOFF_MS ?? 10_000),
 });
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {

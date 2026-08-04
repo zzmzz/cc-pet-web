@@ -6,12 +6,14 @@ import type { ResidentRegistry } from "../resident/registry.js";
 import { wrapWithVoicePrompt } from "../siri/voice-prompt.js";
 import { sanitizeForTts } from "../siri/tts-sanitizer.js";
 import { runClaude, type ClaudeRunOptions } from "../siri/claude-runner.js";
+import { AskTaskStore } from "../siri/ask-tasks.js";
 
 /** Siri 连点或快捷指令重试时别把机器打满 */
 const MAX_INFLIGHT = 3;
 
+const TTS_PENDING = "在办，稍等。";
 const TTS_DELEGATED = "这活儿有点大，我交给第二大脑了，完事你在面板上看。";
-const TTS_NO_RESIDENT = "这活儿超过二十秒了，但我没找到能接手的常驻会话。";
+const TTS_NO_RESIDENT = "这活儿太大了我没办完，也没找到能接手的常驻会话。";
 const TTS_UNAVAILABLE = "助手起不来，检查一下 claude 装没装。";
 const TTS_FAILED = "出错了，没办好。";
 const TTS_EMPTY = "办完了，但它没说话。";
@@ -22,19 +24,17 @@ export interface SiriAskDeps {
   residentRegistry: ResidentRegistry;
   getAuthIdentity: (req: FastifyRequest) => AuthIdentity | null;
   claude: ClaudeRunOptions;
+  /** 同步等多久还没出结果就改发 pollId。必须显著小于 iOS 的 25 秒上限。 */
+  handoffMs: number;
+  tasks?: AskTaskStore;
 }
 
-type AskMode = "direct" | "delegated" | "timeout" | "error";
-
-interface AskReply {
-  ttsText: string;
-  mode: AskMode;
-}
+type AskMode = "direct" | "pending" | "delegated" | "error";
 
 /**
  * 把这一轮交给常驻会话（「第二大脑」）接着干。
  *
- * 注意这是**超时转交**，不是 spawn 失败时的降级 —— claude 起不来就直接报错，
+ * 这是**超时转交**，不是 spawn 失败时的降级 —— claude 起不来就直接报错，
  * 不偷偷改走 bridge。
  */
 function delegateToResident(deps: SiriAskDeps, auth: AuthIdentity, content: string): boolean {
@@ -46,9 +46,9 @@ function delegateToResident(deps: SiriAskDeps, auth: AuthIdentity, content: stri
   if (!pair) return false;
 
   const msgId = `siri-ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  // 告诉第二大脑这是从哪来的、以及不必再守语音那套长度限制（结果是在网页上看的）
+  // 告诉第二大脑这是从哪来的，以及不必再守语音那套长度限制（结果是在网页上看的）
   const handoff =
-    "[Siri 转交] 下面这个请求我在语音通道里 20 秒没做完，交给你接着干。" +
+    "[Siri 转交] 下面这个请求我在语音通道里没做完，交给你接着干。" +
     "用户是语音提的，但结果他会在面板上看，所以不用管长度限制，正常回答就行。\n\n" +
     content;
 
@@ -75,6 +75,7 @@ function delegateToResident(deps: SiriAskDeps, auth: AuthIdentity, content: stri
 }
 
 export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): void {
+  const tasks = deps.tasks ?? new AskTaskStore();
   let inflight = 0;
 
   app.post<{ Body: { content?: string } }>("/api/siri/ask", async (req, reply) => {
@@ -88,38 +89,84 @@ export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): v
       return reply.code(429).send({ error: "Too many active requests" });
     }
 
+    const taskId = tasks.create();
     inflight += 1;
-    try {
-      const result = await runClaude(wrapWithVoicePrompt(content), deps.claude);
 
-      if (result.timedOut) {
-        const handed = delegateToResident(deps, auth, content);
-        app.log.info({ content, handed }, "siri/ask timed out");
-        const body: AskReply = handed
-          ? { ttsText: TTS_DELEGATED, mode: "delegated" }
-          : { ttsText: TTS_NO_RESIDENT, mode: "timeout" };
-        return body;
-      }
+    // 故意不 await 到底：下面只等 handoffMs，剩下的让它在后台跑完并写进任务表。
+    const running = runClaude(wrapWithVoicePrompt(content), deps.claude)
+      .then((result) => {
+        if (result.timedOut) {
+          const handed = delegateToResident(deps, auth, content);
+          app.log.info({ taskId, handed }, "siri/ask exceeded total timeout");
+          tasks.finish(taskId, handed ? "delegated" : "error", handed ? TTS_DELEGATED : TTS_NO_RESIDENT);
+          return;
+        }
+        // spawn 找不到二进制时 Node 把 "spawn claude ENOENT" 灌进 error.message，
+        // 所以 ENOENT 必须先于 stderr 判断，否则记下来的是迷惑的 Node 错误。
+        if (result.errorCode === "ENOENT") {
+          app.log.error({ taskId, bin: deps.claude.bin }, "siri/ask: claude executable not found");
+          tasks.finish(taskId, "error", TTS_UNAVAILABLE);
+          return;
+        }
+        if (result.errorCode || result.exitCode !== 0) {
+          app.log.error(
+            { taskId, errorCode: result.errorCode, exitCode: result.exitCode, stderr: result.stderr.slice(0, 500) },
+            "siri/ask: claude failed",
+          );
+          tasks.finish(taskId, "error", TTS_FAILED);
+          return;
+        }
+        tasks.finish(taskId, "done", sanitizeForTts(result.text) || TTS_EMPTY);
+      })
+      .catch((err: unknown) => {
+        app.log.error({ taskId, err }, "siri/ask: unexpected failure");
+        tasks.finish(taskId, "error", TTS_FAILED);
+      })
+      .finally(() => {
+        inflight -= 1;
+      });
 
-      // spawn 找不到二进制时 Node 把 "spawn claude ENOENT" 灌进 error.message，
-      // 所以 ENOENT 必须先于 stderr 判断，否则返回的是迷惑的 Node 错误。
-      if (result.errorCode === "ENOENT") {
-        app.log.error({ bin: deps.claude.bin }, "siri/ask: claude executable not found");
-        return reply.code(500).send({ error: "claude executable not available", ttsText: TTS_UNAVAILABLE, mode: "error" });
-      }
-      if (result.errorCode || result.exitCode !== 0) {
-        app.log.error(
-          { errorCode: result.errorCode, exitCode: result.exitCode, stderr: result.stderr.slice(0, 500) },
-          "siri/ask: claude failed",
-        );
-        return reply.code(500).send({ error: "claude run failed", ttsText: TTS_FAILED, mode: "error" });
-      }
+    // 快的活当场答完，慢的活发个 id 让快捷指令来轮询 —— iOS 的「获取 URL 内容」
+    // 超过 25 秒就报错，而实测一轮家居查询要 15～25 秒，同步等到底会随机失败。
+    const HANDED_OFF = Symbol("handoff");
+    const raced = await Promise.race([
+      running.then(() => tasks.get(taskId)),
+      new Promise<typeof HANDED_OFF>((resolve) => {
+        const t = setTimeout(() => resolve(HANDED_OFF), deps.handoffMs);
+        t.unref?.();
+      }),
+    ]);
 
-      const ttsText = sanitizeForTts(result.text);
-      const body: AskReply = { ttsText: ttsText || TTS_EMPTY, mode: "direct" };
-      return body;
-    } finally {
-      inflight -= 1;
+    if (raced === HANDED_OFF) {
+      return { pollId: taskId, ttsText: TTS_PENDING, mode: "pending" satisfies AskMode };
     }
+
+    const done = raced as ReturnType<AskTaskStore["get"]>;
+    if (done?.status === "error") {
+      return reply.code(500).send({ error: "claude run failed", ttsText: done.ttsText, mode: "error" });
+    }
+    return {
+      ttsText: done?.ttsText ?? TTS_EMPTY,
+      mode: (done?.status === "delegated" ? "delegated" : "direct") satisfies AskMode,
+    };
+  });
+
+  app.get<{ Querystring: { id?: string } }>("/api/siri/ask/poll", async (req, reply) => {
+    const auth = deps.getAuthIdentity(req);
+    if (!auth) return reply.code(401).send({ error: "Unauthorized" });
+
+    const id = req.query.id;
+    if (!id) return reply.code(400).send({ error: "id is required" });
+
+    const task = tasks.get(id);
+    if (!task) return reply.code(404).send({ error: "Unknown id" });
+
+    // 还在跑就只回 status，让快捷指令继续轮询
+    if (task.status === "running") return { status: "running", mode: "pending" satisfies AskMode };
+    return {
+      status: task.status,
+      ttsText: task.ttsText,
+      mode: (task.status === "done" ? "direct" : task.status) satisfies AskMode,
+    };
   });
 }
