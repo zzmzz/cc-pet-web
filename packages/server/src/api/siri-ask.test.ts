@@ -154,6 +154,52 @@ describe("POST /api/siri/ask", () => {
     expect((await poll(app, "nope")).statusCode).toBe(404);
   });
 
+  // 快捷指令的「重复」没有 break，所以让服务端 hold 住请求，
+  // 循环次数才能从十几次降到三四次。
+  describe("long polling", () => {
+    it("holds the request until the answer lands", async () => {
+      let finish!: (v: unknown) => void;
+      runClaude.mockImplementation(() => new Promise((r) => { finish = r; }));
+      const { app } = buildApp({ handoffMs: 10 });
+      const { pollId } = (await ask(app, "慢活")).json();
+
+      setTimeout(() => finish(ok("办好了。")), 60);
+      const t0 = Date.now();
+      const res = await app.inject({ method: "GET", url: `/api/siri/ask/poll?id=${pollId}&wait=5` });
+
+      expect(res.json()).toMatchObject({ status: "done", ttsText: "办好了。" });
+      // 真的等了，而不是立刻返回 running
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(50);
+    });
+
+    it("gives up holding at the wait deadline and reports running", async () => {
+      runClaude.mockImplementation(() => new Promise(() => {}));
+      const { app } = buildApp({ handoffMs: 10 });
+      const { pollId } = (await ask(app, "永远跑不完")).json();
+
+      const res = await app.inject({ method: "GET", url: `/api/siri/ask/poll?id=${pollId}&wait=1` });
+      expect(res.json().status).toBe("running");
+    });
+
+    it("returns immediately once finished, so leftover loop iterations cost nothing", async () => {
+      let finish!: (v: unknown) => void;
+      runClaude.mockImplementation(() => new Promise((r) => { finish = r; }));
+      const { app } = buildApp({ handoffMs: 10 });
+      const { pollId } = (await ask(app, "慢活")).json();
+
+      finish(ok("早办完了。"));
+      await vi.waitFor(async () => {
+        expect((await poll(app, pollId)).json().status).toBe("done");
+      });
+
+      // 已完成后即使要求 wait=10 也必须立刻返回，否则快捷指令里剩下的循环会白等
+      const t0 = Date.now();
+      const res = await app.inject({ method: "GET", url: `/api/siri/ask/poll?id=${pollId}&wait=10` });
+      expect(res.json().status).toBe("done");
+      expect(Date.now() - t0).toBeLessThan(200);
+    });
+  });
+
   describe("on total timeout", () => {
     it("hands the task to the resident session", async () => {
       runClaude.mockResolvedValue(TIMED_OUT);

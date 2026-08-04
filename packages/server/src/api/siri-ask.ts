@@ -11,6 +11,10 @@ import { AskTaskStore } from "../siri/ask-tasks.js";
 /** Siri 连点或快捷指令重试时别把机器打满 */
 const MAX_INFLIGHT = 3;
 
+/** poll 的长轮询上限。压在 iOS「获取 URL 内容」那 25 秒之下，留足网络余量。 */
+const MAX_POLL_WAIT_MS = 15_000;
+const POLL_TICK_MS = 200;
+
 const TTS_PENDING = "在办，稍等。";
 const TTS_DELEGATED = "这活儿有点大，我交给第二大脑了，完事你在面板上看。";
 const TTS_NO_RESIDENT = "这活儿太大了我没办完，也没找到能接手的常驻会话。";
@@ -151,17 +155,33 @@ export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): v
     };
   });
 
-  app.get<{ Querystring: { id?: string } }>("/api/siri/ask/poll", async (req, reply) => {
+  app.get<{ Querystring: { id?: string; wait?: string } }>("/api/siri/ask/poll", async (req, reply) => {
     const auth = deps.getAuthIdentity(req);
     if (!auth) return reply.code(401).send({ error: "Unauthorized" });
 
     const id = req.query.id;
     if (!id) return reply.code(400).send({ error: "id is required" });
 
-    const task = tasks.get(id);
+    let task = tasks.get(id);
     if (!task) return reply.code(404).send({ error: "Unknown id" });
 
-    // 还在跑就只回 status，让快捷指令继续轮询
+    // 长轮询：iOS 快捷指令的「重复」没有 break，纯短轮询要写成「循环 15 次 + 里面
+    // 套两层如果」才不空等。让服务端 hold 住请求，快捷指令就只需重复三四次，
+    // 且结果出来后剩下几次是秒回。上限压在 iOS 那 25 秒之下。
+    const waitMs = Math.min(Math.max(Number(req.query.wait ?? 0), 0) * 1000, MAX_POLL_WAIT_MS);
+    if (waitMs > 0 && task.status === "running") {
+      const deadline = Date.now() + waitMs;
+      while (task?.status === "running" && Date.now() < deadline) {
+        await new Promise((r) => {
+          const t = setTimeout(r, POLL_TICK_MS);
+          t.unref?.();
+        });
+        task = tasks.get(id);
+      }
+      if (!task) return reply.code(404).send({ error: "Unknown id" });
+    }
+
+    // 还在跑就只回 status，让快捷指令再来一次
     if (task.status === "running") return { status: "running", mode: "pending" satisfies AskMode };
     return {
       status: task.status,
