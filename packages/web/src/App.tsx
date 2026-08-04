@@ -27,6 +27,24 @@ import {
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
 
+/**
+ * Events that put content in the chat. When one of these arrives without a
+ * sessionKey we have to guess its session, which is the only way a previous
+ * conversation can surface inside another one — so those get a console
+ * breadcrumb. Typing/error frames are routinely keyless and stay silent.
+ */
+const CONTENT_BEARING_WS_EVENTS = new Set<string>([
+  WS_EVENTS.BRIDGE_MESSAGE,
+  WS_EVENTS.BRIDGE_STREAM_DELTA,
+  WS_EVENTS.BRIDGE_STREAM_DONE,
+  WS_EVENTS.BRIDGE_BUTTONS,
+  WS_EVENTS.BRIDGE_FILE_RECEIVED,
+  WS_EVENTS.BRIDGE_CARD,
+  WS_EVENTS.BRIDGE_AUDIO,
+  WS_EVENTS.BRIDGE_PREVIEW_START,
+  WS_EVENTS.BRIDGE_PREVIEW_UPDATE,
+]);
+
 export default function App() {
   useVisualViewport();
 
@@ -141,13 +159,31 @@ export default function App() {
         if (connectionId && resolvedSessionKey && (routeSource === "payload" || routeSource === "reply_ctx")) {
           useSessionStore.getState().noteStickySession(connectionId, resolvedSessionKey);
         }
-        if (connectionId && (routeSource === "active" || routeSource === "known" || routeSource === "fallback")) {
+        const guessedFromActiveSession =
+          routeSource === "active" || routeSource === "known" || routeSource === "fallback";
+        // True when nothing but the active-session pointer identifies the target,
+        // i.e. we are guessing. Refined below once sticky/typing are consulted.
+        let sessionIsGuess = guessedFromActiveSession;
+        if (connectionId && guessedFromActiveSession) {
           // A keyless reply belongs to the session that made the request, not to
           // whatever session is currently active — otherwise a late reply leaks
           // into a freshly-created/switched session.
           const sticky = useSessionStore.getState().stickySessionByConnection[connectionId];
           if (sticky) {
             resolvedSessionKey = sticky;
+            sessionIsGuess = false;
+          }
+          // The server log sees the missing session_key but not where the event
+          // landed. Leave a breadcrumb so a reported leak can be traced without
+          // needing a live repro.
+          if (CONTENT_BEARING_WS_EVENTS.has(type)) {
+            console.warn("[cc-pet] content event without sessionKey routed by fallback", {
+              type,
+              connectionId,
+              routeSource,
+              sticky: sticky ?? null,
+              resolvedSessionKey,
+            });
           }
         }
         const findTypingActiveSession = (cid: string): string | undefined => {
@@ -159,10 +195,11 @@ export default function App() {
           }
           return undefined;
         };
-        if (connectionId && (routeSource === "active" || routeSource === "known" || routeSource === "fallback")) {
+        if (connectionId && guessedFromActiveSession) {
           const typingSession = findTypingActiveSession(connectionId);
           if (typingSession) {
             resolvedSessionKey = typingSession;
+            sessionIsGuess = false;
           }
         }
         const chatKey = connectionId && resolvedSessionKey ? makeChatKey(connectionId, resolvedSessionKey) : "";
@@ -458,6 +495,19 @@ export default function App() {
           // the typewriter reveals it), which would otherwise double up.
           case WS_EVENTS.BRIDGE_PREVIEW_START:
           case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
+            // cc-connect keys progress cards by ref_id/preview_handle, so these
+            // frames can arrive with no session at all. Unlike a reply, a preview
+            // card is pure progress that the final (always-keyed) reply repeats —
+            // so when the session is only a guess, drop it instead of painting a
+            // previous conversation's tool output into an unrelated session.
+            if (sessionIsGuess) {
+              console.warn("[cc-pet] dropped preview with unattributable session", {
+                type,
+                connectionId,
+                previewId: payload.previewId,
+              });
+              break;
+            }
             if (chatKey && payload.previewId && looksLikeToolProgress(payload.content)) {
               // startPreview upserts: creates on first sight, replaces content thereafter.
               useMessageStore.getState().startPreview(chatKey, payload.previewId, payload.content ?? "");

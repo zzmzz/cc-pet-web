@@ -107,6 +107,16 @@ export function ChatWindow() {
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // A new session must start with an empty composer: an unsent draft (or staged
+  // attachment) left over from the previous conversation would otherwise look
+  // like residue in the fresh session — and would be sent to the wrong agent
+  // context if the user hits Enter.
+  const composerResetToken = useUIStore((s) => s.composerResetToken);
+  useEffect(() => {
+    setInput("");
+    setPendingAttachments([]);
+  }, [composerResetToken]);
+
   const { isActive: slashMenuVisible, query: slashQuery } = useSlashMenu(input);
 
   useEffect(() => {

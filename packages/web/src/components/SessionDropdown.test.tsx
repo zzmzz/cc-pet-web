@@ -6,6 +6,7 @@ import { SessionDropdown, formatSessionPhase } from "./SessionDropdown.js";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useSessionStore } from "../lib/store/session.js";
+import { useUIStore } from "../lib/store/ui.js";
 
 const fetchApi = vi.fn().mockResolvedValue({ ok: true });
 
@@ -14,14 +15,21 @@ vi.mock("../lib/platform.js", () => ({
 }));
 
 function resetStores() {
+  localStorage.clear();
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  useMessageStore.setState({
+    messagesByChat: {},
+    streamingContent: {},
+    previewMessages: {},
+    loadedChatKeys: new Set(),
+  });
   useSessionStore.setState({
     sessions: {},
     activeSessionKey: {},
     unread: {},
     taskStateByConnection: {},
     lazyLoadChat: null,
+    stickySessionByConnection: {},
   });
 }
 
@@ -337,6 +345,74 @@ describe("SessionDropdown", () => {
     expect(screen.queryByText("当前会话")).toBeNull();
     // 不出现裸露的 session key 文案
     expect(screen.queryByText("res")).toBeNull();
+  });
+
+  it("新建会话：清掉该 chatKey 的客户端残留、把在途消息钉回旧会话、并要求清空输入框", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: { c1: [{ key: "old", connectionId: "c1", createdAt: 1, lastActiveAt: 100 }] },
+      activeSessionKey: { c1: "old" },
+      stickySessionByConnection: {},
+    });
+    const resetTokenBefore = useUIStore.getState().composerResetToken;
+
+    // Freeze the generated key so the residue can be planted under it first.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const newKey = "session-1000";
+    const newChatKey = makeChatKey("c1", newKey);
+    useMessageStore.setState({
+      messagesByChat: {
+        [newChatKey]: [
+          {
+            id: "leaked",
+            role: "assistant",
+            content: "上一个会话漏过来的内容",
+            timestamp: 1,
+            connectionId: "c1",
+            sessionKey: newKey,
+          },
+        ],
+      },
+      streamingContent: { [newChatKey]: "半截回复" },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+    await user.click(screen.getByText("新建会话"));
+
+    expect(fetchApi).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ connectionId: "c1", key: newKey }),
+    });
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe(newKey);
+    expect(useMessageStore.getState().messagesByChat[newChatKey]).toBeUndefined();
+    expect(useMessageStore.getState().streamingContent[newChatKey]).toBeUndefined();
+    // Keyless replies still in flight belong to the session we just left.
+    expect(useSessionStore.getState().stickySessionByConnection.c1).toBe("old");
+    expect(useUIStore.getState().composerResetToken).toBe(resetTokenBefore + 1);
+
+    nowSpy.mockRestore();
+  });
+
+  it("新建会话不覆盖已有的 sticky 会话", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: { c1: [{ key: "old", connectionId: "c1", createdAt: 1, lastActiveAt: 100 }] },
+      activeSessionKey: { c1: "old" },
+      stickySessionByConnection: { c1: "in-flight" },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+    await user.click(screen.getByText("新建会话"));
+
+    expect(useSessionStore.getState().stickySessionByConnection.c1).toBe("in-flight");
   });
 
   it("uses shared theme classes for opened dropdown menu surface", async () => {
