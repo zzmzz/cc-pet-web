@@ -7,11 +7,19 @@ interface UIState {
   petState: PetState;
   isMobile: boolean;
   settingsOpen: boolean;
+  /**
+   * Bumped when the composer must be emptied (currently: a new session was
+   * created). The draft and pending attachments live in ChatWindow component
+   * state, so a counter is the cheapest way for the session UI to ask for a
+   * reset without lifting the whole composer into a store.
+   */
+  composerResetToken: number;
 
   setChatOpen: (open: boolean) => void;
   setPetState: (state: PetState) => void;
   setIsMobile: (mobile: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  resetComposer: () => void;
 }
 
 const UI_STATE_STORAGE_KEY = "cc-pet-ui-state";
@@ -58,6 +66,7 @@ export const useUIStore = create<UIState>((set) => ({
   petState: persistedUI.petState ?? "idle",
   isMobile: false,
   settingsOpen: false,
+  composerResetToken: 0,
 
   setChatOpen: (open) =>
     set((s) => {
@@ -71,4 +80,5 @@ export const useUIStore = create<UIState>((set) => ({
     }),
   setIsMobile: (isMobile) => set({ isMobile }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
+  resetComposer: () => set((s) => ({ composerResetToken: s.composerResetToken + 1 })),
 }));

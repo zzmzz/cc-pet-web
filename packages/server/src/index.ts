@@ -264,9 +264,30 @@ bridgeManager.on("skillsProbe", (connId: string, event: Record<string, unknown>)
   app.log.info({ connectionId: connId, ...event }, "Bridge skills probe event");
 });
 
+/** Frame types that carry chat content: without a session_key the dashboard has to guess a target session. */
+const CONTENT_BEARING_BRIDGE_TYPES = new Set([
+  "reply",
+  "reply_stream",
+  "card",
+  "file",
+  "buttons",
+  "audio",
+  "preview_start",
+  "update_message",
+]);
+
 bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
+  if (!sessionKey && CONTENT_BEARING_BRIDGE_TYPES.has(msg.type)) {
+    // The dashboard falls back to its sticky/active session for these, which is
+    // how content from one conversation can surface in another. Logged so such a
+    // leak is diagnosable after the fact instead of only being visible client-side.
+    app.log.warn(
+      { connectionId: connId, type: msg.type },
+      "Bridge content frame carries no session_key — dashboard must guess the target session",
+    );
+  }
 
   const bumpResidentUnread = (contentPreview: string): void => {
     if (!sessionKey) return;

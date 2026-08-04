@@ -9,7 +9,13 @@ const sid = "session-a";
 const chatKey = makeChatKey(conn, sid);
 
 function resetStores() {
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  localStorage.clear();
+  useMessageStore.setState({
+    messagesByChat: {},
+    streamingContent: {},
+    previewMessages: {},
+    loadedChatKeys: new Set(),
+  });
   useSessionStore.setState({
     sessions: {},
     activeSessionKey: {},
@@ -286,5 +292,55 @@ describe("session store behavior", () => {
     useSessionStore.getState().touchSessionAutoTitle(conn, sid, long);
 
     expect(useSessionStore.getState().sessions[conn]?.[0]?.label).toBe("123456789012345…");
+  });
+
+  it("resetSessionResidue drops messages, streaming, previews, task state and unread for a session", () => {
+    useSessionStore.setState({
+      sessions: { [conn]: [{ key: sid, connectionId: conn, createdAt: 1, lastActiveAt: 1 }] },
+      unread: { [chatKey]: 4 },
+      taskStateByConnection: {
+        [conn]: {
+          [sid]: {
+            activeRequestId: "r1",
+            phase: "working",
+            startedAt: 1,
+            lastActivityAt: 1,
+            firstTokenAt: null,
+            stalledReason: null,
+          },
+        },
+      },
+    });
+    useMessageStore.getState().addMessage(chatKey, {
+      id: "leaked",
+      role: "assistant",
+      content: "content from another conversation",
+      timestamp: 1,
+      connectionId: conn,
+      sessionKey: sid,
+    });
+    useMessageStore.getState().appendStreamDelta(chatKey, "half-revealed reply");
+    useMessageStore.getState().startPreview(chatKey, "pv-1", "tool progress");
+    useMessageStore.getState().markChatLoaded(chatKey);
+
+    useSessionStore.getState().resetSessionResidue(conn, sid);
+
+    const msg = useMessageStore.getState();
+    expect(msg.messagesByChat[chatKey]).toBeUndefined();
+    expect(msg.streamingContent[chatKey]).toBeUndefined();
+    expect(msg.previewMessages["pv-1"]).toBeUndefined();
+    // Unloaded again so the session refetches its (empty) history from the server.
+    expect(msg.isChatLoaded(chatKey)).toBe(false);
+
+    const sess = useSessionStore.getState();
+    expect(sess.taskStateByConnection[conn]?.[sid]).toBeUndefined();
+    expect(sess.unread[chatKey]).toBe(0);
+  });
+
+  it("noteStickySession persists across a reload so late keyless replies keep their target", () => {
+    useSessionStore.getState().noteStickySession(conn, sid);
+
+    const raw = localStorage.getItem("cc-pet-sticky-session-map");
+    expect(raw && JSON.parse(raw)).toEqual({ [conn]: sid });
   });
 });

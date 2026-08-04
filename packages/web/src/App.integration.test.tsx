@@ -1010,6 +1010,78 @@ describe("App integration", () => {
     });
   });
 
+  it("does not paint an in-flight progress card into a session created after a reload", async () => {
+    // The reported leak: the page was reloaded (or the PWA reopened) while a turn
+    // from before it was still running, so nothing in memory ties the bridge's
+    // keyless frames to the session that started them. The user then creates a
+    // new session — the still-arriving agent output must not land in it.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+      stickySessionByConnection: {}, // in-memory sticky was lost with the reload
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+    const newKey = useSessionStore.getState().activeSessionKey["cc-connect"]!;
+    expect(newKey).not.toBe("session-old");
+
+    // Progress card + final reply of the OLD turn, arriving with no session_key.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash** 上一段对话的工具输出",
+    });
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "上一段对话的回复",
+    });
+
+    // It belongs to the session the user left, which is where it must show up
+    // (the reply is committed after the typewriter reveal finishes).
+    await waitFor(() => {
+      const oldMsgs = useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "session-old")] ?? [];
+      expect(oldMsgs.map((m) => m.content)).toContain("上一段对话的回复");
+    });
+
+    const newChatKey = makeChatKey("cc-connect", newKey);
+    expect(useMessageStore.getState().messagesByChat[newChatKey] ?? []).toEqual([]);
+    expect(useMessageStore.getState().streamingContent[newChatKey]).toBeUndefined();
+    expect(
+      Object.values(useMessageStore.getState().previewMessages).filter((pv) => pv.chatKey === newChatKey),
+    ).toEqual([]);
+  });
+
+  it("creating a session empties the composer so no draft carries over from the previous conversation", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    const input = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "还没发出去的草稿");
+    expect(input).toHaveValue("还没发出去的草稿");
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(INPUT_PLACEHOLDER)).toHaveValue("");
+    });
+    const activeKey = useSessionStore.getState().activeSessionKey["cc-connect"];
+    expect(activeKey).not.toBe("session-old");
+    expect(useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", activeKey!)] ?? []).toEqual([]);
+  });
+
   it("increments unread and shows pet talking when assistant message targets a non-active session", async () => {
     useSessionStore.setState({
       sessions: {

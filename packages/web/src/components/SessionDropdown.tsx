@@ -5,6 +5,7 @@ import { makeChatKey } from "@cc-pet/shared";
 import { useSessionStore } from "../lib/store/session.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useConnectionStore } from "../lib/store/connection.js";
+import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
 
 const EMPTY_SESSIONS: Session[] = [];
@@ -279,6 +280,22 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
         method: "POST",
         body: JSON.stringify({ connectionId: activeConnectionId, key }),
       });
+      const sessionStore = useSessionStore.getState();
+
+      // Anything still in flight belongs to the session the user is leaving.
+      // Without this, a keyless reply arriving after the switch would follow
+      // the active-session pointer straight into the new session (sticky is
+      // only set by an outgoing send or a keyed reply, so it can be empty —
+      // e.g. right after a reload while a turn from before it is unfinished).
+      const leavingKey = sessionStore.activeSessionKey[activeConnectionId];
+      if (leavingKey && leavingKey !== key && !sessionStore.stickySessionByConnection[activeConnectionId]) {
+        sessionStore.noteStickySession(activeConnectionId, leavingKey);
+      }
+
+      // A brand-new key has no server history, so any client-side state under
+      // it is residue from another conversation — drop it before we focus it.
+      sessionStore.resetSessionResidue(activeConnectionId, key);
+
       const list = useSessionStore.getState().sessions[activeConnectionId] ?? [];
       const now = Date.now();
       setSessions(activeConnectionId, [
@@ -286,6 +303,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
         { key, connectionId: activeConnectionId, createdAt: now, lastActiveAt: now },
       ]);
       setActiveSession(activeConnectionId, key);
+      useUIStore.getState().resetComposer();
       setOpen(false);
       setShowAll(false);
       setConfirmDeleteId(null);
