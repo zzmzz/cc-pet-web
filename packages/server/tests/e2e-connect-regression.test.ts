@@ -38,7 +38,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 15_000, interv
 async function waitForWsMessage<T = any>(
   ws: WebSocket,
   predicate: (msg: T) => boolean,
-  timeoutMs = 10_000
+  // 20s 而不是 10s：GitHub runner 上 server 是 `node --import tsx` 起的，tsx 现编译
+  // TypeScript 再加上 bridge 建连，10 秒会踩线 —— CI 上偶发失败过好几次。
+  timeoutMs = 20_000
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
