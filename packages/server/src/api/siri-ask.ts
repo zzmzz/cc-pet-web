@@ -99,7 +99,7 @@ export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): v
       try {
         const hit = await tryFastPath(content, deps.fastPath);
         if (hit) {
-          app.log.info({ name: hit.name, entityId: hit.entityId, service: hit.service }, "siri/ask fast path");
+          app.log.info({ steps: hit.steps }, "siri/ask fast path");
           return { ttsText: hit.ttsText, mode: "fast" satisfies AskMode };
         }
       } catch (err) {

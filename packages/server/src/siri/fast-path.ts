@@ -8,7 +8,7 @@ import path from "node:path";
  * 6.1 秒是模型读 74K context 想「该调什么」，1.6 秒是模型组织「关了」两个字，
  * 剩下是进程启停。而中文名 → entity_id 本来就是一次查表，不需要推理。
  *
- * 原则：**只在精确唯一匹配时才走，宁可降级也不猜。** 匹配不上、有歧义、
+ * 原则：**只在每个动作都能精确定位时才走，宁可降级也不猜。** 匹配不上、有歧义、
  * 是查询而非命令的，一律回退给模型 —— 那条路的行为完全不变。
  */
 
@@ -17,7 +17,10 @@ const TURN_OFF_WORDS = ["关闭", "关掉", "关上", "闭合", "停止", "关"]
 const TURN_ON_WORDS = ["打开", "开启", "启动", "执行", "切换到", "开"];
 
 /** 说话里的口水词，匹配前先剥掉 */
-const FILLER = /^(帮我|帮忙|请|麻烦|你|把|将|给我|现在|立刻|马上|顺便)+/;
+const FILLER = /^(帮我|帮忙|请|麻烦|你|把|将|给我|现在|立刻|马上|顺便|然后|再|接着)+/;
+
+/** 复合指令的分隔符：「关闭客厅空调，打开主卧空调」要拆成两步分别执行 */
+const CLAUSE_SPLIT = /[，,。;；、]+|然后|接着|顺便|再帮我|同时/;
 
 /** 每个域该调什么服务 */
 const SERVICES: Record<string, { on: string; off: string | null }> = {
@@ -44,9 +47,16 @@ export interface FastPathOptions {
 
 export interface FastPathResult {
   ttsText: string;
+  /** 这一句实际做了几件事 */
+  steps: { name: string; entityId: string; service: string; ok: boolean }[];
+}
+
+interface Step {
   name: string;
   entityId: string;
+  domain: string;
   service: string;
+  intent: "on" | "off";
 }
 
 interface MappingCache {
@@ -99,40 +109,20 @@ export function resetMappingCache(): void {
   cache = null;
 }
 
-interface Parsed {
-  intent: "on" | "off";
-  /** 剥掉动作词和口水词后剩下的部分，用来找设备名 */
-  rest: string;
-}
-
-function parse(content: string): Parsed | null {
-  let s = content.trim().replace(/[。！!？?，,、\s]+/g, "");
-  s = s.replace(FILLER, "");
-  if (!s) return null;
-
-  // 带疑问语气的是查询不是命令（「客厅灯开着吗」），交给模型
-  if (/[吗呢?？]$/.test(content.trim()) || /什么状态|怎么样|多少度/.test(content)) {
-    return null;
-  }
-
-  for (const w of TURN_OFF_WORDS) {
-    if (s.includes(w)) return { intent: "off", rest: s.split(w).join("") };
-  }
-  for (const w of TURN_ON_WORDS) {
-    if (s.includes(w)) return { intent: "on", rest: s.split(w).join("") };
-  }
-  return null;
+/** 是查询而不是命令？那交给模型 */
+function isQuestion(content: string): boolean {
+  return /[吗呢?？]$/.test(content.trim()) || /什么状态|怎么样|多少度|开着还是/.test(content);
 }
 
 /**
- * 在剩余文本里找设备名。取**最长**的匹配 —— 「洗墙灯」和「灯」都可能命中，
+ * 在文本里找设备名。取**最长**的匹配 —— 「洗墙灯」和「灯」都可能命中，
  * 显然该用前者。长度并列时视为歧义，放弃。
  */
-function matchName(rest: string, mappings: Map<string, string>): string | null {
+function matchName(text: string, mappings: Map<string, string>): string | null {
   let best: string | null = null;
   let tie = false;
   for (const name of mappings.keys()) {
-    if (!rest.includes(name)) continue;
+    if (!text.includes(name)) continue;
     if (!best || name.length > best.length) {
       best = name;
       tie = false;
@@ -143,42 +133,119 @@ function matchName(rest: string, mappings: Map<string, string>): string | null {
   return tie ? null : best;
 }
 
-export async function tryFastPath(
-  content: string,
-  options: FastPathOptions,
-): Promise<FastPathResult | null> {
-  const parsed = parse(content);
-  if (!parsed) return null;
+/** 把一个子句解析成一步操作。任何一点不确定就返回 null。 */
+function planStep(clause: string, mappings: Map<string, string>): Step | null {
+  let s = clause.trim().replace(/[。！!？?\s]+/g, "").replace(FILLER, "");
+  if (!s) return null;
 
-  const mappings = loadMappings(options.dir);
-  const name = matchName(parsed.rest, mappings);
+  const hasOff = TURN_OFF_WORDS.some((w) => s.includes(w));
+  const hasOn = TURN_ON_WORDS.some((w) => s.includes(w));
+  // 一个子句里同时出现开和关，说明没切干净（或者本来就说得含糊）—— 交给模型
+  if (hasOff && hasOn) return null;
+  if (!hasOff && !hasOn) return null;
+
+  const intent: "on" | "off" = hasOff ? "off" : "on";
+  for (const w of intent === "off" ? TURN_OFF_WORDS : TURN_ON_WORDS) {
+    s = s.split(w).join("");
+  }
+
+  const name = matchName(s, mappings);
   if (!name) return null;
 
   const entityId = mappings.get(name)!;
   const domain = entityId.split(".", 1)[0];
-  const spec = SERVICES[domain];
-  if (!spec) return null;
-
-  const service = parsed.intent === "on" ? spec.on : spec.off;
-  // 场景/脚本没有「关」这个概念，让模型去解释
+  const service = SERVICES[domain]?.[intent];
+  // 没有服务映射，或者对场景说「关闭」（没这个概念）—— 让模型去解释
   if (!service) return null;
 
+  return { name, entityId, domain, service, intent };
+}
+
+/**
+ * 把一句话拆成若干步。**任何一步解析不出来就整句返回 null**，
+ * 绝不半执行 —— 否则「关闭客厅空调，打开主卧空调」会变成只关了客厅、
+ * 却回一句「关了」，让人以为两件都做了。
+ */
+export function planSteps(content: string, mappings: Map<string, string>): Step[] | null {
+  if (isQuestion(content)) return null;
+
+  const clauses = content
+    .split(CLAUSE_SPLIT)
+    .map((c) => c.trim())
+    .filter(Boolean);
+  if (clauses.length === 0) return null;
+
+  const steps: Step[] = [];
+  for (const clause of clauses) {
+    const step = planStep(clause, mappings);
+    if (!step) return null;
+    steps.push(step);
+  }
+
+  // 同一个实体在一句话里被指挥两次（「开客厅灯，关客厅灯」），意图矛盾，交给模型
+  const seen = new Set<string>();
+  for (const s of steps) {
+    if (seen.has(s.entityId)) return null;
+    seen.add(s.entityId);
+  }
+  return steps;
+}
+
+async function callHa(step: Step, options: FastPathOptions): Promise<void> {
   const res = await fetch(
-    `${options.haUrl.replace(/\/$/, "")}/api/services/${domain}/${service}`,
+    `${options.haUrl.replace(/\/$/, "")}/api/services/${step.domain}/${step.service}`,
     {
       method: "POST",
       headers: {
         Authorization: `Bearer ${options.haToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ entity_id: entityId }),
+      body: JSON.stringify({ entity_id: step.entityId }),
       signal: AbortSignal.timeout(options.timeoutMs ?? 8_000),
     },
   );
   if (!res.ok) throw new Error(`HA ${res.status}: ${(await res.text()).slice(0, 120)}`);
+}
 
-  const ttsText =
-    domain === "scene" || domain === "script" ? "好了" : parsed.intent === "on" ? "开了" : "关了";
+function verbOf(step: Step): string {
+  if (step.domain === "scene" || step.domain === "script") return "好了";
+  return step.intent === "on" ? "开了" : "关了";
+}
 
-  return { ttsText, name, entityId, service: `${domain}.${service}` };
+export async function tryFastPath(
+  content: string,
+  options: FastPathOptions,
+): Promise<FastPathResult | null> {
+  const mappings = loadMappings(options.dir);
+  const steps = planSteps(content, mappings);
+  if (!steps) return null;
+
+  // 单步：失败就抛出去，让端点降级给模型（模型也许有别的办法）
+  if (steps.length === 1) {
+    await callHa(steps[0], options);
+    return {
+      ttsText: verbOf(steps[0]),
+      steps: [{ ...steps[0], ok: true }],
+    };
+  }
+
+  // 多步：逐个执行且**不抛错**。一旦有步骤已经生效，降级重跑会把它做第二遍，
+  // 所以这里自己把成败讲清楚，而不是把整句丢回给模型。
+  const done: FastPathResult["steps"] = [];
+  for (const step of steps) {
+    try {
+      await callHa(step, options);
+      done.push({ ...step, ok: true });
+    } catch {
+      done.push({ ...step, ok: false });
+    }
+  }
+
+  const failed = done.filter((d) => !d.ok);
+  if (failed.length === 0) return { ttsText: "都好了", steps: done };
+  if (failed.length === done.length) return { ttsText: "都没弄成", steps: done };
+  return {
+    ttsText: `${done.length - failed.length}个弄好了，${failed.map((f) => f.name).join("和")}没成`,
+    steps: done,
+  };
 }
