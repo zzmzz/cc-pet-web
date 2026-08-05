@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fstatic from "@fastify/static";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming, FileAttachment } from "@cc-pet/shared";
@@ -173,6 +174,26 @@ if (quotaCookie) {
 }
 registerQuotaRoutes(app, { db, scraper: quotaScraper });
 
+/** 从 hass-agent/.env 读 HA 地址和令牌，供快通道直连 HA。读不到就返回 undefined（退化成全部走模型）。 */
+function siriFastPath(dir: string) {
+  try {
+    const env = Object.fromEntries(
+      readFileSync(path.join(dir, ".env"), "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#") && l.includes("="))
+        .map((l) => {
+          const i = l.indexOf("=");
+          return [l.slice(0, i), l.slice(i + 1).replace(/^["']|["']$/g, "")];
+        }),
+    );
+    if (!env.HA_URL || !env.HA_TOKEN) return undefined;
+    return { dir, haUrl: env.HA_URL, haToken: env.HA_TOKEN };
+  } catch {
+    return undefined;
+  }
+}
+
 const replyCollector = new ReplyCollector();
 registerSiriRoutes(app, {
   bridgeManager,
@@ -204,6 +225,9 @@ registerSiriAskRoute(app, {
   // 同步等这么久还没结果就改发 pollId。iOS 的「获取 URL 内容」超过 25 秒会报错，
   // 而实测一轮家居查询要 15～25 秒，所以这里取 10 秒留足余量。
   handoffMs: Number(process.env.SIRI_ASK_HANDOFF_MS ?? 10_000),
+  // 快通道：开关灯这类确定性动作直接查表调 HA，不过模型。HA 的地址和令牌复用
+  // hass-agent/.env（那份 HA 长期令牌本来就是给这个工作目录用的）。
+  fastPath: siriFastPath(process.env.SIRI_CLAUDE_CWD ?? "/code/hass-agent"),
 });
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {

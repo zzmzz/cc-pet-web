@@ -6,13 +6,24 @@ import { AskTaskStore } from "../siri/ask-tasks.js";
 const runClaude = vi.hoisted(() => vi.fn());
 vi.mock("../siri/claude-runner.js", () => ({ runClaude }));
 
-function ok(text: string) {
-  return { text, stderr: "", exitCode: 0, timedOut: false, truncated: false };
+const tryFastPath = vi.hoisted(() => vi.fn());
+const loadMappings = vi.hoisted(() => vi.fn(() => new Map()));
+vi.mock("../siri/fast-path.js", () => ({ tryFastPath, loadMappings }));
+
+const learnFromRun = vi.hoisted(() =>
+  vi.fn((..._args: unknown[]) => ({ learned: false, reason: "test" })),
+);
+vi.mock("../siri/fast-path-learn.js", () => ({ learnFromRun }));
+
+const FAST_PATH_OPTS = { dir: "/tmp/hass-agent", haUrl: "http://ha.test", haToken: "t" };
+
+function ok(text: string, toolCalls: unknown[] = []) {
+  return { text, toolCalls, stderr: "", exitCode: 0, timedOut: false, truncated: false };
 }
-const TIMED_OUT = { text: "", stderr: "", exitCode: null, timedOut: true, truncated: false };
+const TIMED_OUT = { text: "", toolCalls: [], stderr: "", exitCode: null, timedOut: true, truncated: false };
 
 function buildApp(
-  options: { residentPairs?: unknown[]; bridgeIds?: string[]; handoffMs?: number } = {},
+  options: { residentPairs?: unknown[]; bridgeIds?: string[]; handoffMs?: number; fastPath?: boolean } = {},
 ) {
   const app = Fastify();
   const tasks = new AskTaskStore();
@@ -41,6 +52,7 @@ function buildApp(
     claude: { bin: "claude", cwd: "/code/hass-agent", model: "claude-haiku-4-5", timeoutMs: 90_000 },
     handoffMs: options.handoffMs ?? 10_000,
     tasks,
+    fastPath: options.fastPath ? FAST_PATH_OPTS : undefined,
   });
 
   return { app, tasks, mockBridgeManager, mockMessageStore };
@@ -55,6 +67,8 @@ function poll(app: ReturnType<typeof buildApp>["app"], id: string) {
 
 beforeEach(() => {
   runClaude.mockReset();
+  tryFastPath.mockReset().mockResolvedValue(null);
+  learnFromRun.mockClear();
 });
 
 describe("POST /api/siri/ask", () => {
@@ -268,5 +282,63 @@ describe("POST /api/siri/ask", () => {
       expect(mode).toBe("direct");
       expect(ttsText.length).toBeGreaterThan(0);
     });
+  });
+});
+
+// 「开客厅灯」是确定性动作：中文名 → entity_id 是查表，不需要模型推理。
+// 实测走模型 11 秒（真正调 HA 只占 0.4 秒），查表直连不到 1 秒。
+describe("fast path", () => {
+  it("answers without spawning claude at all", async () => {
+    tryFastPath.mockResolvedValue({ ttsText: "开了", name: "客厅灯", entityId: "switch.a", service: "switch.turn_on" });
+    const { app } = buildApp({ fastPath: true });
+    const res = await ask(app, "开客厅灯");
+
+    expect(res.json()).toEqual({ ttsText: "开了", mode: "fast" });
+    expect(runClaude).not.toHaveBeenCalled();
+  });
+
+  it("falls through to claude when nothing matches", async () => {
+    tryFastPath.mockResolvedValue(null);
+    runClaude.mockResolvedValue(ok("客厅灯关着。"));
+    const { app } = buildApp({ fastPath: true });
+    expect((await ask(app, "客厅灯开着吗")).json().mode).toBe("direct");
+    expect(runClaude).toHaveBeenCalledOnce();
+  });
+
+  it("falls through when the fast path throws — HA hiccup must not fail the request", async () => {
+    tryFastPath.mockRejectedValue(new Error("HA 502"));
+    runClaude.mockResolvedValue(ok("好了"));
+    const { app } = buildApp({ fastPath: true });
+    expect((await ask(app, "开客厅灯")).statusCode).toBe(200);
+    expect(runClaude).toHaveBeenCalledOnce();
+  });
+
+  it("is skipped entirely when not configured", async () => {
+    runClaude.mockResolvedValue(ok("好了"));
+    const { app } = buildApp();
+    await ask(app, "开客厅灯");
+    expect(tryFastPath).not.toHaveBeenCalled();
+  });
+
+  it("learns a rule after a successful fallback, so next time is instant", async () => {
+    tryFastPath.mockResolvedValue(null);
+    const toolCalls = [{ name: "Bash", input: { command: `bin/hass call switch.turn_on '{"entity_id":"switch.study"}'` } }];
+    runClaude.mockResolvedValue(ok("开了", toolCalls));
+    const { app } = buildApp({ fastPath: true });
+    await ask(app, "打开书房灯");
+
+    await vi.waitFor(() => expect(learnFromRun).toHaveBeenCalledOnce());
+    const [content, calls, dir] = learnFromRun.mock.calls[0];
+    expect(content).toBe("打开书房灯");
+    expect(calls).toEqual(toolCalls);
+    expect(dir).toBe(FAST_PATH_OPTS.dir);
+  });
+
+  it("does not learn from a timed-out (delegated) run", async () => {
+    tryFastPath.mockResolvedValue(null);
+    runClaude.mockResolvedValue(TIMED_OUT);
+    const { app } = buildApp({ fastPath: true });
+    await ask(app, "把所有容器查一遍");
+    expect(learnFromRun).not.toHaveBeenCalled();
   });
 });

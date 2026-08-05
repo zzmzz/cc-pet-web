@@ -7,6 +7,8 @@ import { wrapWithVoicePrompt } from "../siri/voice-prompt.js";
 import { sanitizeForTts } from "../siri/tts-sanitizer.js";
 import { runClaude, type ClaudeRunOptions } from "../siri/claude-runner.js";
 import { AskTaskStore } from "../siri/ask-tasks.js";
+import { tryFastPath, loadMappings, type FastPathOptions } from "../siri/fast-path.js";
+import { learnFromRun } from "../siri/fast-path-learn.js";
 
 /** Siri 连点或快捷指令重试时别把机器打满 */
 const MAX_INFLIGHT = 3;
@@ -31,9 +33,11 @@ export interface SiriAskDeps {
   /** 同步等多久还没出结果就改发 pollId。必须显著小于 iOS 的 25 秒上限。 */
   handoffMs: number;
   tasks?: AskTaskStore;
+  /** 不配就没有快通道，所有请求照旧走模型 */
+  fastPath?: FastPathOptions;
 }
 
-type AskMode = "direct" | "pending" | "delegated" | "error";
+type AskMode = "fast" | "direct" | "pending" | "delegated" | "error";
 
 /**
  * 把这一轮交给常驻会话（「第二大脑」）接着干。
@@ -89,6 +93,21 @@ export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): v
     const content = req.body?.content?.trim();
     if (!content) return reply.code(400).send({ error: "content is required" });
 
+    // 快通道：「开客厅灯」这类确定性动作直接查表调 HA，不过模型（11s → <1s）。
+    // 匹配不上就往下走，行为和以前完全一样。
+    if (deps.fastPath) {
+      try {
+        const hit = await tryFastPath(content, deps.fastPath);
+        if (hit) {
+          app.log.info({ name: hit.name, entityId: hit.entityId, service: hit.service }, "siri/ask fast path");
+          return { ttsText: hit.ttsText, mode: "fast" satisfies AskMode };
+        }
+      } catch (err) {
+        // 快通道出错不该让整个请求失败 —— 退回模型那条路
+        app.log.warn({ err }, "siri/ask fast path failed, falling back to claude");
+      }
+    }
+
     if (inflight >= MAX_INFLIGHT) {
       return reply.code(429).send({ error: "Too many active requests" });
     }
@@ -121,6 +140,22 @@ export function registerSiriAskRoute(app: FastifyInstance, deps: SiriAskDeps): v
           return;
         }
         tasks.finish(taskId, "done", sanitizeForTts(result.text) || TTS_EMPTY);
+
+        // 这轮降级成功了，顺手学一条快通道规则，下次同样说法就能秒回。
+        // 放在 finish 之后，学习失败不影响本次回答。
+        if (deps.fastPath) {
+          try {
+            const known = new Set(loadMappings(deps.fastPath.dir).keys());
+            const learned = learnFromRun(content, result.toolCalls, deps.fastPath.dir, known);
+            if (learned.learned) {
+              app.log.info({ name: learned.name, entityId: learned.entityId }, "siri/ask learned a fast-path rule");
+            } else {
+              app.log.debug({ reason: learned.reason }, "siri/ask did not learn");
+            }
+          } catch (err) {
+            app.log.warn({ err }, "siri/ask learning failed");
+          }
+        }
       })
       .catch((err: unknown) => {
         app.log.error({ taskId, err }, "siri/ask: unexpected failure");
