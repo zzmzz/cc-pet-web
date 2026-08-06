@@ -1,7 +1,6 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { ChatCard, ChatCardElement } from "@cc-pet/shared";
+import { CardMarkdown } from "./CardMarkdown.js";
 import { getPlatform } from "../lib/platform.js";
 import { WS_EVENTS } from "@cc-pet/shared";
 import { useConnectionStore } from "../lib/store/connection.js";
@@ -43,11 +42,7 @@ function CardElement({ element }: { element: ChatCardElement }) {
 
   switch (element.type) {
     case "markdown":
-      return (
-        <div className="text-sm text-gray-800 whitespace-pre-wrap break-words markdown-body card-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.content.replace(/\n/g, "  \n")}</ReactMarkdown>
-        </div>
-      );
+      return <CardMarkdown content={element.content} />;
     case "divider":
       return <hr className="border-t border-gray-200 my-2" />;
     case "actions":

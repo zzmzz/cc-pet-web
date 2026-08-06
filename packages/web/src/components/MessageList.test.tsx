@@ -101,6 +101,37 @@ describe("MessageList", () => {
     expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
   });
 
+  it("keeps single line breaks inside user messages", () => {
+    const messages: ChatMessage[] = [
+      { id: "u-multiline", role: "user", content: "第一行\n第二行", timestamp: 1 },
+    ];
+
+    const { container } = render(<MessageList messages={messages} />);
+
+    expect(container.querySelectorAll("br").length).toBe(1);
+  });
+
+  it("keeps fenced code blocks free of injected trailing spaces", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-multiline-code",
+        role: "assistant",
+        content: "```ts\nconst a = 1;\nconst b = 2;\n```",
+        timestamp: 1,
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+    fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+
+    expect(writeText).toHaveBeenCalledWith("const a = 1;\nconst b = 2;");
+  });
+
   it("copies fenced code block content with one click", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {
