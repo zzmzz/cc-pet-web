@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { ChatCard, ChatCardElement } from "@cc-pet/shared";
 import { WS_EVENTS } from "@cc-pet/shared";
+import { CardMarkdown } from "./CardMarkdown.js";
 import { getPlatform } from "../lib/platform.js";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { useSessionStore } from "../lib/store/session.js";
@@ -183,9 +182,7 @@ export function AskQuestionCard({ data, answeredWith }: Props) {
   return (
     <div className="space-y-2">
       {data.questionMarkdown && (
-        <div className="text-sm text-gray-800 whitespace-pre-wrap break-words markdown-body card-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.questionMarkdown.replace(/\n/g, "  \n")}</ReactMarkdown>
-        </div>
+        <CardMarkdown content={data.questionMarkdown} />
       )}
       <div className="flex flex-col gap-1.5">
         {data.options.map((opt) => {

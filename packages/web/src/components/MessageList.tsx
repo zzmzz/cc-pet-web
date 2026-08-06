@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
@@ -723,7 +724,7 @@ function MessageBubble({ message, answeredWith }: { message: ChatMessage; answer
       >
         <div className="break-words">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
+            remarkPlugins={[remarkGfm, remarkBreaks]}
             rehypePlugins={[rehypeRaw]}
             components={{
               code({ className, children, ...props }) {
@@ -829,7 +830,7 @@ function MessageBubble({ message, answeredWith }: { message: ChatMessage; answer
               },
             }}
           >
-            {isUser ? bubbleBody : bubbleBody.replace(/\n/g, "  \n")}
+            {bubbleBody}
           </ReactMarkdown>
         </div>
         <div className={`flex items-center gap-1.5 text-[10px] mt-1 ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
