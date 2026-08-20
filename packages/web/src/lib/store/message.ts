@@ -12,7 +12,6 @@ interface MessageState {
   watermarks: Record<string, number>;
 
   addMessage: (chatKey: string, msg: ChatMessage) => void;
-  setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
   finalizeStream: (chatKey: string, fullText: string, msgId?: string, seq?: number) => void;
   clearMessages: (chatKey: string) => void;
@@ -53,8 +52,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, msg.seq) } }
         : {}),
     })),
-  setMessages: (chatKey, msgs) =>
-    set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: msgs } })),
   appendStreamDelta: (chatKey, delta) =>
     set((s) => ({
       streamingContent: {
