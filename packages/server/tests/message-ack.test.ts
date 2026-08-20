@@ -34,4 +34,16 @@ describe("upstream message id adoption", () => {
     });
     expect(messages.getByChatKey("c::s")[0].seq).toBeTypeOf("number");
   });
+
+  // The ack reads save()'s return value, not the row — a resend must ack the original seq.
+  it("returns the original seq when the client resends", () => {
+    const msg = {
+      id: "client-uuid-3", role: "user" as const, content: "hi",
+      timestamp: 1000, connectionId: "c", sessionKey: "s",
+    };
+    const first = messages.save(msg);
+    expect(first).toBeTypeOf("number");
+    messages.save({ ...msg, id: "other", timestamp: 1001 });
+    expect(messages.save(msg)).toBe(first);
+  });
 });
