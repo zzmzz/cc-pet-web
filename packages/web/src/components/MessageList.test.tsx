@@ -333,6 +333,8 @@ describe("MessageList", () => {
       // The bubble wrapper should have opacity-60
       const bubble = container.querySelector(".opacity-60");
       expect(bubble).toBeInTheDocument();
+      // The clock glyph is aria-hidden, so the label must come from its sr-only sibling
+      expect(screen.getByText("发送中")).toBeInTheDocument();
     });
 
     it("renders a failed user message with border-red-500 and 重新发送 button", () => {
