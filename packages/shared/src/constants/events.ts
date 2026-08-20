@@ -20,4 +20,6 @@ export const WS_EVENTS = {
   SEND_MESSAGE: "send-message",
   SEND_BUTTON: "send-button",
   SEND_FILE: "send-file",
+
+  MESSAGE_ACK: "message-ack",
 } as const;
