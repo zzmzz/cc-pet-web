@@ -17,6 +17,7 @@ export class MessageStore {
   private stmtInsert;
   private stmtSelect;
   private stmtSelectSeq;
+  private stmtSelectAfterSeq;
   private stmtDelete;
   private stmtUpsertSessionActivity;
   private stmtSetSessionLabelIfMissing;
@@ -35,6 +36,9 @@ export class MessageStore {
       `SELECT * FROM messages WHERE chat_key = ? ORDER BY seq ASC`
     );
     this.stmtSelectSeq = db.prepare(`SELECT seq FROM messages WHERE id = ?`);
+    this.stmtSelectAfterSeq = db.prepare(
+      `SELECT * FROM messages WHERE chat_key = ? AND seq > ? ORDER BY seq ASC LIMIT ?`
+    );
     const maxSeq = db.prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM messages`).get() as { m: number };
     this.nextSeq = maxSeq.m + 1;
     this.stmtDelete = db.prepare(`DELETE FROM messages WHERE chat_key = ?`);
@@ -83,21 +87,36 @@ export class MessageStore {
     return seq;
   }
 
+  private toChatMessage(r: any): ChatMessage {
+    const extra = r.extra ? JSON.parse(r.extra) : {};
+    return {
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      timestamp: r.timestamp,
+      connectionId: r.connection_id,
+      sessionKey: r.session_key,
+      seq: r.seq,
+      ...extra,
+    };
+  }
+
   getByChatKey(chatKey: string): ChatMessage[] {
     const rows = this.stmtSelect.all(chatKey) as any[];
-    return rows.map((r) => {
-      const extra = r.extra ? JSON.parse(r.extra) : {};
-      return {
-        id: r.id,
-        role: r.role,
-        content: r.content,
-        timestamp: r.timestamp,
-        connectionId: r.connection_id,
-        sessionKey: r.session_key,
-        seq: r.seq,
-        ...extra,
-      };
-    });
+    return rows.map((r) => this.toChatMessage(r));
+  }
+
+  getByChatKeyAfterSeq(
+    chatKey: string,
+    afterSeq: number,
+    limit: number
+  ): { messages: ChatMessage[]; hasMore: boolean } {
+    const rows = this.stmtSelectAfterSeq.all(chatKey, afterSeq, limit + 1) as any[];
+    const hasMore = rows.length > limit;
+    return {
+      messages: rows.slice(0, limit).map((r) => this.toChatMessage(r)),
+      hasMore,
+    };
   }
 
   deleteByChatKey(chatKey: string): void {

@@ -144,6 +144,38 @@ describe("Storage", () => {
       }
       expect(messages.getByChatKey("c::s").map((m) => m.id)).toEqual(["x1", "x2", "x3"]);
     });
+
+    describe("incremental history", () => {
+      beforeEach(() => {
+        for (let i = 1; i <= 5; i++) {
+          messages.save({
+            id: `n${i}`, role: "assistant", content: `c${i}`,
+            timestamp: 1000 + i, connectionId: "c", sessionKey: "s",
+          });
+        }
+      });
+
+      it("returns only messages after the given seq", () => {
+        const all = messages.getByChatKey("c::s");
+        const cursor = all[1].seq!;
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", cursor, 200);
+        expect(got.map((m) => m.id)).toEqual(["n3", "n4", "n5"]);
+        expect(hasMore).toBe(false);
+      });
+
+      it("caps at limit and reports hasMore", () => {
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", 0, 2);
+        expect(got).toHaveLength(2);
+        expect(hasMore).toBe(true);
+      });
+
+      it("returns empty and hasMore=false when already caught up", () => {
+        const all = messages.getByChatKey("c::s");
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", all[4].seq!, 200);
+        expect(got).toEqual([]);
+        expect(hasMore).toBe(false);
+      });
+    });
   });
 
   describe("SessionStore", () => {
