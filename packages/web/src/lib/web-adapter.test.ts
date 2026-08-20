@@ -3,6 +3,7 @@ import { WS_EVENTS } from "@cc-pet/shared";
 import type { ChatMessage } from "@cc-pet/shared";
 import { useOutboxStore } from "./store/outbox.js";
 import { useMessageStore } from "./store/message.js";
+import { useUIStore } from "./store/ui.js";
 
 // ---------------------------------------------------------------------------
 // Minimal WebSocket fake
@@ -72,6 +73,7 @@ beforeEach(() => {
     loadedChatKeys: new Set<string>(),
     streamingContent: {},
   });
+  useUIStore.getState().setPetState("idle");
   localStorage.clear();
 });
 
@@ -117,6 +119,42 @@ describe("sendWsMessage – policy='never'", () => {
     const adapter = await getAdapter();
     adapter.sendWsMessage({ type: "ping" }, "never");
     expect(useOutboxStore.getState().entries.length).toBe(0);
+  });
+
+  it("surfaces the failure in the chat when the socket is not OPEN", async () => {
+    const adapter = await getAdapter();
+    fakeWs.readyState = FakeWebSocket.CLOSED;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    adapter.sendWsMessage(
+      {
+        type: WS_EVENTS.SEND_MESSAGE,
+        connectionId: "c1",
+        sessionKey: "s1",
+        content: "/stop",
+      },
+      "never",
+    );
+
+    // A never-policy send is never queued, so a silent drop leaves the user with
+    // no idea their /stop went nowhere.
+    const msgs = useMessageStore.getState().messagesByChat["c1::s1"] ?? [];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].role).toBe("assistant");
+    expect(msgs[0].content).toContain("发送失败");
+    expect(useUIStore.getState().petState).toBe("error");
+    warnSpy.mockRestore();
+  });
+
+  it("does not add a chat bubble when the dropped message has no chat target", async () => {
+    const adapter = await getAdapter();
+    fakeWs.readyState = FakeWebSocket.CLOSED;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    adapter.sendWsMessage({ type: "ping" }, "never");
+
+    expect(useMessageStore.getState().messagesByChat).toEqual({});
+    warnSpy.mockRestore();
   });
 });
 

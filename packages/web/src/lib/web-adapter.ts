@@ -1,10 +1,11 @@
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import type { ChatMessage } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
 import { useOutboxStore } from "./store/outbox.js";
 import { useMessageStore } from "./store/message.js";
+import { useUIStore } from "./store/ui.js";
 
 const INITIAL_RECONNECT_MS = 3000;
 const MAX_RECONNECT_MS = 60_000;
@@ -85,6 +86,31 @@ export function applyIncomingWsSessionRouting(
     activeSessionKey,
   });
   return { ...p, sessionKey: resolved.sessionKey, sessionRouteSource: resolved.source };
+}
+
+/**
+ * Tell the user a `never`-policy send went nowhere.
+ *
+ * A `never` message (today: `/stop`) must not be queued or replayed — replaying
+ * a stop into a later turn would cancel the wrong work. That leaves the drop
+ * completely silent, so surface it the same way a bridge error is surfaced: a
+ * local assistant bubble in the target chat plus the error pet state.
+ */
+function reportDroppedControlMessage(msg: unknown): void {
+  if (!msg || typeof msg !== "object") return;
+  const p = msg as Record<string, unknown>;
+  const connectionId = typeof p.connectionId === "string" ? p.connectionId : "";
+  const sessionKey = typeof p.sessionKey === "string" ? p.sessionKey : "";
+  if (!connectionId || !sessionKey) return;
+  useMessageStore.getState().addMessage(makeChatKey(connectionId, sessionKey), {
+    id: `msg-${crypto.randomUUID()}`,
+    role: "assistant",
+    content: "发送失败：网络未连接，请重试",
+    timestamp: Date.now(),
+    connectionId,
+    sessionKey,
+  });
+  useUIStore.getState().setPetState("error");
 }
 
 export function createWebAdapter(serverUrl: string, token: string): PlatformAPI {
@@ -296,6 +322,7 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
           ws.send(JSON.stringify(msg));
         } else {
           console.warn("[cc-pet] control message dropped: socket not open", { msgType: msg?.type });
+          reportDroppedControlMessage(msg);
         }
         return "";
       }
