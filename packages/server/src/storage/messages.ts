@@ -16,22 +16,27 @@ function deriveAutoTitle(text: string): string | null {
 export class MessageStore {
   private stmtInsert;
   private stmtSelect;
+  private stmtSelectSeq;
   private stmtDelete;
   private stmtUpsertSessionActivity;
   private stmtSetSessionLabelIfMissing;
+  private nextSeq: number;
 
   constructor(private db: Database.Database) {
     this.stmtInsert = db.prepare(
-      `INSERT INTO messages (id, chat_key, role, content, timestamp, connection_id, session_key, extra)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO messages (id, chat_key, role, content, timestamp, connection_id, session_key, extra, seq)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          content = excluded.content,
          timestamp = excluded.timestamp,
          extra = excluded.extra`
     );
     this.stmtSelect = db.prepare(
-      `SELECT * FROM messages WHERE chat_key = ? ORDER BY timestamp ASC`
+      `SELECT * FROM messages WHERE chat_key = ? ORDER BY seq ASC`
     );
+    this.stmtSelectSeq = db.prepare(`SELECT seq FROM messages WHERE id = ?`);
+    const maxSeq = db.prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM messages`).get() as { m: number };
+    this.nextSeq = maxSeq.m + 1;
     this.stmtDelete = db.prepare(`DELETE FROM messages WHERE chat_key = ?`);
     // Update-only: bump an existing session's last_active_at so cleanup and
     // the client's "newest session" logic stay accurate. Never create a row;
@@ -50,7 +55,7 @@ export class MessageStore {
     );
   }
 
-  save(msg: ChatMessage): void {
+  save(msg: ChatMessage): number {
     const chatKey = makeChatKey(msg.connectionId ?? "", msg.sessionKey ?? "");
     const extra = JSON.stringify({
       buttons: msg.buttons,
@@ -59,7 +64,8 @@ export class MessageStore {
       preview: msg.preview,
       card: msg.card,
     });
-    this.stmtInsert.run(msg.id, chatKey, msg.role, msg.content, msg.timestamp, msg.connectionId, msg.sessionKey, extra);
+    this.stmtInsert.run(msg.id, chatKey, msg.role, msg.content, msg.timestamp, msg.connectionId, msg.sessionKey, extra, this.nextSeq++);
+    const seq = (this.stmtSelectSeq.get(msg.id) as { seq: number }).seq;
     if (msg.connectionId && msg.sessionKey) {
       this.stmtUpsertSessionActivity.run(
         msg.timestamp,
@@ -74,6 +80,7 @@ export class MessageStore {
         }
       }
     }
+    return seq;
   }
 
   getByChatKey(chatKey: string): ChatMessage[] {
@@ -87,6 +94,7 @@ export class MessageStore {
         timestamp: r.timestamp,
         connectionId: r.connection_id,
         sessionKey: r.session_key,
+        seq: r.seq,
         ...extra,
       };
     });

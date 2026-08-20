@@ -21,7 +21,8 @@ export function initSchema(db: Database.Database): void {
       timestamp INTEGER NOT NULL,
       connection_id TEXT,
       session_key TEXT,
-      extra TEXT
+      extra TEXT,
+      seq INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_messages_chat_key ON messages(chat_key);
 
@@ -50,6 +51,24 @@ export function initSchema(db: Database.Database): void {
       raw_content TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_ai_quota_timestamp ON ai_quota_history(timestamp);
+  `);
+
+  // Migration: add seq column if it doesn't exist yet (idempotent).
+  const messageCols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
+  if (!messageCols.some((c) => c.name === "seq")) {
+    db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER`);
+  }
+  // Backfill NULL seq values ordered by timestamp ASC, rowid ASC.
+  // Historical rows written with INSERT OR REPLACE may have their rowid
+  // pushed to the end of the table; ordering by timestamp first restores
+  // the correct display order for existing conversations.
+  db.exec(`
+    UPDATE messages SET seq = (
+      SELECT rn FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY timestamp ASC, rowid ASC) AS rn FROM messages
+      ) ordered WHERE ordered.id = messages.id
+    ) WHERE seq IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_seq ON messages(chat_key, seq);
   `);
 
   initFts(db);

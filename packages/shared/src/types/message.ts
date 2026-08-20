@@ -11,6 +11,7 @@ export interface ChatMessage {
   preview?: PreviewBlock;
   card?: ChatCard;
   audio?: ChatAudio;
+  seq?: number;
 }
 
 export interface ChatCard {
