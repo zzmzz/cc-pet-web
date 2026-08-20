@@ -502,6 +502,23 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     };
   }, []);
 
+  const failedStatus = outboxStatus === "failed" ? (
+    outboxEntry?.payloadDropped ? (
+      <span className="text-xs text-red-400">发送失败，请重新选择文件</span>
+    ) : (
+      <button
+        type="button"
+        className="text-xs text-red-400 underline"
+        onClick={() => {
+          useOutboxStore.getState().resend(message.id);
+          getPlatform().flushOutbox();
+        }}
+      >
+        重新发送
+      </button>
+    )
+  ) : null;
+
   if (message.card) {
     return (
       <div className="flex justify-start px-3 py-1">
@@ -540,24 +557,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           </div>
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
             {formatMessageTime(message.timestamp)}
-            {outboxStatus === "pending" && <span className="ml-1" aria-label="发送中">🕐</span>}
+            {outboxStatus === "pending" && <span className="ml-1"><span aria-hidden="true">🕐</span><span className="sr-only">发送中</span></span>}
           </div>
-          {outboxStatus === "failed" && (
-            outboxEntry?.payloadDropped ? (
-              <span className="text-xs text-red-400">发送失败，请重新选择文件</span>
-            ) : (
-              <button
-                type="button"
-                className="text-xs text-red-400 underline"
-                onClick={() => {
-                  useOutboxStore.getState().resend(message.id);
-                  getPlatform().flushOutbox();
-                }}
-              >
-                重新发送
-              </button>
-            )
-          )}
+          {failedStatus}
         </div>
       </div>
     );
@@ -655,24 +657,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             hour: "2-digit",
             minute: "2-digit",
           })}
-          {outboxStatus === "pending" && <span className="ml-1" aria-label="发送中">🕐</span>}
+          {outboxStatus === "pending" && <span className="ml-1"><span aria-hidden="true">🕐</span><span className="sr-only">发送中</span></span>}
         </div>
-        {outboxStatus === "failed" && (
-          outboxEntry?.payloadDropped ? (
-            <span className="text-xs text-red-400">发送失败，请重新选择文件</span>
-          ) : (
-            <button
-              type="button"
-              className="text-xs text-red-400 underline"
-              onClick={() => {
-                useOutboxStore.getState().resend(message.id);
-                getPlatform().flushOutbox();
-              }}
-            >
-              重新发送
-            </button>
-          )
-        )}
+        {failedStatus}
       </div>
     </div>
   );

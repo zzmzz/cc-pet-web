@@ -56,10 +56,6 @@ function persist(entries: OutboxEntry[]): void {
   }
 }
 
-export function useOutboxEntry(clientMsgId: string): OutboxEntry | undefined {
-  return useOutboxStore((s) => s.entries.find((e) => e.clientMsgId === clientMsgId));
-}
-
 export const useOutboxStore = create<OutboxState>((set, get) => ({
   entries: loadPersisted(),
 
@@ -126,3 +122,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     persist(entries);
   },
 }));
+
+export function useOutboxEntry(clientMsgId: string): OutboxEntry | undefined {
+  return useOutboxStore((s) => s.entries.find((e) => e.clientMsgId === clientMsgId));
+}
