@@ -1,0 +1,65 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  useOutboxStore, MANUAL_WINDOW_MS, ACK_TIMEOUT_MS, OUTBOX_STORAGE_KEY,
+} from "./outbox";
+
+describe("outbox store", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useOutboxStore.setState({ entries: [] });
+  });
+
+  it("enqueues a pending entry and returns its clientMsgId", () => {
+    const id = useOutboxStore.getState().enqueue({ type: "send-message", content: "hi" }, "auto");
+    const [entry] = useOutboxStore.getState().entries;
+    expect(entry.clientMsgId).toBe(id);
+    expect(entry.status).toBe("pending");
+  });
+
+  it("never enqueues a never-policy payload", () => {
+    const id = useOutboxStore.getState().enqueue({ type: "send-message", content: "/stop" }, "never");
+    expect(id).toBe("");
+    expect(useOutboxStore.getState().entries).toHaveLength(0);
+  });
+
+  it("marks an entry sent on ack", () => {
+    const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+    useOutboxStore.getState().markSent(id);
+    expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)).toBeUndefined();
+  });
+
+  it("expires a pending auto entry past the ack timeout into failed", () => {
+    const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+    useOutboxStore.getState().expireStale(Date.now() + ACK_TIMEOUT_MS + 1);
+    const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+    expect(entry.status).toBe("failed");
+  });
+
+  it("does not resend a manual entry past its context window", () => {
+    const id = useOutboxStore.getState().enqueue({ content: "answer" }, "manual");
+    const sendable = useOutboxStore.getState().takeSendable(Date.now() + MANUAL_WINDOW_MS + 1);
+    expect(sendable.map((e) => e.clientMsgId)).not.toContain(id);
+    expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
+  });
+
+  it("still resends an auto entry past the manual window", () => {
+    const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+    const sendable = useOutboxStore.getState().takeSendable(Date.now() + MANUAL_WINDOW_MS + 1);
+    expect(sendable.map((e) => e.clientMsgId)).toContain(id);
+  });
+
+  it("keeps oversized payloads in memory but persists only a dropped placeholder", () => {
+    const big = "x".repeat(300_000);
+    const id = useOutboxStore.getState().enqueue({ files: big }, "auto");
+    const live = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+    expect(live.payload.files).toBe(big);
+    expect(live.status).toBe("pending");
+
+    const persisted = JSON.parse(localStorage.getItem(OUTBOX_STORAGE_KEY) ?? "[]");
+    const placeholder = persisted.find((e: any) => e.clientMsgId === id);
+    expect(placeholder).toBeDefined();
+    expect(placeholder.status).toBe("failed");
+    expect(placeholder.payloadDropped).toBe(true);
+    expect(placeholder.payload).toEqual({});
+  });
+});
