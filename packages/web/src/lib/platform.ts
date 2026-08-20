@@ -1,8 +1,11 @@
+import type { RetryPolicy } from "./store/outbox.js";
+
 export interface PlatformAPI {
   connectWs(): void;
   disconnectWs(): void;
   onWsEvent(handler: (type: string, payload: any) => void): () => void;
-  sendWsMessage(msg: any): void;
+  sendWsMessage(msg: any, policy: RetryPolicy): string;
+  flushOutbox(): void;
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
   /** Like fetchApi but returns the raw Response so callers can read blobs/streams. */

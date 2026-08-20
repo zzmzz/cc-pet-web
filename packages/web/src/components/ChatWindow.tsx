@@ -159,8 +159,17 @@ export function ChatWindow() {
       );
       setInput("");
       setPendingAttachments([]);
+
+      const fileClientMsgId = getPlatform().sendWsMessage({
+        type: WS_EVENTS.SEND_FILE,
+        connectionId: activeConnectionId,
+        sessionKey: activeSessionKey,
+        content: caption ?? "",
+        files: encodedFiles,
+      }, "auto");
+
       useMessageStore.getState().addMessage(chatKey, {
-        id: `file-${Date.now()}`,
+        id: fileClientMsgId,
         role: "user",
         content: caption ?? "",
         files: filesToSend.map((file) => ({
@@ -175,21 +184,20 @@ export function ChatWindow() {
       if (caption) {
         useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
       }
-
-      getPlatform().sendWsMessage({
-        type: WS_EVENTS.SEND_FILE,
-        connectionId: activeConnectionId,
-        sessionKey: activeSessionKey,
-        content: caption ?? "",
-        files: encodedFiles,
-      });
       return;
     }
 
     setInput("");
 
+    const clientMsgId = getPlatform().sendWsMessage({
+      type: WS_EVENTS.SEND_MESSAGE,
+      connectionId: activeConnectionId,
+      sessionKey: activeSessionKey,
+      content: text,
+    }, "auto");
+
     useMessageStore.getState().addMessage(chatKey, {
-      id: `msg-${Date.now()}`,
+      id: clientMsgId,
       role: "user",
       content: text,
       timestamp: Date.now(),
@@ -197,13 +205,6 @@ export function ChatWindow() {
       sessionKey: activeSessionKey,
     });
     useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
-
-    getPlatform().sendWsMessage({
-      type: WS_EVENTS.SEND_MESSAGE,
-      connectionId: activeConnectionId,
-      sessionKey: activeSessionKey,
-      content: text,
-    });
   }, [
     input,
     pendingAttachments,
@@ -284,7 +285,7 @@ export function ChatWindow() {
       connectionId: activeConnectionId,
       sessionKey: activeSessionKey,
       content: "/stop",
-    });
+    }, "never");
   }, [activeConnectionId, activeSessionKey]);
 
   const slashMenu = (

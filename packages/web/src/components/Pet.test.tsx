@@ -9,7 +9,8 @@ const minimalPlatform = {
   connectWs: noop,
   disconnectWs: noop,
   onWsEvent: () => () => {},
-  sendWsMessage: noop,
+  sendWsMessage: vi.fn().mockReturnValue(""),
+  flushOutbox: noop,
   fetchApi: vi.fn().mockResolvedValue({}),
 };
 

@@ -2,6 +2,7 @@ import { WS_EVENTS } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
+import { useOutboxStore } from "./store/outbox.js";
 
 const INITIAL_RECONNECT_MS = 3000;
 const MAX_RECONNECT_MS = 60_000;
@@ -92,6 +93,7 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
   let reconnectAttempt = 0;
   let connectGeneration = 0;
   let onlineHookInstalled = false;
+  let expireStaleInterval: ReturnType<typeof setInterval> | null = null;
 
   const clearReconnectTimer = (): void => {
     if (reconnectTimer) {
@@ -159,12 +161,24 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
         if (connectGeneration !== gen || ws !== socket) return;
         reconnectAttempt = 0;
         console.info("[cc-pet] ws connected");
+        api.flushOutbox();
+        if (!expireStaleInterval) {
+          expireStaleInterval = setInterval(() => {
+            if (ws?.readyState === WebSocket.OPEN) {
+              useOutboxStore.getState().expireStale();
+            }
+          }, 5_000);
+        }
       };
 
       socket.onmessage = (e) => {
         if (ws !== socket) return;
         try {
-          const msg = JSON.parse(e.data) as { type: string };
+          const msg = JSON.parse(e.data) as { type: string; clientMsgId?: string };
+          if (msg.type === WS_EVENTS.MESSAGE_ACK) {
+            if (msg.clientMsgId) useOutboxStore.getState().markSent(msg.clientMsgId);
+            return;
+          }
           const routed = applyIncomingWsSessionRouting(msg.type, msg) as typeof msg;
           eventHandler?.(routed.type, routed);
         } catch {
@@ -201,6 +215,10 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       clearReconnectTimer();
       connectGeneration += 1;
       removeOnlineListener();
+      if (expireStaleInterval) {
+        clearInterval(expireStaleInterval);
+        expireStaleInterval = null;
+      }
       detachWebSocket(ws);
       ws = null;
     },
@@ -212,15 +230,29 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       };
     },
 
-    sendWsMessage(msg) {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(msg));
-        return;
+    sendWsMessage(msg, policy) {
+      if (policy === "never") {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        } else {
+          console.warn("[cc-pet] control message dropped: socket not open", { msgType: msg?.type });
+        }
+        return "";
       }
-      console.error("[cc-pet] ws send skipped: socket is not open", {
-        readyState: ws?.readyState ?? "null",
-        msgType: msg?.type,
-      });
+
+      const clientMsgId = useOutboxStore.getState().enqueue(msg, policy);
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ ...msg, clientMsgId }));
+      }
+      return clientMsgId;
+    },
+
+    flushOutbox() {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      useOutboxStore.getState().reviveAuto();
+      for (const entry of useOutboxStore.getState().takeSendable()) {
+        ws.send(JSON.stringify({ ...entry.payload, clientMsgId: entry.clientMsgId }));
+      }
     },
 
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {

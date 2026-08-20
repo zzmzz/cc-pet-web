@@ -68,7 +68,7 @@ function dispatchMessage(content: string) {
     connectionId,
     sessionKey,
     content,
-  });
+  }, "manual");
 }
 
 interface Props {

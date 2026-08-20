@@ -32,7 +32,7 @@ function sendCardAction(value: string) {
     connectionId,
     sessionKey,
     content,
-  });
+  }, "manual");
 }
 
 function CardElement({ element }: { element: ChatCardElement }) {

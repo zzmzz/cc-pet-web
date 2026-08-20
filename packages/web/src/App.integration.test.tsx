@@ -17,7 +17,8 @@ class FakeAdapter implements PlatformAPI {
 
   connectWs = vi.fn();
   disconnectWs = vi.fn();
-  sendWsMessage = vi.fn();
+  sendWsMessage = vi.fn().mockReturnValue("fake-client-msg-id");
+  flushOutbox = vi.fn();
 
   fetchApi = vi.fn();
   fetchApiRaw = vi.fn();
@@ -1128,7 +1129,7 @@ describe("App integration", () => {
         connectionId: "cc-connect",
         sessionKey: "default",
         content: "hello from ui",
-      });
+      }, "auto");
     });
     expect(screen.getByText("hello from ui")).toBeInTheDocument();
 
@@ -1160,7 +1161,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "/stop",
-    });
+    }, "never");
   });
 
   it("still sends message even when bridge is currently disconnected", async () => {
@@ -1177,7 +1178,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "will fail",
-    });
+    }, "auto");
     expect(screen.queryByText("当前连接已断开，消息未发送。请等待重连后重试。")).not.toBeInTheDocument();
   });
 
@@ -1278,6 +1279,7 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
 
@@ -1309,6 +1311,7 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
     expect(await screen.findByText("这是说明文字")).toBeInTheDocument();
@@ -1337,6 +1340,7 @@ describe("App integration", () => {
             expect.objectContaining({ file_name: "b.txt" }),
           ]),
         }),
+        "auto",
       );
     });
   });
