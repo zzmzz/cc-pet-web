@@ -1,10 +1,9 @@
-import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
+import { WS_EVENTS } from "@cc-pet/shared";
 import type { ChatMessage } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
 import { useOutboxStore } from "./store/outbox.js";
-import { useConnectionStore } from "./store/connection.js";
 import { useMessageStore } from "./store/message.js";
 
 const INITIAL_RECONNECT_MS = 3000;
@@ -97,6 +96,8 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
   let connectGeneration = 0;
   let onlineHookInstalled = false;
   let expireStaleInterval: ReturnType<typeof setInterval> | null = null;
+  /** The first onopen is the initial connect; only later ones need a backfill. */
+  let hasOpenedOnce = false;
 
   const clearReconnectTimer = (): void => {
     if (reconnectTimer) {
@@ -139,6 +140,54 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
     onlineHookInstalled = false;
   };
 
+  /**
+   * Page a single chat forward from its watermark until it is caught up.
+   *
+   * Terminates on: a fetch error, an empty page, a page that fails to advance
+   * the watermark, or hasMore=false. The strict-advance check is what makes the
+   * loop safe — the watermark is the loop variable, so a page whose seqs are all
+   * at or below it would otherwise spin forever.
+   */
+  const backfillChat = async (chatKey: string): Promise<void> => {
+    for (;;) {
+      const after = useMessageStore.getState().getWatermark(chatKey);
+      let res: { messages: ChatMessage[]; hasMore: boolean };
+      try {
+        res = await api.fetchApi<{ messages: ChatMessage[]; hasMore: boolean }>(
+          `/api/history/${encodeURIComponent(chatKey)}?afterSeq=${after}&limit=200`
+        );
+      } catch (e) {
+        console.warn("[cc-pet] backfill fetch failed", { chatKey, error: e });
+        return;
+      }
+      if (res.messages.length === 0) return;
+      useMessageStore.getState().mergeMessages(chatKey, res.messages);
+      if (useMessageStore.getState().getWatermark(chatKey) <= after) {
+        console.warn("[cc-pet] backfill stopped: watermark did not advance", { chatKey, after });
+        return;
+      }
+      if (!res.hasMore) return;
+    }
+  };
+
+  /**
+   * Backfill every chat the client holds state for, not just the active one.
+   *
+   * A non-active chat is already marked loaded, so switching to it never
+   * re-fetches; and live pushes after the reconnect advance its watermark past
+   * the gap, making the missed messages unreachable by any later incremental
+   * fetch. The cost is proportional to each chat's gap, which is exactly what
+   * the afterSeq cursor buys. Sequential to avoid a burst of parallel requests
+   * on a phone that just regained signal.
+   */
+  const backfillAllChats = async (): Promise<void> => {
+    const { watermarks, loadedChatKeys } = useMessageStore.getState();
+    const chatKeys = new Set<string>([...Object.keys(watermarks), ...loadedChatKeys]);
+    for (const chatKey of chatKeys) {
+      await backfillChat(chatKey);
+    }
+  };
+
   const api: PlatformAPI = {
     connectWs() {
       clearReconnectTimer();
@@ -173,30 +222,13 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
           }, 5_000);
         }
 
-        // Backfill missed messages for the active chat since last seen seq.
-        void (async () => {
-          const connectionId = useConnectionStore.getState().activeConnectionId;
-          const sessionKey = connectionId
-            ? (useSessionStore.getState().activeSessionKey[connectionId] ?? "default")
-            : null;
-          const chatKey = connectionId && sessionKey ? makeChatKey(connectionId, sessionKey) : null;
-          if (!chatKey) return;
-          for (;;) {
-            const after = useMessageStore.getState().getWatermark(chatKey);
-            let res: { messages: ChatMessage[]; hasMore: boolean };
-            try {
-              res = await api.fetchApi<{ messages: ChatMessage[]; hasMore: boolean }>(
-                `/api/history/${encodeURIComponent(chatKey)}?afterSeq=${after}&limit=200`
-              );
-            } catch (e) {
-              console.warn("[cc-pet] backfill fetch failed", e);
-              break;
-            }
-            if (res.messages.length === 0) break;
-            useMessageStore.getState().mergeMessages(chatKey, res.messages);
-            if (!res.hasMore) break;
-          }
-        })();
+        // Backfill missed downstream messages. The initial connect needs no
+        // backfill: hydrate fetches full history and seeds the watermarks.
+        if (hasOpenedOnce) {
+          void backfillAllChats();
+        } else {
+          hasOpenedOnce = true;
+        }
       };
 
       socket.onmessage = (e) => {
