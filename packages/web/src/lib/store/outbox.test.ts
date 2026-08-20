@@ -62,4 +62,64 @@ describe("outbox store", () => {
     expect(placeholder.payloadDropped).toBe(true);
     expect(placeholder.payload).toEqual({});
   });
+
+  describe("reviveAuto", () => {
+    it("revives a failed auto entry back to pending with a refreshed createdAt", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "hello" }, "auto");
+      // force it to failed by advancing time past ACK_TIMEOUT_MS
+      useOutboxStore.getState().expireStale(Date.now() + ACK_TIMEOUT_MS + 1);
+      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
+
+      const reconnectAt = Date.now() + 60_000;
+      useOutboxStore.getState().reviveAuto(reconnectAt);
+      const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+      expect(entry.status).toBe("pending");
+      expect(entry.createdAt).toBe(reconnectAt);
+    });
+
+    it("does NOT revive a failed manual entry", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "ctx answer" }, "manual");
+      // expire it past the manual window
+      useOutboxStore.getState().takeSendable(Date.now() + MANUAL_WINDOW_MS + 1);
+      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
+
+      useOutboxStore.getState().reviveAuto();
+      const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+      expect(entry.status).toBe("failed");
+    });
+
+    it("does NOT revive a failed auto entry with payloadDropped", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+      // manually inject payloadDropped into state
+      useOutboxStore.setState({
+        entries: useOutboxStore.getState().entries.map((e) =>
+          e.clientMsgId === id
+            ? { ...e, status: "failed" as const, payloadDropped: true }
+            : e
+        ),
+      });
+      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.payloadDropped).toBe(true);
+
+      useOutboxStore.getState().reviveAuto();
+      const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+      expect(entry.status).toBe("failed");
+    });
+
+    it("end-to-end: enqueue → expireStale (lost during outage) → reviveAuto → takeSendable returns it", () => {
+      const now = Date.now();
+      const id = useOutboxStore.getState().enqueue({ content: "during outage" }, "auto");
+
+      // 15 s of offline time elapses — expireStale flips it to failed
+      useOutboxStore.getState().expireStale(now + ACK_TIMEOUT_MS + 1);
+      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
+
+      // socket reconnects at +60 s
+      const reconnectAt = now + 60_000;
+      useOutboxStore.getState().reviveAuto(reconnectAt);
+
+      // flushOutbox calls takeSendable — must get the entry back
+      const sendable = useOutboxStore.getState().takeSendable(reconnectAt);
+      expect(sendable.map((e) => e.clientMsgId)).toContain(id);
+    });
+  });
 });

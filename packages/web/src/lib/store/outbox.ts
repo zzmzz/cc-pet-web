@@ -25,6 +25,7 @@ interface OutboxState {
   resend: (clientMsgId: string) => void;
   takeSendable: (now?: number) => OutboxEntry[];
   expireStale: (now?: number) => void;
+  reviveAuto: (now?: number) => void;
 }
 
 function loadPersisted(): OutboxEntry[] {
@@ -105,6 +106,16 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     const entries = get().entries.map((e) =>
       e.status === "pending" && now - e.createdAt > ACK_TIMEOUT_MS
         ? { ...e, status: "failed" as OutboxStatus }
+        : e
+    );
+    set({ entries });
+    persist(entries);
+  },
+
+  reviveAuto: (now = Date.now()) => {
+    const entries = get().entries.map((e) =>
+      e.policy === "auto" && e.status === "failed" && !e.payloadDropped
+        ? { ...e, status: "pending" as OutboxStatus, createdAt: now }
         : e
     );
     set({ entries });
