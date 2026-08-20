@@ -7,6 +7,7 @@ import type { ChatMessage } from "@cc-pet/shared";
 import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
+import { useOutboxEntry, useOutboxStore } from "../lib/store/outbox.js";
 import { groupMessages } from "../lib/group-messages.js";
 import { ActivityBlock } from "./ActivityBlock.js";
 import { CardMessage } from "./CardMessage.js";
@@ -475,6 +476,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
+  const outboxEntry = useOutboxEntry(message.id);
+  const outboxStatus = outboxEntry?.status;
 
   const handleCopyCode = useCallback(async (content: string) => {
     if (!window.navigator?.clipboard?.writeText) {
@@ -518,11 +521,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (hasFiles) {
     const caption = message.content.trim();
     return (
-      <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1`}>
+      <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1${outboxStatus === "pending" ? " opacity-60" : ""}`}>
         <div
           className={`${
             isUser
-              ? "bg-blue-50 border-blue-200 text-blue-700"
+              ? `bg-blue-50 text-blue-700 ${outboxStatus === "failed" ? "border-red-500" : "border-blue-200"}`
               : "bg-green-50 border-green-200 text-green-700"
           } border rounded-lg px-3 py-2 text-sm max-w-[80%]`}
         >
@@ -537,18 +540,35 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           </div>
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
             {formatMessageTime(message.timestamp)}
+            {outboxStatus === "pending" && <span className="ml-1" aria-label="发送中">🕐</span>}
           </div>
+          {outboxStatus === "failed" && (
+            outboxEntry?.payloadDropped ? (
+              <span className="text-xs text-red-400">发送失败，请重新选择文件</span>
+            ) : (
+              <button
+                type="button"
+                className="text-xs text-red-400 underline"
+                onClick={() => {
+                  useOutboxStore.getState().resend(message.id);
+                  getPlatform().flushOutbox();
+                }}
+              >
+                重新发送
+              </button>
+            )
+          )}
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1`}>
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1${outboxStatus === "pending" ? " opacity-60" : ""}`}>
       <div
         className={`max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
           isUser
-            ? "bg-indigo-500 text-white rounded-br-md"
+            ? `bg-indigo-500 text-white rounded-br-md${outboxStatus === "failed" ? " border border-red-500" : ""}`
             : "bg-gray-100 text-gray-800 rounded-bl-md markdown-body"
         }`}
       >
@@ -635,7 +655,24 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             hour: "2-digit",
             minute: "2-digit",
           })}
+          {outboxStatus === "pending" && <span className="ml-1" aria-label="发送中">🕐</span>}
         </div>
+        {outboxStatus === "failed" && (
+          outboxEntry?.payloadDropped ? (
+            <span className="text-xs text-red-400">发送失败，请重新选择文件</span>
+          ) : (
+            <button
+              type="button"
+              className="text-xs text-red-400 underline"
+              onClick={() => {
+                useOutboxStore.getState().resend(message.id);
+                getPlatform().flushOutbox();
+              }}
+            >
+              重新发送
+            </button>
+          )
+        )}
       </div>
     </div>
   );

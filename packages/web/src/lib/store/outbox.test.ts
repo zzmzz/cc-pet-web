@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { renderHook } from "@testing-library/react";
 import {
-  useOutboxStore, MANUAL_WINDOW_MS, ACK_TIMEOUT_MS, OUTBOX_STORAGE_KEY,
+  useOutboxStore, useOutboxEntry, MANUAL_WINDOW_MS, ACK_TIMEOUT_MS, OUTBOX_STORAGE_KEY,
 } from "./outbox";
 
 describe("outbox store", () => {
@@ -61,6 +62,28 @@ describe("outbox store", () => {
     expect(placeholder.status).toBe("failed");
     expect(placeholder.payloadDropped).toBe(true);
     expect(placeholder.payload).toEqual({});
+  });
+
+  describe("useOutboxEntry", () => {
+    it("returns undefined when no entry with that id exists", () => {
+      const { result } = renderHook(() => useOutboxEntry("nonexistent-id"));
+      expect(result.current).toBeUndefined();
+    });
+
+    it("returns the entry matching the given clientMsgId", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "hello" }, "auto");
+      const { result } = renderHook(() => useOutboxEntry(id));
+      expect(result.current).toBeDefined();
+      expect(result.current!.clientMsgId).toBe(id);
+      expect(result.current!.status).toBe("pending");
+    });
+
+    it("returns undefined after the entry is removed by markSent", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "hello" }, "auto");
+      useOutboxStore.getState().markSent(id);
+      const { result } = renderHook(() => useOutboxEntry(id));
+      expect(result.current).toBeUndefined();
+    });
   });
 
   describe("reviveAuto", () => {
