@@ -145,16 +145,27 @@ seq：若水位=10、断线期间产生 11-14、用户重连后发的消息拿�
 对当前活跃 chatKey 拉 `afterSeq=<水位>`，`hasMore` 为真则继续翻页直到追平。
 非活跃会话不在重连时拉取，等切换过去时按同一路径补齐。
 
-合并时按消息 `id` 去重 —— 上行消息入库时用的就是客户端生成的 `clientMsgId`，
-因此本地乐观渲染的条目与补齐拉回的同一条消息 id 相同，不会重复显示。
-去重后按 `seq` 排序插入。
+**下行推送必须携带服务端 id 与 seq。** 客户端目前给每条下行消息现编一个本地 id
+（`packages/web/src/App.tsx:248,300,322,364,389` 的 `msg-${Date.now()}`），与服务端入库的
+id 毫无关系。若不改，补齐拉回的同一条 assistant 消息会因 id 不同被当成新消息，界面上重复一次。
+因此 `BRIDGE_MESSAGE` / `BRIDGE_STREAM_DONE` / `BRIDGE_FILE_RECEIVED` / `BRIDGE_CARD` /
+`BRIDGE_AUDIO` 五个推送的 payload 都加上 `msgId` 与 `seq`，客户端直接采用。
+`BRIDGE_BUTTONS` 服务端本就不入库，保持纯本地消息。
+
+合并时按消息 `id` 去重 —— 上行消息入库时用的就是客户端生成的 `clientMsgId`，下行消息用的是
+服务端下发的 `msgId`，两侧 id 都相同，不会重复显示。
+
+去重后按 `timestamp` 排序、`seq` 打破同毫秒的平手。不能单按 `seq`：`BRIDGE_BUTTONS`
+这类纯本地消息没有 `seq`，会被塌到序列最前。把 `timestamp` 当排序键与前面否定它当
+**游标**并不矛盾 —— 同毫秒碰撞会让游标漏消息，但对展示顺序无害。
 
 ## 影响
 
 服务端：
 - `packages/server/src/storage/db.ts` — schema 加 `seq` 列与 `(chat_key, seq)` 索引、迁移回填
 - `packages/server/src/storage/messages.ts` — upsert 语义、seq 分配、排序、增量查询
-- `packages/server/src/index.ts` — 8 处 id 生成、上行采用 clientMsgId、回 `MESSAGE_ACK`
+- `packages/server/src/index.ts` — 8 处 id 生成、上行采用 clientMsgId、回 `MESSAGE_ACK`、
+  五个下行推送带上 `msgId` / `seq`
 - `packages/server/src/api/history.ts` — `afterSeq` / `limit` / `hasMore`
 - `packages/server/src/api/siri.ts` — id 生成
 
@@ -163,6 +174,7 @@ seq：若水位=10、断线期间产生 11-14、用户重连后发的消息拿�
 - `packages/shared/src/types` — 上行载荷加 `clientMsgId`，消息类型加 `seq`
 
 客户端：
+- `packages/web/src/App.tsx` — 五处下行消息改用服务端下发的 `msgId` / `seq`
 - `packages/web/src/lib/web-adapter.ts` — 队列化发送、policy 参数、重连补齐钩子
 - `packages/web/src/lib/platform.ts` — `sendWsMessage` 接口签名
 - 新增 outbox store（`packages/web/src/lib/store/`）
@@ -177,6 +189,8 @@ seq：若水位=10、断线期间产生 11-14、用户重连后发的消息拿�
 - socket 关闭时点停止 → 不入队，给出失败提示；重连后不发出 `/stop`
 - 卡片回复入队后超过 2 分钟窗口 → 转 `failed`，不自动重放
 - 断线期间服务端产生若干 assistant 消息 → 重连后自动出现，顺序正确
+- 已经在界面上的 assistant 消息 → 补齐后不重复渲染
+- 没有 `seq` 的纯本地消息 → 合并后仍在正确的时间位置
 - 断线期间既产生了 assistant 消息、重连后用户又发了消息 → 收到 ack 后
   中间那批 assistant 消息仍能被补齐（回归 ack 抬高水位导致漏取的场景）
 - 断线期间积压超过 `limit` → 分页循环直至追平
