@@ -58,20 +58,42 @@ export function initSchema(db: Database.Database): void {
   if (!messageCols.some((c) => c.name === "seq")) {
     db.exec(`ALTER TABLE messages ADD COLUMN seq INTEGER`);
   }
-  // Backfill NULL seq values ordered by timestamp ASC, rowid ASC.
-  // Historical rows written with INSERT OR REPLACE may have their rowid
-  // pushed to the end of the table; ordering by timestamp first restores
-  // the correct display order for existing conversations.
-  db.exec(`
-    UPDATE messages SET seq = (
-      SELECT rn FROM (
-        SELECT id, ROW_NUMBER() OVER (ORDER BY timestamp ASC, rowid ASC) AS rn FROM messages
-      ) ordered WHERE ordered.id = messages.id
-    ) WHERE seq IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_messages_chat_seq ON messages(chat_key, seq);
-  `);
+  backfillMissingSeq(db);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat_seq ON messages(chat_key, seq)`);
 
   initFts(db);
+}
+
+/**
+ * Assign a seq to every row that still has NULL, ordered by timestamp ASC then
+ * rowid ASC. Runs on every start and is a no-op once no NULL rows remain.
+ *
+ * Assignment starts above the current MAX(seq): the first upgrade sees an
+ * all-NULL table and numbers it from 1, while a NULL row appearing later
+ * (binary rollback, manual insert) lands past everything already numbered.
+ * Numbering such a row by its position in the full history would hand it a seq
+ * that another row already owns, and the `seq > ?` sync cursor would skip the
+ * duplicate forever.
+ *
+ * Ordering by timestamp first (not rowid alone) restores the correct display
+ * order for rows whose rowid was churned by the historical INSERT OR REPLACE.
+ *
+ * The ordering is resolved in JS rather than inside the UPDATE: a ROW_NUMBER()
+ * subquery over `seq IS NULL` would be re-evaluated against the shrinking set
+ * of NULL rows as the same UPDATE fills them in, handing out duplicates.
+ */
+function backfillMissingSeq(db: Database.Database): void {
+  const pending = db
+    .prepare(`SELECT id FROM messages WHERE seq IS NULL ORDER BY timestamp ASC, rowid ASC`)
+    .all() as { id: string }[];
+  if (pending.length === 0) return;
+  const { m: base } = db
+    .prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM messages`)
+    .get() as { m: number };
+  const assign = db.prepare(`UPDATE messages SET seq = ? WHERE id = ?`);
+  db.transaction(() => {
+    pending.forEach((row, i) => assign.run(base + i + 1, row.id));
+  })();
 }
 
 function initFts(db: Database.Database): void {

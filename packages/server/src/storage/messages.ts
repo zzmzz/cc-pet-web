@@ -33,11 +33,13 @@ export class MessageStore {
          extra = excluded.extra`
     );
     this.stmtSelect = db.prepare(
-      `SELECT * FROM messages WHERE chat_key = ? ORDER BY seq ASC`
+      // rowid is a final tiebreaker so the order is fully determined even if a
+      // future migration ever leaves two rows sharing a seq.
+      `SELECT * FROM messages WHERE chat_key = ? ORDER BY seq ASC, rowid ASC`
     );
     this.stmtSelectSeq = db.prepare(`SELECT seq FROM messages WHERE id = ?`);
     this.stmtSelectAfterSeq = db.prepare(
-      `SELECT * FROM messages WHERE chat_key = ? AND seq > ? ORDER BY seq ASC LIMIT ?`
+      `SELECT * FROM messages WHERE chat_key = ? AND seq > ? ORDER BY seq ASC, rowid ASC LIMIT ?`
     );
     const maxSeq = db.prepare(`SELECT COALESCE(MAX(seq), 0) AS m FROM messages`).get() as { m: number };
     this.nextSeq = maxSeq.m + 1;
@@ -59,7 +61,22 @@ export class MessageStore {
     );
   }
 
+  /** Returns the row's seq. Prefer saveWithStatus when the caller has a side effect to dedupe. */
   save(msg: ChatMessage): number {
+    return this.saveWithStatus(msg).seq;
+  }
+
+  /**
+   * Upsert a message and report whether the row was newly inserted.
+   *
+   * `inserted: false` means the id was already in the table — the client is
+   * resending a message whose ack was lost. Callers must not repeat any side
+   * effect tied to the message (notably forwarding the prompt to the bridge,
+   * which would re-run the whole turn), but should still ack so the client can
+   * clear its outbox entry.
+   */
+  saveWithStatus(msg: ChatMessage): { seq: number; inserted: boolean } {
+    const existing = this.stmtSelectSeq.get(msg.id) as { seq: number } | undefined;
     const chatKey = makeChatKey(msg.connectionId ?? "", msg.sessionKey ?? "");
     const extra = JSON.stringify({
       buttons: msg.buttons,
@@ -69,7 +86,7 @@ export class MessageStore {
       card: msg.card,
     });
     this.stmtInsert.run(msg.id, chatKey, msg.role, msg.content, msg.timestamp, msg.connectionId, msg.sessionKey, extra, this.nextSeq++);
-    const seq = (this.stmtSelectSeq.get(msg.id) as { seq: number }).seq;
+    const seq = existing?.seq ?? (this.stmtSelectSeq.get(msg.id) as { seq: number }).seq;
     if (msg.connectionId && msg.sessionKey) {
       this.stmtUpsertSessionActivity.run(
         msg.timestamp,
@@ -84,7 +101,7 @@ export class MessageStore {
         }
       }
     }
-    return seq;
+    return { seq, inserted: existing === undefined };
   }
 
   private toChatMessage(r: any): ChatMessage {
