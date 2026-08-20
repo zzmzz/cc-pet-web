@@ -8,12 +8,20 @@ interface MessageState {
   previewMessages: Record<string, { chatKey: string; content: string }>;
   /** Tracks which chatKeys have had their history hydrated from the server. */
   loadedChatKeys: Set<string>;
+  /** Per-chatKey highest server seq seen; used as the sync cursor for backfill. */
+  watermarks: Record<string, number>;
 
   addMessage: (chatKey: string, msg: ChatMessage) => void;
   setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
-  finalizeStream: (chatKey: string, fullText: string) => void;
+  finalizeStream: (chatKey: string, fullText: string, msgId?: string, seq?: number) => void;
   clearMessages: (chatKey: string) => void;
+  /** Advance the watermark for chatKey to seq (never moves backwards). */
+  setWatermark: (chatKey: string, seq: number) => void;
+  /** Return the highest seq seen for chatKey, or 0 if unknown. */
+  getWatermark: (chatKey: string) => number;
+  /** Merge incoming messages into the store, deduping by id and re-sorting. */
+  mergeMessages: (chatKey: string, incoming: ChatMessage[]) => void;
   /** Remove chatKey from message + streaming maps (e.g. session delete). */
   purgeChat: (chatKey: string) => void;
   /** Mark a chatKey as loaded so future ensureChatLoaded calls become no-ops. */
@@ -33,6 +41,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   streamingContent: {},
   previewMessages: {},
   loadedChatKeys: new Set<string>(),
+  watermarks: {},
 
   addMessage: (chatKey, msg) =>
     set((s) => ({
@@ -50,7 +59,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         [chatKey]: (s.streamingContent[chatKey] ?? "") + delta,
       },
     })),
-  finalizeStream: (chatKey, fullText) =>
+  finalizeStream: (chatKey, fullText, msgId?, seq?) =>
     set((s) => {
       const { [chatKey]: _, ...rest } = s.streamingContent;
       return {
@@ -59,7 +68,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           ...s.messagesByChat,
           [chatKey]: [
             ...(s.messagesByChat[chatKey] ?? []),
-            { id: `msg-${Date.now()}`, role: "assistant" as const, content: fullText, timestamp: Date.now() },
+            { id: msgId ?? `msg-${crypto.randomUUID()}`, seq, role: "assistant" as const, content: fullText, timestamp: Date.now() },
           ],
         },
       };
@@ -124,4 +133,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
       return { previewMessages };
     }),
+
+  setWatermark: (chatKey, seq) =>
+    set((s) => ({
+      watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, seq) },
+    })),
+
+  getWatermark: (chatKey) => get().watermarks[chatKey] ?? 0,
+
+  mergeMessages: (chatKey, incoming) => {
+    const existing = get().messagesByChat[chatKey] ?? [];
+    const byId = new Map(existing.map((m) => [m.id, m]));
+    for (const m of incoming) byId.set(m.id, m);
+    const merged = [...byId.values()].sort(
+      (a, b) => a.timestamp - b.timestamp || (a.seq ?? 0) - (b.seq ?? 0)
+    );
+    const maxSeq = merged.reduce((acc, m) => Math.max(acc, m.seq ?? 0), 0);
+    set((s) => ({
+      messagesByChat: { ...s.messagesByChat, [chatKey]: merged },
+      watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, maxSeq) },
+    }));
+  },
 }));

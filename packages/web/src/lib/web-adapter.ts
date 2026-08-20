@@ -1,8 +1,11 @@
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
+import type { ChatMessage } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
 import { useOutboxStore } from "./store/outbox.js";
+import { useConnectionStore } from "./store/connection.js";
+import { useMessageStore } from "./store/message.js";
 
 const INITIAL_RECONNECT_MS = 3000;
 const MAX_RECONNECT_MS = 60_000;
@@ -169,6 +172,31 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
             }
           }, 5_000);
         }
+
+        // Backfill missed messages for the active chat since last seen seq.
+        void (async () => {
+          const connectionId = useConnectionStore.getState().activeConnectionId;
+          const sessionKey = connectionId
+            ? (useSessionStore.getState().activeSessionKey[connectionId] ?? "default")
+            : null;
+          const chatKey = connectionId && sessionKey ? makeChatKey(connectionId, sessionKey) : null;
+          if (!chatKey) return;
+          for (;;) {
+            const after = useMessageStore.getState().getWatermark(chatKey);
+            let res: { messages: ChatMessage[]; hasMore: boolean };
+            try {
+              res = await api.fetchApi<{ messages: ChatMessage[]; hasMore: boolean }>(
+                `/api/history/${encodeURIComponent(chatKey)}?afterSeq=${after}&limit=200`
+              );
+            } catch (e) {
+              console.warn("[cc-pet] backfill fetch failed", e);
+              break;
+            }
+            if (res.messages.length === 0) break;
+            useMessageStore.getState().mergeMessages(chatKey, res.messages);
+            if (!res.hasMore) break;
+          }
+        })();
       };
 
       socket.onmessage = (e) => {

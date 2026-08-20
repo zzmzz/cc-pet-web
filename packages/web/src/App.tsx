@@ -245,7 +245,8 @@ export default function App() {
             }
             setTaskPhase("working");
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: payload.content,
               timestamp: Date.now(),
@@ -280,7 +281,7 @@ export default function App() {
             break;
           }
           case WS_EVENTS.BRIDGE_STREAM_DONE:
-            useMessageStore.getState().finalizeStream(chatKey, payload.fullText);
+            useMessageStore.getState().finalizeStream(chatKey, payload.fullText, payload.msgId, payload.seq);
             const isStreamCompleted = !isTypingActiveForSession();
             setTaskPhase(isStreamCompleted ? "completed" : "working");
             if (isStreamCompleted && connectionId && resolvedSessionKey) {
@@ -297,7 +298,7 @@ export default function App() {
               useSessionStore.getState().incrementUnread(chatKey);
             }
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: crypto.randomUUID(),
               role: "assistant",
               content: payload.content ?? "",
               timestamp: Date.now(),
@@ -319,7 +320,8 @@ export default function App() {
               setPetStateSafely("happy");
             }
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: payload.name ?? "",
               timestamp: Date.now(),
@@ -327,7 +329,7 @@ export default function App() {
               sessionKey: resolvedSessionKey,
               files: [
                 {
-                  id: `recv-${Date.now()}`,
+                  id: `recv-${crypto.randomUUID()}`,
                   name: payload.name ?? "收到文件",
                   size: 0,
                 },
@@ -361,7 +363,8 @@ export default function App() {
             }
             setTaskPhase("working");
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: payload.card?.header?.title ?? "",
               timestamp: Date.now(),
@@ -386,7 +389,8 @@ export default function App() {
             }
             setTaskPhase("working");
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: "[音频消息]",
               timestamp: Date.now(),
