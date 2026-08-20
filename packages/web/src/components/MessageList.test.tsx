@@ -357,7 +357,7 @@ describe("MessageList", () => {
       expect(screen.getByRole("button", { name: "重新发送" })).toBeInTheDocument();
     });
 
-    it("calls resend and flushOutbox when 重新发送 is clicked", () => {
+    it("flushes only the clicked message when 重新发送 is clicked", () => {
       const flushOutbox = vi.fn();
       vi.mocked(getPlatform).mockReturnValue({ flushOutbox } as any);
 
@@ -376,9 +376,9 @@ describe("MessageList", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "重新发送" }));
 
-      expect(flushOutbox).toHaveBeenCalled();
-      const updatedEntry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === msgId);
-      expect(updatedEntry?.status).toBe("pending");
+      // Scoped to this one id: a bare flushOutbox() would revive every failed
+      // auto entry in the queue.
+      expect(flushOutbox).toHaveBeenCalledWith(msgId);
     });
 
     it("shows payloadDropped message instead of retry button when payload is gone", () => {

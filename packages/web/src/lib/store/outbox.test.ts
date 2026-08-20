@@ -86,6 +86,34 @@ describe("outbox store", () => {
     });
   });
 
+  describe("markTransmitted", () => {
+    it("restarts the ack budget for the transmitted entries only", () => {
+      const stale = Date.now() - 60_000;
+      const queued = useOutboxStore.getState().enqueue({ content: "queued" }, "auto");
+      const untouched = useOutboxStore.getState().enqueue({ content: "still waiting" }, "auto");
+      useOutboxStore.setState({
+        entries: useOutboxStore.getState().entries.map((e) => ({ ...e, createdAt: stale })),
+      });
+
+      const sentAt = Date.now();
+      useOutboxStore.getState().markTransmitted([queued], sentAt);
+
+      const byId = (id: string) => useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+      expect(byId(queued).createdAt).toBe(sentAt);
+      expect(byId(queued).status).toBe("pending");
+      expect(byId(untouched).createdAt).toBe(stale);
+    });
+
+    it("does not resurrect an entry that already failed", () => {
+      const id = useOutboxStore.getState().enqueue({ content: "gone" }, "manual");
+      useOutboxStore.getState().takeSendable(Date.now() + MANUAL_WINDOW_MS + 1);
+      expect(useOutboxStore.getState().entries[0].status).toBe("failed");
+
+      useOutboxStore.getState().markTransmitted([id], Date.now());
+      expect(useOutboxStore.getState().entries[0].status).toBe("failed");
+    });
+  });
+
   describe("reviveAuto", () => {
     it("revives a failed auto entry back to pending with a refreshed createdAt", () => {
       const id = useOutboxStore.getState().enqueue({ content: "hello" }, "auto");

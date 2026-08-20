@@ -307,12 +307,28 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       return clientMsgId;
     },
 
-    flushOutbox() {
+    flushOutbox(clientMsgId) {
       if (ws?.readyState !== WebSocket.OPEN) return;
-      useOutboxStore.getState().reviveAuto();
-      for (const entry of useOutboxStore.getState().takeSendable()) {
+      const outbox = useOutboxStore.getState();
+      if (clientMsgId) {
+        // Explicit per-message retry: revive just this entry. reviveAuto here
+        // would drag every other failed auto entry back onto the wire, which is
+        // not what tapping one bubble asked for.
+        outbox.resend(clientMsgId);
+      } else {
+        outbox.reviveAuto();
+      }
+      const sendable = useOutboxStore
+        .getState()
+        .takeSendable()
+        .filter((e) => !clientMsgId || e.clientMsgId === clientMsgId);
+      for (const entry of sendable) {
         ws.send(JSON.stringify({ ...entry.payload, clientMsgId: entry.clientMsgId }));
       }
+      // Start the ack budget now that the bytes are on the socket, not at
+      // enqueue time — otherwise an entry queued during an outage burns its
+      // whole 15 s window offline and expires on the first tick after reconnect.
+      useOutboxStore.getState().markTransmitted(sendable.map((e) => e.clientMsgId));
     },
 
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {

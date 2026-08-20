@@ -5,7 +5,14 @@ export interface PlatformAPI {
   disconnectWs(): void;
   onWsEvent(handler: (type: string, payload: any) => void): () => void;
   sendWsMessage(msg: any, policy: RetryPolicy): string;
-  flushOutbox(): void;
+  /**
+   * Write queued outbox entries to the socket.
+   *
+   * With no argument this is the reconnect path: failed auto entries are revived
+   * and everything sendable goes out. With a clientMsgId it is the user tapping
+   * retry on one bubble, and only that entry is touched.
+   */
+  flushOutbox(clientMsgId?: string): void;
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
   /** Like fetchApi but returns the raw Response so callers can read blobs/streams. */

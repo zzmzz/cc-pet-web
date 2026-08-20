@@ -240,6 +240,101 @@ describe("flushOutbox on reconnect", () => {
     expect(fakeWs.sent.length).toBe(1);
     expect(JSON.parse(fakeWs.sent[0]).clientMsgId).toBe(clientMsgId);
   });
+
+  it("restarts the ack budget when an entry is actually written to the socket", async () => {
+    const adapter = await getAdapter();
+
+    // Queued 60 s ago while the socket was down — far past ACK_TIMEOUT_MS.
+    fakeWs.readyState = FakeWebSocket.CLOSED;
+    const id = adapter.sendWsMessage(
+      { type: WS_EVENTS.SEND_MESSAGE, content: "queued during outage" },
+      "auto",
+    );
+    const staleAt = Date.now() - 60_000;
+    useOutboxStore.setState({
+      entries: useOutboxStore.getState().entries.map((e) => ({ ...e, createdAt: staleAt })),
+    });
+
+    fakeWs.readyState = FakeWebSocket.OPEN;
+    adapter.flushOutbox();
+    expect(fakeWs.sent.map((s) => JSON.parse(s).clientMsgId)).toContain(id);
+
+    // The ack budget must start at transmission, so the very next expiry sweep
+    // (which runs every 5 s while the socket is open) must not kill it.
+    const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+    expect(entry.createdAt).toBeGreaterThan(staleAt);
+    useOutboxStore.getState().expireStale();
+    expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe(
+      "pending",
+    );
+  });
+});
+
+describe("flushOutbox – single-message retry", () => {
+  function seedFailed(content: string, policy: "auto" | "manual") {
+    const clientMsgId = crypto.randomUUID();
+    useOutboxStore.setState({
+      entries: [
+        ...useOutboxStore.getState().entries,
+        {
+          clientMsgId,
+          payload: { type: WS_EVENTS.SEND_MESSAGE, content },
+          policy,
+          status: "failed" as const,
+          createdAt: Date.now() - 300_000,
+        },
+      ],
+    });
+    return clientMsgId;
+  }
+
+  it("resends only the requested entry and leaves other failures alone", async () => {
+    const adapter = await getAdapter();
+    const target = seedFailed("retry just me", "auto");
+    const otherAuto = seedFailed("leave me failed", "auto");
+    const otherManual = seedFailed("leave me too", "manual");
+
+    adapter.flushOutbox(target);
+
+    expect(fakeWs.sent.map((s) => JSON.parse(s).clientMsgId)).toEqual([target]);
+    const byId = (id: string) =>
+      useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
+    expect(byId(otherAuto).status).toBe("failed");
+    expect(byId(otherManual).status).toBe("failed");
+  });
+
+  it("resends a failed manual entry past its context window when asked explicitly", async () => {
+    const adapter = await getAdapter();
+    const target = seedFailed("stale card reply", "manual");
+
+    adapter.flushOutbox(target);
+
+    expect(fakeWs.sent.map((s) => JSON.parse(s).clientMsgId)).toEqual([target]);
+    expect(
+      useOutboxStore.getState().entries.find((e) => e.clientMsgId === target)!.status,
+    ).toBe("pending");
+  });
+
+  it("does not resend an entry whose payload was dropped", async () => {
+    const adapter = await getAdapter();
+    const clientMsgId = crypto.randomUUID();
+    useOutboxStore.setState({
+      entries: [
+        {
+          clientMsgId,
+          payload: {},
+          policy: "auto",
+          status: "failed",
+          createdAt: Date.now(),
+          payloadDropped: true,
+        },
+      ],
+    });
+
+    adapter.flushOutbox(clientMsgId);
+
+    expect(fakeWs.sent.length).toBe(0);
+  });
 });
 
 describe("reconnect backfill", () => {

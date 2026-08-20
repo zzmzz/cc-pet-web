@@ -24,6 +24,15 @@ interface OutboxState {
   markSent: (clientMsgId: string) => void;
   resend: (clientMsgId: string) => void;
   takeSendable: (now?: number) => OutboxEntry[];
+  /**
+   * Restart the ack budget for entries just written to the socket.
+   *
+   * createdAt is set at enqueue time, but the entry may sit in the queue for
+   * minutes while the socket is down. Without this the 15 s ack window would be
+   * spent offline and the entry would expire on the first tick after reconnect,
+   * before the server had any chance to ack.
+   */
+  markTransmitted: (clientMsgIds: string[], now?: number) => void;
   expireStale: (now?: number) => void;
   reviveAuto: (now?: number) => void;
 }
@@ -100,6 +109,17 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     set({ entries });
     persist(entries);
     return entries.filter((e) => e.status === "pending");
+  },
+
+  markTransmitted: (clientMsgIds, now = Date.now()) => {
+    if (clientMsgIds.length === 0) return;
+    const ids = new Set(clientMsgIds);
+    const entries = get().entries.map((e) =>
+      // 只重置仍在等待 ack 的条目：已 failed 的条目不能被复活
+      ids.has(e.clientMsgId) && e.status === "pending" ? { ...e, createdAt: now } : e
+    );
+    set({ entries });
+    persist(entries);
   },
 
   expireStale: (now = Date.now()) => {

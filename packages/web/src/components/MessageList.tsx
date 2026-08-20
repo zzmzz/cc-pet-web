@@ -7,7 +7,7 @@ import type { ChatMessage } from "@cc-pet/shared";
 import type { ReactNode } from "react";
 import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
-import { useOutboxEntry, useOutboxStore } from "../lib/store/outbox.js";
+import { useOutboxEntry } from "../lib/store/outbox.js";
 import { groupMessages } from "../lib/group-messages.js";
 import { ActivityBlock } from "./ActivityBlock.js";
 import { CardMessage } from "./CardMessage.js";
@@ -510,8 +510,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         type="button"
         className="text-xs text-red-400 underline"
         onClick={() => {
-          useOutboxStore.getState().resend(message.id);
-          getPlatform().flushOutbox();
+          // Scoped to this message: the adapter revives and writes just this
+          // entry, so the ack budget also restarts at transmission time.
+          getPlatform().flushOutbox(message.id);
         }}
       >
         重新发送
