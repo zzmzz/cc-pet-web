@@ -55,6 +55,16 @@ describe("message store watermark and merge", () => {
     expect(list.map((m) => m.id)).toEqual(["a", "b"]);
   });
 
+  // A leftover watermark makes the reconnect backfill keep fetching a chat
+  // that no longer exists, once per reconnect for the life of the page.
+  it("drops the watermark when a chat is purged", () => {
+    useMessageStore.getState().mergeMessages("c::gone", [msg("a", 5)]);
+    useMessageStore.getState().mergeMessages("c::stay", [msg("b", 9)]);
+    useMessageStore.getState().purgeChat("c::gone");
+    expect(useMessageStore.getState().watermarks).not.toHaveProperty("c::gone");
+    expect(useMessageStore.getState().getWatermark("c::stay")).toBe(9);
+  });
+
   it("starts from watermark 0 for an unknown chatKey", () => {
     expect(useMessageStore.getState().getWatermark("never::seen")).toBe(0);
   });

@@ -27,9 +27,11 @@ export class MessageStore {
     this.stmtInsert = db.prepare(
       `INSERT INTO messages (id, chat_key, role, content, timestamp, connection_id, session_key, extra, seq)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       -- timestamp is deliberately not updated: a resend is the same message,
+       -- and stamping it with the retry time sorts it after the replies it
+       -- caused (clients order by timestamp).
        ON CONFLICT(id) DO UPDATE SET
          content = excluded.content,
-         timestamp = excluded.timestamp,
          extra = excluded.extra`
     );
     this.stmtSelect = db.prepare(

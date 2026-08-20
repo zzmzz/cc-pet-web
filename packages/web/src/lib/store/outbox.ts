@@ -9,6 +9,12 @@ export interface OutboxEntry {
   policy: RetryPolicy;
   status: OutboxStatus;
   createdAt: number;
+  /**
+   * 最近一次真正写入 socket 的时刻，ack 超时预算的起点。
+   * 与 createdAt 分开：createdAt 记录用户的发送意图有多旧（manual 档位的时效窗口），
+   * 复用同一个字段会让每次重传都把时效窗口顺延，manual 消息永不过期。
+   */
+  transmittedAt?: number;
   /** 载荷因过大未被持久化，重载后无法续发，只用于告知用户 */
   payloadDropped?: boolean;
 }
@@ -91,8 +97,9 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
   resend: (clientMsgId) => {
     const entries = get().entries.map((e) =>
       // 载荷已丢弃的条目无法续发，重试对它无意义
+      // 用户显式重发即重新表达意图，时效窗口与 ack 预算都从头开始
       e.clientMsgId === clientMsgId && !e.payloadDropped
-        ? { ...e, status: "pending" as OutboxStatus, createdAt: Date.now() }
+        ? { ...e, status: "pending" as OutboxStatus, createdAt: Date.now(), transmittedAt: undefined }
         : e
     );
     set({ entries });
@@ -116,7 +123,7 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
     const ids = new Set(clientMsgIds);
     const entries = get().entries.map((e) =>
       // 只重置仍在等待 ack 的条目：已 failed 的条目不能被复活
-      ids.has(e.clientMsgId) && e.status === "pending" ? { ...e, createdAt: now } : e
+      ids.has(e.clientMsgId) && e.status === "pending" ? { ...e, transmittedAt: now } : e
     );
     set({ entries });
     persist(entries);
@@ -124,7 +131,9 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
 
   expireStale: (now = Date.now()) => {
     const entries = get().entries.map((e) =>
-      e.status === "pending" && now - e.createdAt > ACK_TIMEOUT_MS
+      // transmittedAt 未设置说明还没写进 socket：它在等连接，不是在等 ack，不能判超时。
+      // 离线期间入队的条目由此免于在重连前就被判失败（manual 档位另有时效窗口兜底）。
+      e.status === "pending" && e.transmittedAt !== undefined && now - e.transmittedAt > ACK_TIMEOUT_MS
         ? { ...e, status: "failed" as OutboxStatus }
         : e
     );
@@ -134,8 +143,9 @@ export const useOutboxStore = create<OutboxState>((set, get) => ({
 
   reviveAuto: (now = Date.now()) => {
     const entries = get().entries.map((e) =>
+      // 清掉 transmittedAt，否则复活后会被上一次的 ack 预算立刻重新判失败
       e.policy === "auto" && e.status === "failed" && !e.payloadDropped
-        ? { ...e, status: "pending" as OutboxStatus, createdAt: now }
+        ? { ...e, status: "pending" as OutboxStatus, createdAt: now, transmittedAt: undefined }
         : e
     );
     set({ entries });

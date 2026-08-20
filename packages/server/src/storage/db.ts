@@ -78,9 +78,8 @@ export function initSchema(db: Database.Database): void {
  * Ordering by timestamp first (not rowid alone) restores the correct display
  * order for rows whose rowid was churned by the historical INSERT OR REPLACE.
  *
- * The ordering is resolved in JS rather than inside the UPDATE: a ROW_NUMBER()
- * subquery over `seq IS NULL` would be re-evaluated against the shrinking set
- * of NULL rows as the same UPDATE fills them in, handing out duplicates.
+ * The ordering is resolved in JS rather than inside the UPDATE because SQLite
+ * rejects a window function in a SET clause ("misuse of window function").
  */
 function backfillMissingSeq(db: Database.Database): void {
   const pending = db

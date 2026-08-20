@@ -89,7 +89,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
       const loadedChatKeys = new Set(s.loadedChatKeys);
       loadedChatKeys.delete(chatKey);
-      return { messagesByChat, streamingContent, previewMessages, loadedChatKeys };
+      // Drop the watermark too, or the reconnect backfill keeps polling a chat
+      // that no longer exists for the life of the page.
+      const { [chatKey]: _w, ...watermarks } = s.watermarks;
+      return { messagesByChat, streamingContent, previewMessages, loadedChatKeys, watermarks };
     }),
   markChatLoaded: (chatKey) =>
     set((s) => {

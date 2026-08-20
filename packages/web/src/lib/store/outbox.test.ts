@@ -30,10 +30,34 @@ describe("outbox store", () => {
   });
 
   it("expires a pending auto entry past the ack timeout into failed", () => {
+    const sentAt = Date.now();
     const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
-    useOutboxStore.getState().expireStale(Date.now() + ACK_TIMEOUT_MS + 1);
+    useOutboxStore.getState().markTransmitted([id], sentAt);
+    useOutboxStore.getState().expireStale(sentAt + ACK_TIMEOUT_MS + 1);
     const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
     expect(entry.status).toBe("failed");
+  });
+
+  // The ack budget measures how long the server has had the bytes. An entry
+  // still queued behind a dead socket waits on a connection, not on an ack.
+  it("never expires an entry that was never written to the socket", () => {
+    const id = useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+    useOutboxStore.getState().expireStale(Date.now() + ACK_TIMEOUT_MS * 100);
+    expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("pending");
+  });
+
+  // createdAt is the age of the user's intent; transmittedAt is the ack budget.
+  // Sharing one field let every reconnect retransmit slide the manual window
+  // forward, so a stale card answer could still be delivered minutes later.
+  it("keeps the manual context window anchored to enqueue time across retransmits", () => {
+    const enqueuedAt = Date.now();
+    const id = useOutboxStore.getState().enqueue({ content: "answer" }, "manual");
+    // Two reconnects inside the window each rewrite the ack budget.
+    useOutboxStore.getState().markTransmitted([id], enqueuedAt + 60_000);
+    useOutboxStore.getState().markTransmitted([id], enqueuedAt + 110_000);
+    const sendable = useOutboxStore.getState().takeSendable(enqueuedAt + MANUAL_WINDOW_MS + 1);
+    expect(sendable.map((e) => e.clientMsgId)).not.toContain(id);
+    expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
   });
 
   it("does not resend a manual entry past its context window", () => {
@@ -99,9 +123,11 @@ describe("outbox store", () => {
       useOutboxStore.getState().markTransmitted([queued], sentAt);
 
       const byId = (id: string) => useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
-      expect(byId(queued).createdAt).toBe(sentAt);
+      expect(byId(queued).transmittedAt).toBe(sentAt);
       expect(byId(queued).status).toBe("pending");
-      expect(byId(untouched).createdAt).toBe(stale);
+      // The intent clock stays put — only the ack budget moves.
+      expect(byId(queued).createdAt).toBe(stale);
+      expect(byId(untouched).transmittedAt).toBeUndefined();
     });
 
     it("does not resurrect an entry that already failed", () => {
@@ -116,9 +142,11 @@ describe("outbox store", () => {
 
   describe("reviveAuto", () => {
     it("revives a failed auto entry back to pending with a refreshed createdAt", () => {
+      const sentAt = Date.now();
       const id = useOutboxStore.getState().enqueue({ content: "hello" }, "auto");
-      // force it to failed by advancing time past ACK_TIMEOUT_MS
-      useOutboxStore.getState().expireStale(Date.now() + ACK_TIMEOUT_MS + 1);
+      // force it to failed by letting the ack budget run out after transmission
+      useOutboxStore.getState().markTransmitted([id], sentAt);
+      useOutboxStore.getState().expireStale(sentAt + ACK_TIMEOUT_MS + 1);
       expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
 
       const reconnectAt = Date.now() + 60_000;
@@ -126,6 +154,8 @@ describe("outbox store", () => {
       const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
       expect(entry.status).toBe("pending");
       expect(entry.createdAt).toBe(reconnectAt);
+      // The old budget must be cleared, or the next tick re-fails it instantly.
+      expect(entry.transmittedAt).toBeUndefined();
     });
 
     it("does NOT revive a failed manual entry", () => {
@@ -156,19 +186,17 @@ describe("outbox store", () => {
       expect(entry.status).toBe("failed");
     });
 
-    it("end-to-end: enqueue → expireStale (lost during outage) → reviveAuto → takeSendable returns it", () => {
+    it("end-to-end: a message enqueued during a 60 s outage survives to the reconnect flush", () => {
       const now = Date.now();
       const id = useOutboxStore.getState().enqueue({ content: "during outage" }, "auto");
 
-      // 15 s of offline time elapses — expireStale flips it to failed
+      // The poll keeps ticking while the socket is down; the entry was never
+      // transmitted, so no ack is owed and it must stay pending.
       useOutboxStore.getState().expireStale(now + ACK_TIMEOUT_MS + 1);
-      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("failed");
+      expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe("pending");
 
-      // socket reconnects at +60 s
+      // socket reconnects at +60 s — flushOutbox calls takeSendable
       const reconnectAt = now + 60_000;
-      useOutboxStore.getState().reviveAuto(reconnectAt);
-
-      // flushOutbox calls takeSendable — must get the entry back
       const sendable = useOutboxStore.getState().takeSendable(reconnectAt);
       expect(sendable.map((e) => e.clientMsgId)).toContain(id);
     });

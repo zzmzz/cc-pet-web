@@ -248,8 +248,10 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
           }, 5_000);
         }
 
-        // Backfill missed downstream messages. The initial connect needs no
-        // backfill: hydrate fetches full history and seeds the watermarks.
+        // Backfill missed downstream messages. Skipped on the very first open
+        // because nothing has been fetched yet — hydrate runs later, off the
+        // manifest that this open triggers, so there are no watermarks to
+        // backfill from and the call would be an empty loop.
         if (hasOpenedOnce) {
           void backfillAllChats();
         } else {
@@ -330,13 +332,17 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       const clientMsgId = useOutboxStore.getState().enqueue(msg, policy);
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ ...msg, clientMsgId }));
+        useOutboxStore.getState().markTransmitted([clientMsgId]);
       }
       return clientMsgId;
     },
 
     flushOutbox(clientMsgId) {
-      if (ws?.readyState !== WebSocket.OPEN) return;
       const outbox = useOutboxStore.getState();
+      // Revive before the socket check: tapping 重新发送 while offline must still
+      // leave the entry pending so the next reconnect flush carries it. Gating
+      // this on OPEN made the tap a no-op, and a manual entry — which reviveAuto
+      // deliberately skips — had no other way back out of failed.
       if (clientMsgId) {
         // Explicit per-message retry: revive just this entry. reviveAuto here
         // would drag every other failed auto entry back onto the wire, which is
@@ -345,6 +351,7 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       } else {
         outbox.reviveAuto();
       }
+      if (ws?.readyState !== WebSocket.OPEN) return;
       const sendable = useOutboxStore
         .getState()
         .takeSendable()

@@ -70,6 +70,21 @@ describe("upstream message id adoption", () => {
       expect(again.seq).toBe(first.seq);
     });
 
+    // Clients order history by timestamp. Stamping a resend with the retry
+    // time sorted the question after the answers it had already produced.
+    it("keeps the original timestamp when the client resends", () => {
+      messages.save({ ...msg, timestamp: 1000 });
+      messages.save({
+        id: "reply", role: "assistant", content: "done",
+        timestamp: 2000, connectionId: "c", sessionKey: "s",
+      });
+      messages.save({ ...msg, timestamp: 3000 });
+
+      const rows = messages.getByChatKey("c::s");
+      expect(rows.map((r) => r.id)).toEqual([msg.id, "reply"]);
+      expect(rows[0].timestamp).toBe(1000);
+    });
+
     it("keeps save() returning the seq for existing callers", () => {
       const seq = messages.save(msg);
       expect(seq).toBeTypeOf("number");

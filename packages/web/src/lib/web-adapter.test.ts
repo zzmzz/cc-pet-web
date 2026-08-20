@@ -300,7 +300,7 @@ describe("flushOutbox on reconnect", () => {
     // The ack budget must start at transmission, so the very next expiry sweep
     // (which runs every 5 s while the socket is open) must not kill it.
     const entry = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!;
-    expect(entry.createdAt).toBeGreaterThan(staleAt);
+    expect(entry.transmittedAt).toBeGreaterThan(staleAt);
     useOutboxStore.getState().expireStale();
     expect(useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.status).toBe(
       "pending",
@@ -372,6 +372,25 @@ describe("flushOutbox – single-message retry", () => {
     adapter.flushOutbox(clientMsgId);
 
     expect(fakeWs.sent.length).toBe(0);
+  });
+
+  // 重新发送 is the only way a manual entry escapes failed — reviveAuto skips
+  // that tier by design. Dropping the tap while offline lost the message.
+  it("queues an offline retry tap so the next reconnect carries it", async () => {
+    const adapter = await getAdapter();
+    const target = seedFailed("tapped while offline", "manual");
+    fakeWs.readyState = FakeWebSocket.CLOSED;
+
+    adapter.flushOutbox(target);
+
+    expect(fakeWs.sent.length).toBe(0);
+    expect(
+      useOutboxStore.getState().entries.find((e) => e.clientMsgId === target)!.status,
+    ).toBe("pending");
+
+    fakeWs.readyState = FakeWebSocket.OPEN;
+    adapter.flushOutbox();
+    expect(fakeWs.sent.map((s) => JSON.parse(s).clientMsgId)).toEqual([target]);
   });
 });
 
