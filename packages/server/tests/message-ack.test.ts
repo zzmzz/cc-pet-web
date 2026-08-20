@@ -46,4 +46,34 @@ describe("upstream message id adoption", () => {
     messages.save({ ...msg, id: "other", timestamp: 1001 });
     expect(messages.save(msg)).toBe(first);
   });
+
+  // The bridge forward is skipped for an id the store already knows, so a lost
+  // ack cannot make Claude re-run the whole turn.
+  describe("saveWithStatus", () => {
+    const msg = {
+      id: "client-uuid-4", role: "user" as const, content: "run the task",
+      timestamp: 1000, connectionId: "c", sessionKey: "s",
+    };
+
+    it("reports inserted=true for an id the store has never seen", () => {
+      expect(messages.saveWithStatus(msg)).toEqual({
+        seq: expect.any(Number),
+        inserted: true,
+      });
+    });
+
+    it("reports inserted=false for a resend, keeping the original seq", () => {
+      const first = messages.saveWithStatus(msg);
+      messages.saveWithStatus({ ...msg, id: "unrelated", timestamp: 1001 });
+      const again = messages.saveWithStatus(msg);
+      expect(again.inserted).toBe(false);
+      expect(again.seq).toBe(first.seq);
+    });
+
+    it("keeps save() returning the seq for existing callers", () => {
+      const seq = messages.save(msg);
+      expect(seq).toBeTypeOf("number");
+      expect(messages.saveWithStatus(msg).seq).toBe(seq);
+    });
+  });
 });

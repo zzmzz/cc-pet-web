@@ -438,14 +438,20 @@ hub.onMessage = (msg: any, client) => {
         },
         "Dashboard sent message"
       );
-      const seq = messageStore.save({
+      const { seq, inserted } = messageStore.saveWithStatus({
         id: msgId, role: "user", content,
         timestamp: Date.now(), connectionId, sessionKey,
       });
+      // Ack even on a resend: the client is retrying because it never saw the
+      // first ack, and it needs one to clear its outbox entry.
       if (typeof clientMsgId === "string" && clientMsgId.length > 0) {
         hub.broadcast(WS_EVENTS.MESSAGE_ACK, {
           connectionId, sessionKey, clientMsgId, id: msgId, seq,
         });
+      }
+      if (!inserted) {
+        app.log.info({ connectionId, sessionKey, msgId }, "Skipped bridge forward for already-known message id");
+        break;
       }
       bridgeManager.send(connectionId, {
         type: "message",
@@ -496,7 +502,7 @@ hub.onMessage = (msg: any, client) => {
       const fileMsgId = typeof clientMsgId === "string" && clientMsgId.length > 0
         ? clientMsgId
         : `msg-${randomUUID()}`;
-      const fileSeq = messageStore.save({
+      const { seq: fileSeq, inserted: fileInserted } = messageStore.saveWithStatus({
         id: fileMsgId,
         role: "user",
         content: caption,
@@ -513,6 +519,10 @@ hub.onMessage = (msg: any, client) => {
         hub.broadcast(WS_EVENTS.MESSAGE_ACK, {
           connectionId, sessionKey, clientMsgId, id: fileMsgId, seq: fileSeq,
         });
+      }
+      if (!fileInserted) {
+        app.log.info({ connectionId, sessionKey, msgId: fileMsgId }, "Skipped bridge forward for already-known file message id");
+        break;
       }
       bridgeManager.send(connectionId, {
         type: "message",

@@ -392,6 +392,100 @@ describe("e2e bridge connection status sync", () => {
     }
   }, 30_000);
 
+  it("does not re-run the turn on the bridge when the client resends the same clientMsgId", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      const forwarded: any[] = [];
+      bridgeClient.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "message" && msg.content === "resend me") forwarded.push(msg);
+      });
+      const acks: any[] = [];
+      dashboardWs.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === WS_EVENTS.MESSAGE_ACK) acks.push(msg);
+      });
+
+      const clientMsgId = "client-resend-msg-1";
+      const payload = JSON.stringify({
+        type: WS_EVENTS.SEND_MESSAGE,
+        connectionId: stack.connectionId,
+        sessionKey: "default",
+        content: "resend me",
+        clientMsgId,
+      });
+
+      dashboardWs.send(payload);
+      await waitFor(async () => acks.length >= 1);
+      // The first ack never reached the client, so the outbox retries.
+      dashboardWs.send(payload);
+      await waitFor(async () => acks.length >= 2);
+      // Give the server room to (wrongly) forward a second time.
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(forwarded).toHaveLength(1);
+      expect(acks.map((a) => a.clientMsgId)).toEqual([clientMsgId, clientMsgId]);
+      expect(acks[1].seq).toBe(acks[0].seq);
+
+      const history = await stack.fetchHistory();
+      expect(history.filter((m) => m.content === "resend me")).toHaveLength(1);
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
+  it("does not re-send files to the bridge when the client resends the same clientMsgId", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      const forwarded: any[] = [];
+      bridgeClient.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "message" && Array.isArray(msg.files)) forwarded.push(msg);
+      });
+      const acks: any[] = [];
+      dashboardWs.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === WS_EVENTS.MESSAGE_ACK) acks.push(msg);
+      });
+
+      const clientMsgId = "client-resend-file-1";
+      const payload = JSON.stringify({
+        type: WS_EVENTS.SEND_FILE,
+        connectionId: stack.connectionId,
+        sessionKey: "default",
+        content: "resent caption",
+        files: [{ file_name: "a.txt", mime_type: "text/plain", data: "YQ==" }],
+        clientMsgId,
+      });
+
+      dashboardWs.send(payload);
+      await waitFor(async () => acks.length >= 1);
+      dashboardWs.send(payload);
+      await waitFor(async () => acks.length >= 2);
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(forwarded).toHaveLength(1);
+      expect(acks[1].seq).toBe(acks[0].seq);
+
+      const history = await stack.fetchHistory();
+      expect(history.filter((m) => m.content === "resent caption")).toHaveLength(1);
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
   it("after register_ack sends /skills probe and maps probe reply to skills-updated without persisting chat", async () => {
     const stack = await startServerAndBridge();
     const dashboardWs = await stack.openDashboardWs();
