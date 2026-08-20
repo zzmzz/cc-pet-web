@@ -49,6 +49,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         ...s.messagesByChat,
         [chatKey]: [...(s.messagesByChat[chatKey] ?? []), msg],
       },
+      ...(typeof msg.seq === "number"
+        ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, msg.seq) } }
+        : {}),
     })),
   setMessages: (chatKey, msgs) =>
     set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: msgs } })),
@@ -71,6 +74,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             { id: msgId ?? `msg-${crypto.randomUUID()}`, seq, role: "assistant" as const, content: fullText, timestamp: Date.now() },
           ],
         },
+        ...(typeof seq === "number"
+          ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, seq) } }
+          : {}),
       };
     }),
   clearMessages: (chatKey) =>

@@ -59,3 +59,34 @@ describe("message store watermark and merge", () => {
     expect(useMessageStore.getState().getWatermark("never::seen")).toBe(0);
   });
 });
+
+describe("watermark advancement via live WS pushes", () => {
+  beforeEach(() => {
+    useMessageStore.setState({ watermarks: {}, messagesByChat: {} });
+  });
+
+  it("addMessage with a seq-bearing message advances the watermark", () => {
+    const m: ChatMessage = { id: "m1", seq: 5, role: "assistant", content: "hi", timestamp: 1005 };
+    useMessageStore.getState().addMessage("chat::1", m);
+    expect(useMessageStore.getState().getWatermark("chat::1")).toBe(5);
+  });
+
+  it("addMessage with a seq-less message leaves the watermark unchanged", () => {
+    useMessageStore.getState().setWatermark("chat::1", 3);
+    const m: ChatMessage = { id: "local", role: "user", content: "hi", timestamp: 2000 };
+    useMessageStore.getState().addMessage("chat::1", m);
+    expect(useMessageStore.getState().getWatermark("chat::1")).toBe(3);
+  });
+
+  it("finalizeStream with a seq advances the watermark", () => {
+    useMessageStore.getState().finalizeStream("chat::1", "full text", "msg-abc", 8);
+    expect(useMessageStore.getState().getWatermark("chat::1")).toBe(8);
+  });
+
+  it("watermark does not move backwards when a lower seq arrives", () => {
+    useMessageStore.getState().setWatermark("chat::1", 10);
+    const m: ChatMessage = { id: "m-low", seq: 4, role: "assistant", content: "late", timestamp: 3000 };
+    useMessageStore.getState().addMessage("chat::1", m);
+    expect(useMessageStore.getState().getWatermark("chat::1")).toBe(10);
+  });
+});
