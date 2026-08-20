@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { sanitizeForTts } from "./tts-sanitizer.js";
 
 type CollectorStatus = "waiting" | "streaming" | "done" | "error";
@@ -40,7 +41,7 @@ export class ReplyCollector {
       }
     }
 
-    const msgId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const msgId = `msg-${randomUUID()}`;
 
     const entry: CollectorEntry = {
       msgId,

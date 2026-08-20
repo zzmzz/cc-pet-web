@@ -4,6 +4,7 @@ import multipart from "@fastify/multipart";
 import fstatic from "@fastify/static";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
@@ -267,7 +268,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       }
       const replyContent = bridgeReplyTextContent(raw);
       messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant", content: replyContent,
+        id: `msg-${randomUUID()}`, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
       hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, {
@@ -309,7 +310,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         const fullText = extractReplyStreamFullText(raw);
         if (fullText) {
           messageStore.save({
-            id: `msg-${Date.now()}`, role: "assistant", content: fullText,
+            id: `msg-${randomUUID()}`, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
         }
@@ -333,10 +334,10 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       break;
     case "file":
       messageStore.save({
-        id: `msg-${Date.now()}`,
+        id: `msg-${randomUUID()}`,
         role: "assistant",
         content: msg.name,
-        files: [{ id: `file-${Date.now()}`, name: msg.name, size: 0 }],
+        files: [{ id: `file-${randomUUID()}`, name: msg.name, size: 0 }],
         timestamp: Date.now(),
         connectionId: connId,
         sessionKey,
@@ -364,7 +365,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       }
       const normalizedCard = msg.card ? normalizeBridgeCard(msg.card) : undefined;
       messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant",
+        id: `msg-${randomUUID()}`, role: "assistant",
         content: msg.card?.header?.title ?? "",
         card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
@@ -375,7 +376,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       break;
     case "audio":
       messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant",
+        id: `msg-${randomUUID()}`, role: "assistant",
         content: "[音频消息]",
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
@@ -413,7 +414,7 @@ hub.onMessage = (msg: any, client) => {
   }
   switch (type) {
     case WS_EVENTS.SEND_MESSAGE:
-      const msgId = `msg-${Date.now()}`;
+      const msgId = `msg-${randomUUID()}`;
       app.log.info(
         {
           connectionId,
@@ -473,11 +474,11 @@ hub.onMessage = (msg: any, client) => {
       }
       app.log.info({ connectionId, sessionKey, files: normalizedFiles.length }, "Dashboard sent file");
       messageStore.save({
-        id: `msg-${Date.now()}`,
+        id: `msg-${randomUUID()}`,
         role: "user",
         content: caption,
         files: normalizedFiles.map((file) => ({
-          id: `file-${Date.now()}-${file.file_name}`,
+          id: `file-${randomUUID()}-${file.file_name}`,
           name: file.file_name,
           size: 0,
         })),
@@ -487,7 +488,7 @@ hub.onMessage = (msg: any, client) => {
       });
       bridgeManager.send(connectionId, {
         type: "message",
-        msg_id: `msg-file-${Date.now()}`,
+        msg_id: `msg-file-${randomUUID()}`,
         session_key: sessionKey,
         user_id: connectionId,
         user_name: "cc-pet-user",

@@ -43,6 +43,45 @@ describe("Storage", () => {
       messages.deleteByChatKey("conn-1::default");
       expect(messages.getByChatKey("conn-1::default")).toHaveLength(0);
     });
+
+    it("keeps both messages written within the same millisecond", () => {
+      const ts = Date.now();
+      messages.save({
+        id: "msg-a", role: "assistant", content: "first",
+        timestamp: ts, connectionId: "conn-1", sessionKey: "default",
+      });
+      messages.save({
+        id: "msg-b", role: "assistant", content: "second",
+        timestamp: ts, connectionId: "conn-1", sessionKey: "default",
+      });
+      const result = messages.getByChatKey("conn-1::default");
+      expect(result).toHaveLength(2);
+      expect(result.map((m) => m.content).sort()).toEqual(["first", "second"]);
+    });
+
+    it("updates the same id in place without moving its row", () => {
+      const rowidOf = (id: string) =>
+        (db.prepare(`SELECT rowid FROM messages WHERE id = ?`).get(id) as { rowid: number }).rowid;
+
+      messages.save({
+        id: "msg-dup", role: "user", content: "original",
+        timestamp: 1000, connectionId: "conn-1", sessionKey: "default",
+      });
+      const originalRowid = rowidOf("msg-dup");
+      messages.save({
+        id: "msg-later", role: "assistant", content: "later",
+        timestamp: 2000, connectionId: "conn-1", sessionKey: "default",
+      });
+      messages.save({
+        id: "msg-dup", role: "user", content: "edited",
+        timestamp: 1000, connectionId: "conn-1", sessionKey: "default",
+      });
+
+      expect(rowidOf("msg-dup")).toBe(originalRowid);
+      const result = messages.getByChatKey("conn-1::default");
+      expect(result).toHaveLength(2);
+      expect(result.find((m) => m.id === "msg-dup")!.content).toBe("edited");
+    });
   });
 
   describe("SessionStore", () => {

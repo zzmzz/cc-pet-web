@@ -22,8 +22,12 @@ export class MessageStore {
 
   constructor(private db: Database.Database) {
     this.stmtInsert = db.prepare(
-      `INSERT OR REPLACE INTO messages (id, chat_key, role, content, timestamp, connection_id, session_key, extra)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO messages (id, chat_key, role, content, timestamp, connection_id, session_key, extra)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         content = excluded.content,
+         timestamp = excluded.timestamp,
+         extra = excluded.extra`
     );
     this.stmtSelect = db.prepare(
       `SELECT * FROM messages WHERE chat_key = ? ORDER BY timestamp ASC`
