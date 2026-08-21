@@ -7,6 +7,7 @@ import { useMessageStore } from "../lib/store/message.js";
 import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
+import { extractFiles, dragHasFiles } from "../lib/file-transfer.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -14,6 +15,35 @@ import { getFilteredCommands, useSlashMenu, type SlashCommandSpec } from "../lib
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_AGENT_COMMANDS: SlashCommand[] = [];
+
+/** Below this many queued bytes the WS flush is effectively instant — skip the indicator. */
+const UPLOAD_PROGRESS_MIN_BYTES = 1_000_000;
+
+/**
+ * Attachments are base64-encoded and pushed as a single large WebSocket frame.
+ * On a slow link that frame can take minutes to drain, during which the UI would
+ * otherwise look frozen. Poll the socket's buffered byte count to surface progress
+ * on the optimistic message bubble, then clear the flag once fully flushed.
+ */
+function trackUploadProgress(chatKey: string, messageId: string): void {
+  const platform = getPlatform();
+  const total = platform.getWsBufferedAmount();
+  const { patchMessage } = useMessageStore.getState();
+  if (total < UPLOAD_PROGRESS_MIN_BYTES) return;
+
+  patchMessage(chatKey, messageId, { uploading: true, uploadProgress: 0 });
+  const timer = window.setInterval(() => {
+    const remaining = platform.getWsBufferedAmount();
+    if (remaining <= 0) {
+      window.clearInterval(timer);
+      patchMessage(chatKey, messageId, { uploading: false, uploadProgress: 100 });
+      return;
+    }
+    const sent = Math.max(0, total - remaining);
+    const pct = Math.min(99, Math.floor((sent / total) * 100));
+    patchMessage(chatKey, messageId, { uploading: true, uploadProgress: pct });
+  }, 250);
+}
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -76,6 +106,16 @@ export function ChatWindow() {
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // A new session must start with an empty composer: an unsent draft (or staged
+  // attachment) left over from the previous conversation would otherwise look
+  // like residue in the fresh session — and would be sent to the wrong agent
+  // context if the user hits Enter.
+  const composerResetToken = useUIStore((s) => s.composerResetToken);
+  useEffect(() => {
+    setInput("");
+    setPendingAttachments([]);
+  }, [composerResetToken]);
 
   const { isActive: slashMenuVisible, query: slashQuery } = useSlashMenu(input);
 
@@ -160,7 +200,9 @@ export function ChatWindow() {
       setInput("");
       setPendingAttachments([]);
 
-      const fileClientMsgId = getPlatform().sendWsMessage({
+      // Send first: the outbox's clientMsgId doubles as the bubble id, which is
+      // what lets the bubble render pending/failed and offer a retry.
+      const uploadMessageId = getPlatform().sendWsMessage({
         type: WS_EVENTS.SEND_FILE,
         connectionId: activeConnectionId,
         sessionKey: activeSessionKey,
@@ -169,7 +211,7 @@ export function ChatWindow() {
       }, "auto");
 
       useMessageStore.getState().addMessage(chatKey, {
-        id: fileClientMsgId,
+        id: uploadMessageId,
         role: "user",
         content: caption ?? "",
         files: filesToSend.map((file) => ({
@@ -184,6 +226,10 @@ export function ChatWindow() {
       if (caption) {
         useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
       }
+      useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
+      // After the bubble exists (patchMessage needs it) and after the send, so
+      // the buffered byte count reflects this frame.
+      trackUploadProgress(chatKey, uploadMessageId);
       return;
     }
 
@@ -205,6 +251,7 @@ export function ChatWindow() {
       sessionKey: activeSessionKey,
     });
     useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
+    useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
   }, [
     input,
     pendingAttachments,
@@ -234,6 +281,44 @@ export function ChatWindow() {
       prev.filter((item) => `${item.name}-${item.size}-${item.lastModified}` !== targetKey),
     );
   }, []);
+
+  // Drag-and-drop over the whole chat page (not just the input box).
+  const [isDragging, setIsDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const canDropFiles = !!activeConnectionId;
+
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!canDropFiles || !dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setIsDragging(true);
+  }, [canDropFiles]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!canDropFiles || !dragHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, [canDropFiles]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (dragDepth.current === 0) return;
+    e.preventDefault();
+    dragDepth.current -= 1;
+    if (dragDepth.current <= 0) {
+      dragDepth.current = 0;
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    dragDepth.current = 0;
+    setIsDragging(false);
+    if (!canDropFiles) return;
+    const files = extractFiles(e.dataTransfer);
+    if (files.length === 0) return;
+    e.preventDefault();
+    handleFilesSelected(files);
+  }, [canDropFiles, handleFilesSelected]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -299,8 +384,21 @@ export function ChatWindow() {
   );
 
   return (
-    <div className="flex flex-col h-full">
-      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} />
+    <div
+      className="relative flex flex-col h-full"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center border-2 border-dashed border-indigo-400 bg-indigo-50/80 backdrop-blur-[1px]">
+          <span className="rounded-xl bg-white/90 px-5 py-3 text-base font-medium text-indigo-600 shadow-sm">
+            📎 松开鼠标以添加文件
+          </span>
+        </div>
+      )}
+      <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} processing={showStopButton} />
       <MessageInput
         ref={inputRef}
         value={input}

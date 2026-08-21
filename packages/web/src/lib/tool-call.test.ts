@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isToolCallContent, getToolCallLabel, getToolCallDetail, getToolCallFullDetail } from "./tool-call.js";
+import {
+  isToolCallContent,
+  isToolResultContent,
+  parseToolResult,
+  getToolCallLabel,
+  getToolCallDetail,
+  getToolCallFullDetail,
+} from "./tool-call.js";
 
 describe("isToolCallContent", () => {
   it("detects wrench emoji tool call", () => {
@@ -106,5 +113,69 @@ describe("getToolCallFullDetail", () => {
 
   it("returns empty string when no --- separator", () => {
     expect(getToolCallFullDetail("🔧 **工具 #1: Read**\nno separator")).toBe("");
+  });
+});
+
+describe("isToolResultContent", () => {
+  it("detects receipt emoji result", () => {
+    expect(isToolResultContent("🧾\n🟢 状态: ok\n🔢 退出码: 0\n```text\nhi\n```")).toBe(true);
+  });
+
+  it("detects result with tool name on first line", () => {
+    expect(isToolResultContent("🧾 Bash\n🔴 状态: failed\n🔢 退出码: 3\n```text\nboom\n```")).toBe(true);
+  });
+
+  it("detects with leading whitespace", () => {
+    expect(isToolResultContent("  🧾\n🟢 状态: ok")).toBe(true);
+  });
+
+  it("rejects tool call and normal messages", () => {
+    expect(isToolResultContent("🔧 **工具 #1: Bash**\n---\necho hi")).toBe(false);
+    expect(isToolResultContent("已经搞定了 ✅")).toBe(false);
+    expect(isToolResultContent("")).toBe(false);
+  });
+
+  it("is not detected as a tool call", () => {
+    expect(isToolCallContent("🧾\n🟢 状态: ok\n```text\nx\n```")).toBe(false);
+  });
+});
+
+describe("parseToolResult", () => {
+  it("parses a successful result", () => {
+    const r = parseToolResult("🧾\n🟢 状态: ok\n🔢 退出码: 0\n```text\npassword: abc\n```");
+    expect(r.status).toBe("ok");
+    expect(r.exitCode).toBe(0);
+    expect(r.body).toBe("password: abc");
+  });
+
+  it("parses a completed result as ok", () => {
+    const r = parseToolResult("🧾\n🟢 状态: completed\n```text\ndone\n```");
+    expect(r.status).toBe("ok");
+    expect(r.body).toBe("done");
+  });
+
+  it("parses a failed result with non-zero exit code", () => {
+    const r = parseToolResult(
+      "🧾 Bash\n🔴 状态: failed\n🔢 退出码: 3\n```text\nsysmon request failed\npgrep: error\n```",
+    );
+    expect(r.status).toBe("error");
+    expect(r.exitCode).toBe(3);
+    expect(r.body).toBe("sysmon request failed\npgrep: error");
+  });
+
+  it("treats red circle as error even without exit code", () => {
+    const r = parseToolResult("🧾\n🔴 状态: failed\n```text\nnope\n```");
+    expect(r.status).toBe("error");
+  });
+
+  it("handles result with no code fence", () => {
+    const r = parseToolResult("🧾\n🟢 状态: ok\n🔢 退出码: 0");
+    expect(r.status).toBe("ok");
+    expect(r.body).toBe("");
+  });
+
+  it("preserves non-text fence language and trims trailing fence", () => {
+    const r = parseToolResult("🧾\n🟢 状态: ok\n```\nline1\nline2\n```");
+    expect(r.body).toBe("line1\nline2");
   });
 });

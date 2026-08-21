@@ -3,15 +3,18 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fstatic from "@fastify/static";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
-import type { BridgeIncoming } from "@cc-pet/shared";
+import type { BridgeIncoming, FileAttachment } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
 import { findTokenIdentity } from "./auth/token-auth.js";
 import { parseSlashCommandsFromProbeCard, parseSlashCommandsFromProbeText } from "./bridge/parse-skills-probe.js";
 import { normalizeBridgeCard } from "./bridge/card-normalize.js";
 import {
+  bridgeFileData,
+  bridgeFileName,
   bridgeReplyCtx,
   bridgeReplyStreamDone,
   bridgeReplyTextContent,
@@ -29,16 +32,23 @@ import { SessionsCleanup } from "./cleanup/sessions-cleanup.js";
 import { registerConfigRoutes } from "./api/config.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
-import { registerFileRoutes } from "./api/files.js";
+import { registerFileRoutes, saveBase64File } from "./api/files.js";
 import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
 import { registerSearchRoutes } from "./api/search.js";
 import { registerSiriRoutes } from "./api/siri.js";
+import { registerSiriAskRoute } from "./api/siri-ask.js";
 import { registerWorkspaceRoutes } from "./api/workspace.js";
 import { QuotaScraper } from "./quota-scraper.js";
 import { authGuard, getRequestAuthIdentity } from "./middleware/auth.js";
 import { ReplyCollector } from "./siri/reply-collector.js";
+import { ResidentRegistry } from "./resident/registry.js";
+import { onResidentAssistantMessage } from "./resident/incoming.js";
+import { ProactiveDetector } from "./resident/proactive-detector.js";
+import { PushSubscriptionStore } from "./storage/push-subscriptions.js";
+import { WebPushService } from "./push/web-push-service.js";
+import { registerPushRoutes } from "./api/push.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -112,6 +122,14 @@ const app = Fastify({
     : { level: process.env.LOG_LEVEL ?? "info" },
 });
 bridgeManager.setLogger(app.log);
+const residentRegistry = new ResidentRegistry(initialConfig, app.log);
+residentRegistry.bootstrap(sessionStore);
+const proactiveDetector = new ProactiveDetector();
+const pushSubscriptionStore = new PushSubscriptionStore(db);
+const webPush = new WebPushService(pushSubscriptionStore, initialConfig.webPush, { logger: app.log });
+if (!webPush.enabled) {
+  app.log.warn("Web push disabled: no valid webPush config; RESIDENT push notifications will not be sent");
+}
 await app.register(cors, { origin: true });
 await app.register(multipart);
 
@@ -135,6 +153,11 @@ app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) =>
 app.addHook("onRequest", authGuard(initialConfig.tokens));
 registerConfigRoutes(app, configStore);
 registerSessionRoutes(app, sessionStore, messageStore);
+registerPushRoutes(app, {
+  store: pushSubscriptionStore,
+  webPush,
+  getAuthIdentity: getRequestAuthIdentity,
+});
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
@@ -152,6 +175,26 @@ if (quotaCookie) {
 }
 registerQuotaRoutes(app, { db, scraper: quotaScraper });
 
+/** 从 hass-agent/.env 读 HA 地址和令牌，供快通道直连 HA。读不到就返回 undefined（退化成全部走模型）。 */
+function siriFastPath(dir: string) {
+  try {
+    const env = Object.fromEntries(
+      readFileSync(path.join(dir, ".env"), "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#") && l.includes("="))
+        .map((l) => {
+          const i = l.indexOf("=");
+          return [l.slice(0, i), l.slice(i + 1).replace(/^["']|["']$/g, "")];
+        }),
+    );
+    if (!env.HA_URL || !env.HA_TOKEN) return undefined;
+    return { dir, haUrl: env.HA_URL, haToken: env.HA_TOKEN };
+  } catch {
+    return undefined;
+  }
+}
+
 const replyCollector = new ReplyCollector();
 registerSiriRoutes(app, {
   bridgeManager,
@@ -159,6 +202,33 @@ registerSiriRoutes(app, {
   replyCollector,
   getAuthIdentity: getRequestAuthIdentity,
   getDefaultConnectionId: (bridgeIds) => [...bridgeIds][0],
+  onUserSend: (connectionId, sessionKey) => {
+    if (residentRegistry.isResident(connectionId, sessionKey)) {
+      proactiveDetector.markUserSend(connectionId, sessionKey);
+    }
+  },
+});
+
+// Siri 走的同步通道：直接 spawn claude 跑受限的家居助手会话，一次请求拿到答案，
+// 快捷指令那边不用写轮询循环。超时的活转交常驻会话（见 siri-ask.ts）。
+registerSiriAskRoute(app, {
+  bridgeManager,
+  messageStore,
+  residentRegistry,
+  getAuthIdentity: getRequestAuthIdentity,
+  claude: {
+    bin: process.env.SIRI_CLAUDE_BIN ?? "claude",
+    cwd: process.env.SIRI_CLAUDE_CWD ?? "/code/hass-agent",
+    model: process.env.SIRI_CLAUDE_MODEL ?? "claude-haiku-4-5",
+    // 这轮整体跑多久算超时（超了转交第二大脑），不是 HTTP 响应时间
+    timeoutMs: Number(process.env.SIRI_CLAUDE_TIMEOUT_MS ?? 90_000),
+  },
+  // 同步等这么久还没结果就改发 pollId。iOS 的「获取 URL 内容」超过 25 秒会报错，
+  // 而实测一轮家居查询要 15～25 秒，所以这里取 10 秒留足余量。
+  handoffMs: Number(process.env.SIRI_ASK_HANDOFF_MS ?? 10_000),
+  // 快通道：开关灯这类确定性动作直接查表调 HA，不过模型。HA 的地址和令牌复用
+  // hass-agent/.env（那份 HA 长期令牌本来就是给这个工作目录用的）。
+  fastPath: siriFastPath(process.env.SIRI_CLAUDE_CWD ?? "/code/hass-agent"),
 });
 
 app.post<{ Params: { id: string } }>("/api/bridges/:id/connect", async (req, reply) => {
@@ -239,9 +309,49 @@ bridgeManager.on("skillsProbe", (connId: string, event: Record<string, unknown>)
   app.log.info({ connectionId: connId, ...event }, "Bridge skills probe event");
 });
 
+/** Frame types that carry chat content: without a session_key the dashboard has to guess a target session. */
+const CONTENT_BEARING_BRIDGE_TYPES = new Set([
+  "reply",
+  "reply_stream",
+  "card",
+  "file",
+  "buttons",
+  "audio",
+  "preview_start",
+  "update_message",
+]);
+
 bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
   const raw = msg as unknown as Record<string, unknown>;
   const sessionKey = bridgeSessionKey(raw);
+  if (!sessionKey && CONTENT_BEARING_BRIDGE_TYPES.has(msg.type)) {
+    // The dashboard falls back to its sticky/active session for these, which is
+    // how content from one conversation can surface in another. Logged so such a
+    // leak is diagnosable after the fact instead of only being visible client-side.
+    app.log.warn(
+      { connectionId: connId, type: msg.type },
+      "Bridge content frame carries no session_key — dashboard must guess the target session",
+    );
+  }
+
+  const bumpResidentUnread = (contentPreview: string): void => {
+    if (!sessionKey) return;
+    const r = onResidentAssistantMessage({ registry: residentRegistry, sessionStore }, connId, sessionKey);
+    if (!r) return;
+    hub.broadcast(WS_EVENTS.RESIDENT_UNREAD, {
+      connectionId: connId,
+      sessionKey,
+      unreadCount: r.unreadCount,
+    });
+    if (r.ownerToken && proactiveDetector.isProactive(connId, sessionKey)) {
+      const label = residentRegistry.pairs().find((p) => p.connectionId === connId && p.key === sessionKey)?.label;
+      void webPush.sendToToken(r.ownerToken, {
+        title: label ? `常驻助手 · ${label}` : "常驻助手",
+        body: contentPreview.slice(0, 120) || "有新的主动消息",
+        data: { connectionId: connId, sessionKey },
+      });
+    }
+  };
 
   switch (msg.type) {
     case "register_ack":
@@ -272,6 +382,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         id: replyMsgId, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
+      bumpResidentUnread(replyContent);
       hub.broadcast(WS_EVENTS.BRIDGE_MESSAGE, {
         connectionId: connId,
         sessionKey,
@@ -319,6 +430,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
             id: doneMsgId, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
+          bumpResidentUnread(fullText ?? "");
         }
         hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText, msgId: doneMsgId, seq: doneSeq });
         replyCollector.onDone(connId, sessionKey ?? "default", fullText);
@@ -339,17 +451,39 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_TYPING_STOP, { connectionId: connId, sessionKey });
       break;
     case "file": {
+      // Bridge `file` frames carry the payload as base64; field names vary across
+      // cc-connect versions, so resolve name/data defensively. Persist to the shared
+      // files store so the dashboard gets a downloadable URL, falling back to a
+      // name-only chip if the payload is missing/undecodable.
+      const fileName = bridgeFileName(raw) ?? "file";
+      const fileData = bridgeFileData(raw);
+      app.log.info(
+        { connectionId: connId, fileName, hasData: !!fileData },
+        "Bridge file frame received",
+      );
+      let attachment: FileAttachment = { id: `file-${randomUUID()}`, name: fileName, size: 0 };
+      if (fileData) {
+        try {
+          attachment = saveBase64File(DATA_DIR, fileName, fileData);
+        } catch (err) {
+          app.log.error({ err, connectionId: connId, name: fileName }, "Failed to persist bridge file attachment");
+        }
+      }
       const fileMsgId = `msg-${randomUUID()}`;
       const fileReceivedSeq = messageStore.save({
         id: fileMsgId,
         role: "assistant",
-        content: msg.name,
-        files: [{ id: `file-${randomUUID()}`, name: msg.name, size: 0 }],
+        content: fileName,
+        files: [attachment],
         timestamp: Date.now(),
         connectionId: connId,
         sessionKey,
       });
-      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: msg.name, msgId: fileMsgId, seq: fileReceivedSeq });
+      bumpResidentUnread(fileName);
+      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, {
+        connectionId: connId, sessionKey, name: fileName, file: attachment,
+        msgId: fileMsgId, seq: fileReceivedSeq,
+      });
       break;
     }
     case "card":
@@ -379,6 +513,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
+      bumpResidentUnread(msg.card?.header?.title ?? "");
       hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
         connectionId: connId, sessionKey, card: normalizedCard, msgId: cardMsgId, seq: cardSeq,
       });
@@ -400,14 +535,25 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: msg.commands });
       break;
     case "preview_start":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_START, { connectionId: connId, sessionKey, previewId: msg.preview_id, content: msg.content });
-      break;
     case "update_message":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, { connectionId: connId, sessionKey, previewId: msg.preview_id, content: msg.content });
+    case "delete_message": {
+      // cc-connect pushes a live-updating progress card (tool steps) through the
+      // preview channel. It sends ref_id (preview_start) / preview_handle
+      // (update/delete) rather than a stable "preview_id"; correlating those is
+      // brittle, and there is at most one progress card per session at a time,
+      // so we key by session. The frontend renders progress-like content (tool
+      // steps) and ignores text previews (the final reply carries the text).
+      const previewId = `pv-${connId}-${sessionKey ?? "default"}`;
+      const evt =
+        msg.type === "preview_start"
+          ? WS_EVENTS.BRIDGE_PREVIEW_START
+          : msg.type === "update_message"
+            ? WS_EVENTS.BRIDGE_PREVIEW_UPDATE
+            : WS_EVENTS.BRIDGE_PREVIEW_DELETE;
+      const content = msg.type === "delete_message" ? undefined : msg.content;
+      hub.broadcast(evt, { connectionId: connId, sessionKey, previewId, content });
       break;
-    case "delete_message":
-      hub.broadcast(WS_EVENTS.BRIDGE_PREVIEW_DELETE, { connectionId: connId, sessionKey, previewId: msg.preview_id });
-      break;
+    }
     case "error":
       hub.broadcast(WS_EVENTS.BRIDGE_ERROR, { connectionId: connId, error: msg.message });
       break;
@@ -462,6 +608,9 @@ hub.onMessage = (msg: any, client) => {
         reply_ctx: sessionKey,
         content,
       });
+      if (residentRegistry.isResident(connectionId, sessionKey)) {
+        proactiveDetector.markUserSend(connectionId, sessionKey);
+      }
       break;
     }
     case WS_EVENTS.SEND_BUTTON:

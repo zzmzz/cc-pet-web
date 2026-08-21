@@ -4,6 +4,10 @@ export interface Session {
   label?: string;
   createdAt: number;
   lastActiveAt: number;
+  /** True when this session is a config-declared resident session. */
+  isResident?: boolean;
+  /** Server-persisted unread count (resident sessions only). */
+  unreadCount?: number;
 }
 
 export type TaskPhase =

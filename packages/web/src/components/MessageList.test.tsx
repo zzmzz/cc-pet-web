@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ChatMessage } from "@cc-pet/shared";
 import { MessageList } from "./MessageList.js";
 import { useOutboxStore } from "../lib/store/outbox.js";
+import { useSessionStore } from "../lib/store/session.js";
 import { getPlatform } from "../lib/platform.js";
 
 vi.mock("../lib/platform.js", () => ({
@@ -88,6 +89,55 @@ describe("MessageList", () => {
 
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth" });
     expect(screen.queryByRole("button", { name: "回到最新" })).not.toBeInTheDocument();
+  });
+
+  it("shows the 处理中 indicator only when processing and nothing is streaming", () => {
+    const messages = buildMessages(2);
+    const { rerender } = render(<MessageList messages={messages} sessionKey="s" processing={false} />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+
+    // Processing with no streaming text yet → indicator visible.
+    rerender(<MessageList messages={messages} sessionKey="s" processing />);
+    expect(screen.getByLabelText("处理中")).toBeInTheDocument();
+
+    // Once text starts streaming, the indicator yields to the streaming bubble.
+    rerender(<MessageList messages={messages} sessionKey="s" processing streamingContent="部分正文…" />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+
+    // Processing ends → indicator gone.
+    rerender(<MessageList messages={messages} sessionKey="s" processing={false} />);
+    expect(screen.queryByLabelText("处理中")).not.toBeInTheDocument();
+  });
+
+  it("keeps single line breaks inside user messages", () => {
+    const messages: ChatMessage[] = [
+      { id: "u-multiline", role: "user", content: "第一行\n第二行", timestamp: 1 },
+    ];
+
+    const { container } = render(<MessageList messages={messages} />);
+
+    expect(container.querySelectorAll("br").length).toBe(1);
+  });
+
+  it("keeps fenced code blocks free of injected trailing spaces", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-multiline-code",
+        role: "assistant",
+        content: "```ts\nconst a = 1;\nconst b = 2;\n```",
+        timestamp: 1,
+      },
+    ];
+
+    render(<MessageList messages={messages} />);
+    fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
+
+    expect(writeText).toHaveBeenCalledWith("const a = 1;\nconst b = 2;");
   });
 
   it("copies fenced code block content with one click", async () => {
@@ -409,6 +459,59 @@ describe("MessageList", () => {
       expect(container.querySelector(".opacity-60")).not.toBeInTheDocument();
       expect(container.querySelector(".border-red-500")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("jump to message from search", () => {
+    beforeEach(() => {
+      useSessionStore.setState({ pendingScrollMessageId: null });
+    });
+
+    it("scrolls the requested message to center and flashes it", async () => {
+      const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
+      const messages = buildMessages(10);
+      const { container } = render(<MessageList messages={messages} sessionKey="s" />);
+      scrollIntoView.mockClear();
+
+      act(() => {
+        useSessionStore.getState().jumpToMessage("conn", "s", "m-3");
+      });
+
+      await waitFor(() => {
+        const flashed = container.querySelector(".cc-flash");
+        expect(flashed?.textContent).toContain("message-3");
+      });
+      await new Promise((r) => requestAnimationFrame(r));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+      // Consumed: the pending request is cleared after handling.
+      expect(useSessionStore.getState().pendingScrollMessageId).toBeNull();
+    });
+
+    it("defers to the target instead of snapping to bottom on session change", async () => {
+      const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
+      const messagesA = buildMessages(5);
+      const messagesB: ChatMessage[] = [
+        { id: "b-1", role: "user", content: "beta-1", timestamp: 1 },
+        { id: "b-2", role: "assistant", content: "beta-2", timestamp: 2 },
+        { id: "b-3", role: "user", content: "beta-3", timestamp: 3 },
+      ];
+      const { rerender } = render(<MessageList messages={messagesA} sessionKey="a" />);
+      scrollIntoView.mockClear();
+
+      // Request a message that only exists in the not-yet-loaded session B.
+      act(() => {
+        useSessionStore.setState({ pendingScrollMessageId: "b-2" });
+      });
+      // Session switches and B's messages arrive together.
+      rerender(<MessageList messages={messagesB} sessionKey="b" />);
+
+      await waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+      });
+      // Never snapped to the bottom while the jump was pending.
+      expect(scrollIntoView).not.toHaveBeenCalledWith({ behavior: "auto" });
+      expect(useSessionStore.getState().pendingScrollMessageId).toBeNull();
     });
   });
 });

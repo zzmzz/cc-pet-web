@@ -13,6 +13,8 @@ export interface PlatformAPI {
    * retry on one bubble, and only that entry is touched.
    */
   flushOutbox(clientMsgId?: string): void;
+  /** Bytes still queued in the WebSocket send buffer (0 if not open). */
+  getWsBufferedAmount(): number;
 
   fetchApi<T = any>(path: string, options?: RequestInit): Promise<T>;
   /** Like fetchApi but returns the raw Response so callers can read blobs/streams. */

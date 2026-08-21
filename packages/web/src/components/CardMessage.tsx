@@ -1,7 +1,6 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { ChatCard, ChatCardElement } from "@cc-pet/shared";
+import { CardMarkdown } from "./CardMarkdown.js";
 import { getPlatform } from "../lib/platform.js";
 import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import { useConnectionStore } from "../lib/store/connection.js";
@@ -11,6 +10,8 @@ import { AskQuestionCard, detectAskQuestion } from "./AskQuestionCard.js";
 
 interface Props {
   card: ChatCard;
+  /** Reply that already answered this AskUserQuestion card, if any. */
+  answeredWith?: string;
 }
 
 const HEADER_COLORS: Record<string, string> = {
@@ -26,6 +27,7 @@ function sendCardAction(value: string) {
   const connectionId = useConnectionStore.getState().activeConnectionId;
   if (!connectionId) return;
   const sessionKey = useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
+  useSessionStore.getState().noteStickySession(connectionId, sessionKey);
   // card button values starting with "cmd:" are sent as chat messages
   const content = value.startsWith("cmd:") ? value.slice(4) : value;
   const clientMsgId = getPlatform().sendWsMessage({
@@ -52,11 +54,7 @@ function CardElement({ element }: { element: ChatCardElement }) {
 
   switch (element.type) {
     case "markdown":
-      return (
-        <div className="text-sm text-gray-800 whitespace-pre-wrap break-words markdown-body card-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{element.content.replace(/\n/g, "  \n")}</ReactMarkdown>
-        </div>
-      );
+      return <CardMarkdown content={element.content} />;
     case "divider":
       return <hr className="border-t border-gray-200 my-2" />;
     case "actions":
@@ -137,7 +135,7 @@ function CardElement({ element }: { element: ChatCardElement }) {
   }
 }
 
-export function CardMessage({ card }: Props) {
+export function CardMessage({ card, answeredWith }: Props) {
   const headerColor = card.header?.color ?? "blue";
   const headerClass = HEADER_COLORS[headerColor] ?? HEADER_COLORS.blue;
   const askData = detectAskQuestion(card);
@@ -151,7 +149,7 @@ export function CardMessage({ card }: Props) {
       )}
       <div className="px-3 py-2 space-y-2">
         {askData ? (
-          <AskQuestionCard data={askData} />
+          <AskQuestionCard data={askData} answeredWith={answeredWith} />
         ) : (
           card.elements.map((el, i) => <CardElement key={i} element={el} />)
         )}

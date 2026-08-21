@@ -1,8 +1,21 @@
+export interface ResidentSessionConfig {
+  bridgeId: string;
+  key: string;
+  label?: string;
+}
+
+export interface WebPushConfig {
+  vapidPublicKey: string;
+  vapidPrivateKey: string;
+  subject: string;
+}
+
 export interface AppConfig {
   bridges: BridgeConfig[];
   tokens: TokenConfig[];
   pet: PetConfig;
   server: ServerConfig;
+  webPush?: WebPushConfig;
 }
 
 export interface BridgeConfig {
@@ -20,6 +33,7 @@ export interface TokenConfig {
   name: string;
   bridgeIds: string[];
   petImages?: TokenPetImages;
+  residentSession?: ResidentSessionConfig;
 }
 
 export interface TokenPetImages {

@@ -19,6 +19,7 @@ class FakeAdapter implements PlatformAPI {
   disconnectWs = vi.fn();
   sendWsMessage = vi.fn().mockReturnValue("fake-client-msg-id");
   flushOutbox = vi.fn();
+  getWsBufferedAmount = vi.fn(() => 0);
 
   fetchApi = vi.fn();
   fetchApiRaw = vi.fn();
@@ -66,6 +67,7 @@ function resetStores() {
     unread: {},
     taskStateByConnection: {},
     lazyLoadChat: null,
+    stickySessionByConnection: {},
   });
   useUIStore.setState({
     chatOpen: true,
@@ -849,6 +851,103 @@ describe("App integration", () => {
     });
   });
 
+  it("renders tool-progress preview updates but ignores text previews", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    // A plain-text preview must be ignored (the final reply delivers the text).
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "这是普通正文预览，应该被忽略",
+    });
+    expect(Object.keys(useMessageStore.getState().previewMessages)).toHaveLength(0);
+
+    // A progress card (tool steps) must render as a live preview.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**",
+    });
+    await waitFor(() => {
+      const pv = useMessageStore.getState().previewMessages["pv-cc-connect-default"];
+      expect(pv?.content).toContain("工具 #1");
+    });
+
+    // Subsequent update upserts (replaces) the same preview in place.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**\n2. 🧾 ok",
+    });
+    await waitFor(() => {
+      expect(useMessageStore.getState().previewMessages["pv-cc-connect-default"]?.content).toContain("🧾");
+    });
+  });
+
+  it("tool messages keep the session working; only a text reply completes it", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const phase = () =>
+      useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+
+    // Mid-turn tool call/result (no typing active) must NOT complete the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+    await waitFor(() => expect(phase()).toBe("working"));
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🧾\n🟢 状态: ok",
+    });
+    await waitFor(() =>
+      expect(
+        (useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "default")] ?? []).some((m) =>
+          m.content.startsWith("🧾"),
+        ),
+      ).toBe(true),
+    );
+    // Still working after the tool result — the turn is not done.
+    expect(phase()).toBe("working");
+
+    // The final text reply (typing inactive) completes the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "运行完成，目录里有 3 个文件。",
+    });
+    await waitFor(() => expect(phase()).toBe("completed"));
+  });
+
+  it("commits tool-call messages immediately without the typewriter reveal", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const key = makeChatKey("cc-connect", "default");
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+
+    // Tool content must land in the message list right away (rendered live via
+    // ActivityBlock) and must never be routed through streamingContent, which
+    // would hide it mid-turn.
+    await waitFor(() => {
+      const st = useMessageStore.getState();
+      expect((st.messagesByChat[key] ?? []).some((m) => m.content.startsWith("🔧"))).toBe(true);
+    });
+    expect(useMessageStore.getState().streamingContent[key] ?? "").toBe("");
+  });
+
   it("routes fallback typing_stop to in-flight session after user switches active session", async () => {
     useSessionStore.setState({
       sessions: {
@@ -885,6 +984,130 @@ describe("App integration", () => {
       expect(state["session-a"]?.phase).toBe("completed");
       expect(state["session-b"]?.phase).not.toBe("completed");
     });
+  });
+
+  it("does not leak a keyless in-flight reply into a freshly created session", async () => {
+    // User is in session-old and sends a message; the bridge's reply arrives
+    // WITHOUT echoing a sessionKey (no ccpet reply_ctx, no typing). Meanwhile the
+    // user has created and switched to a brand-new empty session. The keyless
+    // reply must stay with the session that made the request, not follow the
+    // active-session pointer into the fresh session.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    const input = screen.getByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "question in old session");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    // User creates a brand-new session and switches to it while old is in-flight.
+    useSessionStore.setState((s) => ({
+      sessions: {
+        "cc-connect": [
+          ...(s.sessions["cc-connect"] ?? []),
+          { key: "session-new", connectionId: "cc-connect", createdAt: 3, lastActiveAt: 3 },
+        ],
+      },
+    }));
+    useSessionStore.getState().setActiveSession("cc-connect", "session-new");
+
+    // The old session's reply lands WITHOUT an explicit sessionKey.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "reply belonging to old session",
+    });
+
+    await waitFor(() => {
+      const oldKey = makeChatKey("cc-connect", "session-old");
+      const newKey = makeChatKey("cc-connect", "session-new");
+      const newMsgs = useMessageStore.getState().messagesByChat[newKey] ?? [];
+      const oldMsgs = useMessageStore.getState().messagesByChat[oldKey] ?? [];
+      // The freshly-created session must stay empty.
+      expect(newMsgs.map((m) => m.content)).not.toContain("reply belonging to old session");
+      expect(oldMsgs.map((m) => m.content)).toContain("reply belonging to old session");
+    });
+  });
+
+  it("does not paint an in-flight progress card into a session created after a reload", async () => {
+    // The reported leak: the page was reloaded (or the PWA reopened) while a turn
+    // from before it was still running, so nothing in memory ties the bridge's
+    // keyless frames to the session that started them. The user then creates a
+    // new session — the still-arriving agent output must not land in it.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+      stickySessionByConnection: {}, // in-memory sticky was lost with the reload
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+    const newKey = useSessionStore.getState().activeSessionKey["cc-connect"]!;
+    expect(newKey).not.toBe("session-old");
+
+    // Progress card + final reply of the OLD turn, arriving with no session_key.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash** 上一段对话的工具输出",
+    });
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "上一段对话的回复",
+    });
+
+    // It belongs to the session the user left, which is where it must show up
+    // (the reply is committed after the typewriter reveal finishes).
+    await waitFor(() => {
+      const oldMsgs = useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "session-old")] ?? [];
+      expect(oldMsgs.map((m) => m.content)).toContain("上一段对话的回复");
+    });
+
+    const newChatKey = makeChatKey("cc-connect", newKey);
+    expect(useMessageStore.getState().messagesByChat[newChatKey] ?? []).toEqual([]);
+    expect(useMessageStore.getState().streamingContent[newChatKey]).toBeUndefined();
+    expect(
+      Object.values(useMessageStore.getState().previewMessages).filter((pv) => pv.chatKey === newChatKey),
+    ).toEqual([]);
+  });
+
+  it("creating a session empties the composer so no draft carries over from the previous conversation", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    const input = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "还没发出去的草稿");
+    expect(input).toHaveValue("还没发出去的草稿");
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(INPUT_PLACEHOLDER)).toHaveValue("");
+    });
+    const activeKey = useSessionStore.getState().activeSessionKey["cc-connect"];
+    expect(activeKey).not.toBe("session-old");
+    expect(useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", activeKey!)] ?? []).toEqual([]);
   });
 
   it("increments unread and shows pet talking when assistant message targets a non-active session", async () => {
@@ -937,6 +1160,55 @@ describe("App integration", () => {
       const keyA = makeChatKey("cc-connect", "session-a");
       expect(useSessionStore.getState().unread[keyA] ?? 0).toBe(0);
     });
+  });
+
+  it("does not clear/persist resident unread when the matching session is active on a non-focused connection", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+    // cc-connect has the globally-newest session so it becomes the focused connection;
+    // cs-connect's only (and thus "active") session is the resident one. The user is
+    // NOT actually looking at cs-connect, so a RESIDENT_UNREAD broadcast for it must
+    // not be treated as "currently viewing" even though its activeSessionKey matches.
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return { sessions: [{ key: "default", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 }] };
+      }
+      if (path.includes("connectionId=cs-connect")) {
+        return {
+          sessions: [
+            { key: "resident-key", connectionId: "cs-connect", createdAt: 1, lastActiveAt: 100, isResident: true },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await waitFor(() => {
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
+      expect(useSessionStore.getState().activeSessionKey["cs-connect"]).toBe("resident-key");
+    });
+
+    adapter.fetchApi.mockClear();
+    adapter.emit(WS_EVENTS.RESIDENT_UNREAD, {
+      connectionId: "cs-connect",
+      sessionKey: "resident-key",
+      unreadCount: 3,
+    });
+
+    const residentChatKey = makeChatKey("cs-connect", "resident-key");
+    await waitFor(() => {
+      expect(useSessionStore.getState().unread[residentChatKey]).toBe(3);
+    });
+    expect(
+      adapter.fetchApi.mock.calls.some((call) => typeof call[0] === "string" && call[0].includes("/read")),
+    ).toBe(false);
   });
 
   it("routes incoming text by replyCtx when payload sessionKey is missing", async () => {
@@ -1370,5 +1642,45 @@ describe("App integration", () => {
         "auto",
       );
     });
+  });
+
+  it("attaches a file dropped anywhere on the chat page", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
+      connectionId: "cc-connect",
+      connected: true,
+    });
+
+    // Drop on the input container; the handler lives on the chat-page root, so
+    // the event must bubble up and still register — proving the whole page is a drop zone.
+    const dropZone = (document.querySelector('input[type="file"]') as HTMLInputElement)
+      .parentElement as HTMLElement;
+    const file = new File(["dropped"], "dropped.txt", { type: "text/plain" });
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        types: ["Files"],
+        files: [file],
+        items: [{ kind: "file", getAsFile: () => file }],
+      },
+    });
+
+    expect(await screen.findByText(/dropped\.txt/)).toBeInTheDocument();
+  });
+
+  it("attaches a clipboard image pasted into the textarea with a generated name", async () => {
+    render(<App />);
+    const textarea = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const img = new File(["img-bytes"], "image.png", { type: "image/png" });
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        types: ["Files"],
+        files: [img],
+        items: [{ kind: "file", getAsFile: () => img }],
+      },
+    });
+
+    expect(await screen.findByText(/pasted-.*\.png/)).toBeInTheDocument();
   });
 });

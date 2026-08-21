@@ -48,6 +48,8 @@ export class SessionStore {
       label: deriveSessionLabel(r.label, r.first_user_content),
       createdAt: r.created_at,
       lastActiveAt: r.last_active_at,
+      isResident: (r.is_resident ?? 0) === 1,
+      unreadCount: r.unread_count ?? 0,
     }));
   }
 
@@ -61,5 +63,60 @@ export class SessionStore {
 
   touchActive(connectionId: string, key: string): void {
     this.db.prepare(`UPDATE sessions SET last_active_at = ? WHERE connection_id = ? AND key = ?`).run(Date.now(), connectionId, key);
+  }
+
+  markResident(connectionId: string, key: string, label?: string): void {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO sessions (connection_id, key, label, created_at, last_active_at, is_resident, unread_count)
+       VALUES (?, ?, ?, ?, ?, 1, 0)
+       ON CONFLICT(connection_id, key) DO UPDATE SET
+         is_resident = 1,
+         label = COALESCE(excluded.label, sessions.label)`
+    ).run(connectionId, key, label ?? null, now, now);
+  }
+
+  incrementUnread(connectionId: string, key: string): number {
+    this.db.prepare(
+      `UPDATE sessions SET unread_count = unread_count + 1 WHERE connection_id = ? AND key = ?`
+    ).run(connectionId, key);
+    return this.getUnread(connectionId, key);
+  }
+
+  clearUnread(connectionId: string, key: string): void {
+    this.db.prepare(
+      `UPDATE sessions SET unread_count = 0 WHERE connection_id = ? AND key = ?`
+    ).run(connectionId, key);
+  }
+
+  getUnread(connectionId: string, key: string): number {
+    const row = this.db.prepare(
+      `SELECT unread_count FROM sessions WHERE connection_id = ? AND key = ?`
+    ).get(connectionId, key) as { unread_count?: number } | undefined;
+    return row?.unread_count ?? 0;
+  }
+
+  isResident(connectionId: string, key: string): boolean {
+    const row = this.db.prepare(
+      `SELECT is_resident FROM sessions WHERE connection_id = ? AND key = ?`
+    ).get(connectionId, key) as { is_resident?: number } | undefined;
+    return (row?.is_resident ?? 0) === 1;
+  }
+
+  /** 把 is_resident=1 但不在 validChatKeys(`${conn}::${key}`) 里的会话降级为普通会话（is_resident=0），
+   *  保留其历史消息（不删除），用于常驻 key 变更后的迁移。返回降级数量。 */
+  demoteResidentExcept(validChatKeys: Set<string>): number {
+    const rows = this.db.prepare(
+      `SELECT connection_id, key FROM sessions WHERE is_resident = 1`
+    ).all() as { connection_id: string; key: string }[];
+    let demoted = 0;
+    for (const row of rows) {
+      if (validChatKeys.has(`${row.connection_id}::${row.key}`)) continue;
+      this.db.prepare(
+        `UPDATE sessions SET is_resident = 0 WHERE connection_id = ? AND key = ?`
+      ).run(row.connection_id, row.key);
+      demoted += 1;
+    }
+    return demoted;
   }
 }

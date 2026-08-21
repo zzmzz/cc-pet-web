@@ -1,9 +1,11 @@
 import {
   forwardRef,
   useRef,
+  type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import { extractFiles, normalizePastedFile } from "../lib/file-transfer.js";
 
 export interface MessageInputProps {
   value: string;
@@ -50,6 +52,14 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
     const composingRef = useRef(false);
     const safeValue = value ?? "";
     const sendBtnDisabled = sendDisabled ?? (!safeValue.trim() || !!disabled);
+
+    const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      if (disabled) return;
+      const files = extractFiles(e.clipboardData);
+      if (files.length === 0) return; // no files → let the default text paste run
+      e.preventDefault();
+      onFilesSelected?.(files.map((f, i) => normalizePastedFile(f, i)));
+    };
 
     const isImeComposing = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       const native = e.nativeEvent as globalThis.KeyboardEvent;
@@ -113,6 +123,7 @@ export const MessageInput = forwardRef<HTMLTextAreaElement, MessageInputProps>(
             value={safeValue}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onCompositionStart={() => {
               composingRef.current = true;
             }}

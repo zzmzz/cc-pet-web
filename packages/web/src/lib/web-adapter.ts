@@ -365,6 +365,10 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       useOutboxStore.getState().markTransmitted(sendable.map((e) => e.clientMsgId));
     },
 
+    getWsBufferedAmount() {
+      return ws?.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0;
+    },
+
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
       const res = await api.fetchApiRaw(path, options);
       return res.json() as T;

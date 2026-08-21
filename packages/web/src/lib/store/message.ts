@@ -12,7 +12,15 @@ interface MessageState {
   watermarks: Record<string, number>;
 
   addMessage: (chatKey: string, msg: ChatMessage) => void;
+  /** Shallow-merge a patch into an existing message by id (no-op if absent). */
+  patchMessage: (chatKey: string, id: string, patch: Partial<ChatMessage>) => void;
+  setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
+  /** Set the live streaming text for a chat to an absolute value (used by the typewriter reveal). */
+  setStreaming: (chatKey: string, text: string) => void;
+  /** Drop the live streaming text for a chat without committing it to the message list. */
+  clearStreaming: (chatKey: string) => void;
+  /** Commit the streamed text as a message; msgId/seq adopt the server's identity + cursor. */
   finalizeStream: (chatKey: string, fullText: string, msgId?: string, seq?: number) => void;
   clearMessages: (chatKey: string) => void;
   /** Advance the watermark for chatKey to seq (never moves backwards). */
@@ -52,6 +60,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, msg.seq) } }
         : {}),
     })),
+  patchMessage: (chatKey, id, patch) =>
+    set((s) => {
+      const list = s.messagesByChat[chatKey];
+      if (!list) return s;
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.id !== id) return m;
+        changed = true;
+        return { ...m, ...patch };
+      });
+      if (!changed) return s;
+      return { messagesByChat: { ...s.messagesByChat, [chatKey]: next } };
+    }),
+  setMessages: (chatKey, msgs) =>
+    set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: msgs } })),
   appendStreamDelta: (chatKey, delta) =>
     set((s) => ({
       streamingContent: {
@@ -59,6 +82,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         [chatKey]: (s.streamingContent[chatKey] ?? "") + delta,
       },
     })),
+  setStreaming: (chatKey, text) =>
+    set((s) => ({ streamingContent: { ...s.streamingContent, [chatKey]: text } })),
+  clearStreaming: (chatKey) =>
+    set((s) => {
+      if (!(chatKey in s.streamingContent)) return s;
+      const { [chatKey]: _drop, ...rest } = s.streamingContent;
+      return { streamingContent: rest };
+    }),
   finalizeStream: (chatKey, fullText, msgId?, seq?) =>
     set((s) => {
       const { [chatKey]: _, ...rest } = s.streamingContent;

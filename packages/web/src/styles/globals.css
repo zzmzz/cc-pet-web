@@ -184,3 +184,19 @@ body {
   color: #4338ca;
   background: #e0e7ff;
 }
+
+/* Transient highlight applied to a message row jumped to from search. */
+.cc-flash {
+  border-radius: 0.75rem;
+  animation: cc-flash-fade 2s ease-out forwards;
+}
+
+@keyframes cc-flash-fade {
+  0% { background-color: rgba(99, 102, 241, 0.22); }
+  70% { background-color: rgba(99, 102, 241, 0.16); }
+  100% { background-color: rgba(99, 102, 241, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-flash { animation-duration: 0.01ms; }
+}

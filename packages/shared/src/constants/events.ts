@@ -16,6 +16,8 @@ export const WS_EVENTS = {
   BRIDGE_PREVIEW_DELETE: "bridge:preview-delete",
   BRIDGE_CARD: "bridge:card",
   BRIDGE_AUDIO: "bridge:audio",
+  /** Server → dashboard: resident session unread count changed (server-driven). */
+  RESIDENT_UNREAD: "resident:unread",
 
   SEND_MESSAGE: "send-message",
   SEND_BUTTON: "send-button",
