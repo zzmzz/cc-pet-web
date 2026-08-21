@@ -50,8 +50,10 @@ describe("outbox store", () => {
   // Sharing one field let every reconnect retransmit slide the manual window
   // forward, so a stale card answer could still be delivered minutes later.
   it("keeps the manual context window anchored to enqueue time across retransmits", () => {
-    const enqueuedAt = Date.now();
     const id = useOutboxStore.getState().enqueue({ content: "answer" }, "manual");
+    // Read the anchor back instead of sampling the clock before enqueue: under
+    // parallel test load the two readings differ and the window never elapses.
+    const enqueuedAt = useOutboxStore.getState().entries.find((e) => e.clientMsgId === id)!.createdAt;
     // Two reconnects inside the window each rewrite the ack budget.
     useOutboxStore.getState().markTransmitted([id], enqueuedAt + 60_000);
     useOutboxStore.getState().markTransmitted([id], enqueuedAt + 110_000);

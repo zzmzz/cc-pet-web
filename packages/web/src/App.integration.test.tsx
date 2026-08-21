@@ -145,6 +145,33 @@ describe("App integration", () => {
     expect(createWebAdapter).toHaveBeenCalledWith("", "manual-token");
   });
 
+  // The service worker precaches the shell, so a cold start with no network
+  // reaches this verify call and fails it. Dropping the token there logged the
+  // user out permanently — the reported "隔几天不打开就要重新输 token".
+  it("keeps the stored token and enters the app when verification cannot reach the server", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("keeps the stored token when verification returns a server error", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("clears the stored token when the server rejects it", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByText("输入访问 Token");
+    expect(localStorage.getItem("cc-pet-token")).toBeNull();
+  });
+
   it("shows connection status and updates to connected after bridge event", async () => {
     render(<App />);
 

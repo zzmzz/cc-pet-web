@@ -47,14 +47,19 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: storedToken }),
         });
-        if (!cancelled && res.ok) {
+        // Only an authoritative rejection invalidates the token. A 5xx says the
+        // server is broken, not that the credential is — dropping it there logs
+        // the user out for something they cannot have caused.
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem("cc-pet-token");
+        } else if (!cancelled) {
           setAuthToken(storedToken);
         }
-        if (!res.ok) {
-          localStorage.removeItem("cc-pet-token");
-        }
       } catch {
-        localStorage.removeItem("cc-pet-token");
+        // Unreachable server: the shell is precached so this is the normal
+        // offline cold start. Trust the stored token and let the websocket
+        // layer reconnect; re-verification happens on the next boot online.
+        if (!cancelled) setAuthToken(storedToken);
       } finally {
         if (!cancelled) setAuthBooting(false);
       }
