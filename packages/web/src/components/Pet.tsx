@@ -2,93 +2,122 @@ import { motion, type TargetAndTransition } from "framer-motion";
 import { useEffect, useState } from "react";
 import { useUIStore, type PetState } from "../lib/store/ui.js";
 
-import idleImg from "../assets/pet/idle.png";
-import thinkingImg from "../assets/pet/thinking.png";
-import talkingImg from "../assets/pet/talking.png";
-import happyImg from "../assets/pet/happy.png";
-import errorImg from "../assets/pet/error.png";
+import idle256 from "../assets/pet/idle-256.webp";
+import thinking256 from "../assets/pet/thinking-256.webp";
+import talking256 from "../assets/pet/talking-256.webp";
+import happy256 from "../assets/pet/happy-256.webp";
+import error256 from "../assets/pet/error-256.webp";
+import idle96 from "../assets/pet/idle-96.webp";
+import thinking96 from "../assets/pet/thinking-96.webp";
+import talking96 from "../assets/pet/talking-96.webp";
+import happy96 from "../assets/pet/happy-96.webp";
+import error96 from "../assets/pet/error-96.webp";
 
-const DEFAULT_PET_IMAGES: Record<PetState, string> = {
-  idle: idleImg, thinking: thinkingImg, talking: talkingImg, happy: happyImg, error: errorImg,
+/** Which asset tier a mount paints: `full` at 112px, `mini` at 32px. */
+type PetTier = "full" | "mini";
+
+const DEFAULT_PET_IMAGES: Record<PetTier, Record<PetState, string>> = {
+  full: { idle: idle256, thinking: thinking256, talking: talking256, happy: happy256, error: error256 },
+  mini: { idle: idle96, thinking: thinking96, talking: talking96, happy: happy96, error: error96 },
 };
 
 const petImageOverrideCache = new Map<string, string>();
 const petImageOverrideMissCache = new Set<string>();
-const PET_IMAGE_STORAGE_PREFIX = "cc-pet-image::";
+const PET_IMAGE_CACHE_NAME = "cc-pet-images";
+const LEGACY_PET_IMAGE_PREFIX = "cc-pet-image::";
 
 function cacheKey(token: string, state: PetState): string {
   return `${token}::${state}`;
 }
 
-function storageKey(token: string, state: PetState): string {
-  return `${PET_IMAGE_STORAGE_PREFIX}${cacheKey(token, state)}`;
+/** Same-origin, never-requested url that keys the override inside Cache Storage. */
+function cacheUrl(token: string, state: PetState): string {
+  return `/__pet-image/${encodeURIComponent(token)}/${state}`;
 }
 
-function readPersistedPetImage(token: string, state: PetState): string | null {
+/**
+ * Overrides used to live in localStorage as base64 data urls: five of them ate
+ * roughly 3.75MB of a ~5MB quota that the outbox also persists into, so a
+ * custom pet could silently break the send-retry queue.
+ */
+function dropLegacyPetImages(): void {
   try {
-    const value = localStorage.getItem(storageKey(token, state));
-    return value && value.startsWith("data:image/") ? value : null;
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith(LEGACY_PET_IMAGE_PREFIX)) localStorage.removeItem(key);
+    }
+  } catch {
+    // Storage disabled; nothing to reclaim.
+  }
+}
+
+async function readCachedPetImage(token: string, state: PetState): Promise<Blob | null> {
+  try {
+    const cache = await caches.open(PET_IMAGE_CACHE_NAME);
+    const hit = await cache.match(cacheUrl(token, state));
+    return hit ? await hit.blob() : null;
   } catch {
     return null;
   }
 }
 
-function persistPetImage(token: string, state: PetState, blob: Blob): void {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const result = reader.result;
-    if (typeof result !== "string" || !result.startsWith("data:image/")) return;
-    try {
-      localStorage.setItem(storageKey(token, state), result);
-    } catch {
-      // Ignore quota and storage errors, runtime cache still works.
-    }
-  };
-  reader.readAsDataURL(blob);
+async function writeCachedPetImage(token: string, state: PetState, res: Response): Promise<void> {
+  try {
+    const cache = await caches.open(PET_IMAGE_CACHE_NAME);
+    await cache.put(cacheUrl(token, state), res);
+  } catch {
+    // Cache Storage unavailable or evicted; the in-memory url still renders.
+  }
 }
 
-function usePetImage(state: PetState): string {
-  const [src, setSrc] = useState<string>(DEFAULT_PET_IMAGES[state]);
+function usePetImage(state: PetState, tier: PetTier): string {
+  const fallback = DEFAULT_PET_IMAGES[tier][state];
+  const [src, setSrc] = useState<string>(fallback);
 
   useEffect(() => {
+    dropLegacyPetImages();
     const token = localStorage.getItem("cc-pet-token")?.trim() ?? "";
-    const fallback = DEFAULT_PET_IMAGES[state];
     const key = cacheKey(token, state);
     const cached = token ? petImageOverrideCache.get(key) : undefined;
-    const persisted = token ? readPersistedPetImage(token, state) : null;
-    setSrc(cached ?? persisted ?? fallback);
-    if (!token) return;
-
-    if (cached) {
-      return;
-    }
+    setSrc(cached ?? fallback);
+    if (!token || cached) return;
     if (petImageOverrideMissCache.has(key)) return;
 
     let cancelled = false;
-    void fetch(`/api/pet-images/${state}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (res) => {
+    const show = (blob: Blob): void => {
+      const objectUrl = URL.createObjectURL(blob);
+      petImageOverrideCache.set(key, objectUrl);
+      setSrc(objectUrl);
+    };
+
+    void (async () => {
+      // Paint whatever is on disk first, then revalidate: cache-first forever
+      // would strand a user who swaps their configured image.
+      const stored = await readCachedPetImage(token, state);
+      if (cancelled) return;
+      if (stored) show(stored);
+
+      try {
+        const res = await fetch(`/api/pet-images/${state}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
         if (!res.ok) throw new Error(`pet image not found (${res.status})`);
-        const blob = await res.blob();
-        return { blob, objectUrl: URL.createObjectURL(blob) };
-      })
-      .then(({ blob, objectUrl }) => {
+        const fresh = await res.clone().blob();
         if (cancelled) return;
-        petImageOverrideCache.set(key, objectUrl);
-        persistPetImage(token, state, blob);
-        setSrc(objectUrl);
-      })
-      .catch(() => {
+        if (stored && stored.size === fresh.size) return;
+        await writeCachedPetImage(token, state, res);
         if (cancelled) return;
+        show(fresh);
+      } catch {
+        if (cancelled || stored) return;
         petImageOverrideMissCache.add(key);
         setSrc(fallback);
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [state]);
+  }, [state, fallback]);
 
   return src;
 }
@@ -110,7 +139,7 @@ export function PetFull() {
   const petState = useUIStore((s) => s.petState);
   const chatOpen = useUIStore((s) => s.chatOpen);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
-  const petImage = usePetImage(petState);
+  const petImage = usePetImage(petState, "full");
 
   return (
     <div className="relative">
@@ -127,7 +156,7 @@ export function PetFull() {
           className="h-28 w-28 shrink-0 bg-transparent"
           draggable={false}
           onError={(e) => {
-            e.currentTarget.src = DEFAULT_PET_IMAGES[petState];
+            e.currentTarget.src = DEFAULT_PET_IMAGES.full[petState];
           }}
         />
       </motion.div>
@@ -139,7 +168,7 @@ export function PetMini() {
   const petState = useUIStore((s) => s.petState);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const chatOpen = useUIStore((s) => s.chatOpen);
-  const petImage = usePetImage(petState);
+  const petImage = usePetImage(petState, "mini");
 
   return (
     <motion.button
@@ -154,7 +183,7 @@ export function PetMini() {
         alt="pet"
         className="w-full h-full object-cover"
         onError={(e) => {
-          e.currentTarget.src = DEFAULT_PET_IMAGES[petState];
+          e.currentTarget.src = DEFAULT_PET_IMAGES.mini[petState];
         }}
       />
     </motion.button>
