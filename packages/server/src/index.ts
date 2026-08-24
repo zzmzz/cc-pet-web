@@ -28,6 +28,7 @@ import { ConfigStore } from "./storage/config.js";
 import { BridgeManager } from "./bridge/manager.js";
 import { ClientHub } from "./ws/hub.js";
 import { SessionsCleanup } from "./cleanup/sessions-cleanup.js";
+import { AttachmentsCleanup } from "./cleanup/attachments-cleanup.js";
 import { registerConfigRoutes } from "./api/config.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
@@ -712,5 +713,11 @@ for (const bridge of config.bridges) {
 // 启动会话清理定时任务，每天清理10天没有交互的会话
 const sessionsCleanup = new SessionsCleanup(sessionStore, db);
 sessionsCleanup.startCleanupSchedule(10);
+
+// Staged attachments are never removed by the send path, so the staging directory grows
+// without bound. Read bridges fresh on each sweep so a config change takes effect
+// without a restart. Note this also prunes files cc-connect staged there itself.
+const attachmentsCleanup = new AttachmentsCleanup(() => configStore.load().bridges, app.log);
+attachmentsCleanup.startCleanupSchedule(30);
 
 console.log(`CC Pet Server running on http://localhost:${PORT}`);
