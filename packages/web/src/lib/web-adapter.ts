@@ -389,7 +389,19 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
           try {
             parsed = JSON.parse(xhr.responseText);
           } catch {
-            reject(new Error(`上传失败（HTTP ${xhr.status}，响应无法解析）`));
+            // A non-JSON body means the response came from the reverse proxy, not the
+            // app. 502/504 there is almost always the entrypoint's readTimeout cutting
+            // the request body mid-upload — say so, because "响应无法解析" sent a real
+            // debugging session looking in the wrong place.
+            const gatewayCut = xhr.status === 502 || xhr.status === 504;
+            reject(
+              new Error(
+                gatewayCut
+                  ? `上传被网关中断（HTTP ${xhr.status}）—— 通常是上传耗时超过网关上限，` +
+                    `换更快的网络或更小的文件再试。`
+                  : `上传失败（HTTP ${xhr.status}，响应不是 JSON，可能来自反向代理）`,
+              ),
+            );
             return;
           }
           if (xhr.status >= 200 && xhr.status < 300 && parsed?.attachment) {

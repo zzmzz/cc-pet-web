@@ -556,3 +556,101 @@ describe("expireStale interval", () => {
     adapter.disconnectWs();
   });
 });
+
+// ---------------------------------------------------------------------------
+// uploadAttachment
+// ---------------------------------------------------------------------------
+
+class FakeXhr {
+  static instances: FakeXhr[] = [];
+  status = 200;
+  responseText = "";
+  upload = { onprogress: null as ((e: any) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  method = "";
+  url = "";
+  headers: Record<string, string> = {};
+  sentBody: any = null;
+
+  constructor() {
+    FakeXhr.instances.push(this);
+  }
+  open(method: string, url: string) {
+    this.method = method;
+    this.url = url;
+  }
+  setRequestHeader(k: string, v: string) {
+    this.headers[k] = v;
+  }
+  send(body: any) {
+    this.sentBody = body;
+  }
+  /** Drive a response as the browser would. */
+  respond(status: number, body: string) {
+    this.status = status;
+    this.responseText = body;
+    this.onload?.();
+  }
+}
+
+describe("uploadAttachment", () => {
+  beforeEach(() => {
+    FakeXhr.instances = [];
+    vi.stubGlobal("XMLHttpRequest", FakeXhr as any);
+  });
+
+  it("posts to the connection's attachment endpoint with the bearer token", async () => {
+    const adapter = await getAdapter();
+    const file = new File(["body"], "a.zip", { type: "application/zip" });
+    const promise = adapter.uploadAttachment("conn-1", file, () => {});
+
+    const xhr = FakeXhr.instances[0];
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe("http://localhost/api/attachments/conn-1");
+    expect(xhr.headers.Authorization).toBe("Bearer test-token");
+
+    xhr.respond(200, JSON.stringify({ ok: true, attachment: { name: "a.zip", size: 4, agentPath: "/w/a.zip" } }));
+    await expect(promise).resolves.toEqual({ name: "a.zip", size: 4, agentPath: "/w/a.zip" });
+  });
+
+  it("caps progress at 99 until the server acks", async () => {
+    const adapter = await getAdapter();
+    const seen: number[] = [];
+    const promise = adapter.uploadAttachment(
+      "conn-1",
+      new File(["x"], "a.zip"),
+      (percent) => seen.push(percent),
+    );
+
+    const xhr = FakeXhr.instances[0];
+    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 });
+    // 100% before the response would repeat the old lie: bytes leaving the browser
+    // is not the same as the server having accepted them.
+    expect(seen).toEqual([99]);
+
+    xhr.respond(200, JSON.stringify({ ok: true, attachment: { name: "a.zip", size: 1, agentPath: "/w/a.zip" } }));
+    await promise;
+    expect(seen.at(-1)).toBe(100);
+  });
+
+  it("explains a gateway timeout instead of reporting an unparseable response", async () => {
+    const adapter = await getAdapter();
+    const promise = adapter.uploadAttachment("conn-1", new File(["x"], "a.zip"), () => {});
+
+    // Traefik's readTimeout cutting the body mid-upload yields a plain-text 502.
+    FakeXhr.instances[0].respond(502, "Bad Gateway");
+
+    await expect(promise).rejects.toThrow(/网关中断.*502/);
+  });
+
+  it("surfaces the server's message on a normal error response", async () => {
+    const adapter = await getAdapter();
+    const promise = adapter.uploadAttachment("conn-1", new File(["x"], "a.zip"), () => {});
+
+    FakeXhr.instances[0].respond(507, JSON.stringify({ error: "ATTACHMENT_DISK_FULL", message: "工作区磁盘空间不足，上传未完成。" }));
+
+    await expect(promise).rejects.toThrow("工作区磁盘空间不足，上传未完成。");
+  });
+});
