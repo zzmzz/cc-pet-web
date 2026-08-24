@@ -649,12 +649,21 @@ hub.onMessage = (msg: any, client) => {
           { connectionId, sessionKey, files: paths.length },
           "Dashboard sent staged attachment paths",
         );
-        messageStore.save({
-          id: `msg-${Date.now()}`,
+        // The row id MUST be the clientMsgId, exactly as the base64 path does. Two
+        // things depend on it: the ack that clears the sender's outbox entry, and
+        // saveWithStatus's dedupe — which is what stops a replayed entry from being
+        // forwarded to the agent a second time. Generating a fresh `msg-${Date.now()}`
+        // here broke both: nothing ever acked, so the entry stayed pending in
+        // localStorage and every page reload re-delivered the same attachment.
+        const stagedMsgId = typeof clientMsgId === "string" && clientMsgId.length > 0
+          ? clientMsgId
+          : `msg-${randomUUID()}`;
+        const { seq: stagedSeq, inserted: stagedInserted } = messageStore.saveWithStatus({
+          id: stagedMsgId,
           role: "user",
           content: caption,
           files: stagedFiles.map((file: any) => ({
-            id: `file-${Date.now()}-${String(file.file_name ?? "attachment")}`,
+            id: `file-${randomUUID()}-${String(file.file_name ?? "attachment")}`,
             name: String(file.file_name ?? "attachment"),
             size: Number.isFinite(file?.size) ? Number(file.size) : 0,
           })),
@@ -662,9 +671,23 @@ hub.onMessage = (msg: any, client) => {
           connectionId,
           sessionKey,
         });
+        // Ack even on a resend: the client is retrying precisely because it never saw
+        // the first ack, and it needs one to clear its outbox entry.
+        if (typeof clientMsgId === "string" && clientMsgId.length > 0) {
+          hub.broadcast(WS_EVENTS.MESSAGE_ACK, {
+            connectionId, sessionKey, clientMsgId, id: stagedMsgId, seq: stagedSeq,
+          });
+        }
+        if (!stagedInserted) {
+          app.log.info(
+            { connectionId, sessionKey, msgId: stagedMsgId },
+            "Skipped bridge forward for already-known staged attachment message id",
+          );
+          break;
+        }
         bridgeManager.send(connectionId, {
           type: "message",
-          msg_id: `msg-file-${Date.now()}`,
+          msg_id: `msg-file-${randomUUID()}`,
           session_key: sessionKey,
           user_id: connectionId,
           user_name: "cc-pet-user",

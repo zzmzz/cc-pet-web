@@ -488,6 +488,61 @@ describe("e2e bridge connection status sync", () => {
     }
   }, 30_000);
 
+  it("acks a staged attachment and does not re-deliver it when the client resends", async () => {
+    const stack = await startServerAndBridge();
+    const dashboardWs = await stack.openDashboardWs();
+    const bridgeClient = stack.bridgeClient();
+
+    try {
+      await waitForWsMessage(dashboardWs, (msg: any) => msg.type === WS_EVENTS.BRIDGE_CONNECTED);
+
+      const forwarded: any[] = [];
+      bridgeClient.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        // The staged path forwards a text message carrying the paths, not a files array.
+        if (msg.type === "message" && typeof msg.content === "string" && msg.content.includes("staged.zip")) {
+          forwarded.push(msg);
+        }
+      });
+      const acks: any[] = [];
+      dashboardWs.on("message", (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === WS_EVENTS.MESSAGE_ACK) acks.push(msg);
+      });
+
+      const clientMsgId = "client-staged-1";
+      const payload = JSON.stringify({
+        type: WS_EVENTS.SEND_FILE,
+        connectionId: stack.connectionId,
+        sessionKey: "default",
+        content: "staged caption",
+        files: [{ file_name: "staged.zip", size: 123, agent_path: "/agent/root/.cc-connect/attachments/staged.zip" }],
+        clientMsgId,
+      });
+
+      dashboardWs.send(payload);
+      // Without an ack the sender's outbox entry never clears, so it is replayed from
+      // localStorage on every page reload — which re-delivered the same attachment.
+      await waitFor(async () => acks.length >= 1);
+      expect(acks[0].clientMsgId).toBe(clientMsgId);
+
+      dashboardWs.send(payload);
+      await waitFor(async () => acks.length >= 2);
+      await new Promise((r) => setTimeout(r, 300));
+
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0].content).toContain("staged caption");
+      expect(forwarded[0].content).toContain("Files saved locally, please read them:");
+      expect(acks[1].seq).toBe(acks[0].seq);
+
+      const history = await stack.fetchHistory();
+      expect(history.filter((m) => m.content === "staged caption")).toHaveLength(1);
+    } finally {
+      dashboardWs.close();
+      await stack.stop();
+    }
+  }, 30_000);
+
   it("after register_ack sends /skills probe and maps probe reply to skills-updated without persisting chat", async () => {
     const stack = await startServerAndBridge();
     const dashboardWs = await stack.openDashboardWs();

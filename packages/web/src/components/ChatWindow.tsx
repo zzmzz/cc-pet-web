@@ -234,6 +234,15 @@ export function ChatWindow() {
       setUploadNotice("");
 
       if (canStage) {
+        // Mark the session before awaiting the upload, not after. A large attachment can
+        // take minutes to stream, and leaving the session untitled and non-sticky for
+        // that whole window means replies arriving mid-upload have nowhere to land.
+        if (caption) {
+          useSessionStore
+            .getState()
+            .touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
+        }
+        useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
         // Streams to disk, then delivers only paths through the outbox. Owns its own
         // bubble because the outbox clientMsgId does not exist until the upload lands.
         await sendStagedAttachments({
@@ -243,12 +252,6 @@ export function ChatWindow() {
           files: filesToSend,
           caption,
         });
-        if (caption) {
-          useSessionStore
-            .getState()
-            .touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
-        }
-        useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
         return;
       }
 
