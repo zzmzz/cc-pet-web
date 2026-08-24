@@ -227,6 +227,44 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       return ws?.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0;
     },
 
+    uploadAttachment(connectionId, file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const base = serverUrl.trim();
+        const path = `/api/attachments/${encodeURIComponent(connectionId)}`;
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", base.length > 0 ? `${base}${path}` : path);
+        if (token.trim().length > 0) {
+          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        }
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          // Cap at 99: the last percent belongs to the server's fsync + response, and
+          // reporting 100 before the ack is exactly the lie this replaces.
+          onProgress(Math.min(99, Math.floor((event.loaded / event.total) * 100)));
+        };
+        xhr.onload = () => {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(xhr.responseText);
+          } catch {
+            reject(new Error(`上传失败（HTTP ${xhr.status}，响应无法解析）`));
+            return;
+          }
+          if (xhr.status >= 200 && xhr.status < 300 && parsed?.attachment) {
+            onProgress(100);
+            resolve(parsed.attachment);
+            return;
+          }
+          reject(new Error(parsed?.message ?? `上传失败（HTTP ${xhr.status}）`));
+        };
+        xhr.onerror = () => reject(new Error("上传失败：网络中断"));
+        xhr.onabort = () => reject(new Error("上传已取消"));
+        const form = new FormData();
+        form.append("file", file, file.name);
+        xhr.send(form);
+      });
+    },
+
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
       const res = await api.fetchApiRaw(path, options);
       return res.json() as T;

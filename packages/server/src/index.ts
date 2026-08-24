@@ -32,6 +32,7 @@ import { registerConfigRoutes } from "./api/config.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerHistoryRoutes } from "./api/history.js";
 import { registerFileRoutes, saveBase64File } from "./api/files.js";
+import { registerAttachmentRoutes } from "./api/attachments.js";
 import { registerMiscRoutes } from "./api/misc.js";
 import { registerPetImageRoutes } from "./api/pet-images.js";
 import { registerQuotaRoutes } from "./api/quota.js";
@@ -163,6 +164,7 @@ registerPetImageRoutes(app);
 registerMiscRoutes(app);
 registerSearchRoutes(app, db);
 registerWorkspaceRoutes(app, configStore);
+registerAttachmentRoutes(app, configStore);
 // Initialize AI quota scraper if credentials are provided
 const quotaCookie = process.env.AI_QUOTA_COOKIE;
 let quotaScraper: QuotaScraper | null = null;
@@ -268,7 +270,14 @@ hub.onClientConnected = (client, send) => {
     "Syncing bridge manifest and status to new dashboard websocket client",
   );
   send(WS_EVENTS.BRIDGE_MANIFEST, {
-    bridges: allowedBridges.map((b) => ({ id: b.id, name: b.name })),
+    // `attachmentStaging` tells the dashboard whether it may stream attachments to disk
+    // for this bridge. Without a configured workspace there is no shared directory the
+    // agent could read from, so those connections keep the base64 WebSocket fallback.
+    bridges: allowedBridges.map((b) => ({
+      id: b.id,
+      name: b.name,
+      attachmentStaging: typeof b.workspacePath === "string" && b.workspacePath.trim().length > 0,
+    })),
   });
   for (const bridge of allowedBridges) {
     send(WS_EVENTS.BRIDGE_CONNECTED, {
@@ -594,8 +603,47 @@ hub.onMessage = (msg: any, client) => {
         reply_ctx: sessionKey,
       });
       break;
-    case WS_EVENTS.SEND_FILE:
+    case WS_EVENTS.SEND_FILE: {
       const caption = typeof content === "string" ? content : "";
+
+      // Staged attachments: already streamed to disk inside the connection's workspace,
+      // so only their paths travel over the bridge. Phrased exactly like cc-connect's
+      // own file handoff so agents treat both channels identically.
+      const stagedFiles = Array.isArray(files)
+        ? files.filter((file: any) => typeof file?.agent_path === "string" && file.agent_path.length > 0)
+        : [];
+      if (stagedFiles.length > 0) {
+        const paths = stagedFiles.map((file: any) => String(file.agent_path));
+        const notice = `(Files saved locally, please read them: ${paths.join(", ")})`;
+        app.log.info(
+          { connectionId, sessionKey, files: paths.length },
+          "Dashboard sent staged attachment paths",
+        );
+        messageStore.save({
+          id: `msg-${Date.now()}`,
+          role: "user",
+          content: caption,
+          files: stagedFiles.map((file: any) => ({
+            id: `file-${Date.now()}-${String(file.file_name ?? "attachment")}`,
+            name: String(file.file_name ?? "attachment"),
+            size: Number.isFinite(file?.size) ? Number(file.size) : 0,
+          })),
+          timestamp: Date.now(),
+          connectionId,
+          sessionKey,
+        });
+        bridgeManager.send(connectionId, {
+          type: "message",
+          msg_id: `msg-file-${Date.now()}`,
+          session_key: sessionKey,
+          user_id: connectionId,
+          user_name: "cc-pet-user",
+          reply_ctx: sessionKey,
+          content: caption ? `${caption}\n\n${notice}` : notice,
+        });
+        break;
+      }
+
       const rawFiles = Array.isArray(files)
         ? files
         : [{
@@ -626,7 +674,9 @@ hub.onMessage = (msg: any, client) => {
         files: normalizedFiles.map((file) => ({
           id: `file-${Date.now()}-${file.file_name}`,
           name: file.file_name,
-          size: 0,
+          // base64 length → decoded byte count; the old hardcoded 0 made every
+          // historical attachment render as an empty file.
+          size: Math.floor((file.data.length * 3) / 4),
         })),
         timestamp: Date.now(),
         connectionId,
@@ -643,6 +693,7 @@ hub.onMessage = (msg: any, client) => {
         files: normalizedFiles,
       });
       break;
+    }
     default:
       app.log.warn({ type, connectionId, sessionKey }, "Unsupported dashboard websocket event");
       break;

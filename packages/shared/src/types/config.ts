@@ -26,6 +26,14 @@ export interface BridgeConfig {
   token: string;
   enabled: boolean;
   workspacePath?: string;
+  /**
+   * Absolute path of `workspacePath` as the *agent* sees it. The server may reach the
+   * workspace through a bind mount under a different name (e.g. the container sees
+   * `/hywork` while the agent on the host sees `/root/code/hyworkspace`), so staged
+   * attachment paths must be translated before being handed to the agent. Defaults to
+   * `workspacePath` when unset.
+   */
+  workspaceAgentPath?: string;
 }
 
 export interface TokenConfig {

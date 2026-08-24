@@ -131,8 +131,15 @@ export default function App() {
         };
 
         if (type === WS_EVENTS.BRIDGE_MANIFEST) {
-          const bridges = (payload as { bridges?: { id: string; name: string }[] }).bridges ?? [];
-          const connections = bridges.map((b) => ({ id: b.id, name: b.name, connected: false }));
+          const bridges =
+            (payload as { bridges?: { id: string; name: string; attachmentStaging?: boolean }[] })
+              .bridges ?? [];
+          const connections = bridges.map((b) => ({
+            id: b.id,
+            name: b.name,
+            connected: false,
+            attachmentStaging: b.attachmentStaging === true,
+          }));
           useConnectionStore.getState().setConnections(connections);
           void (async () => {
             try {

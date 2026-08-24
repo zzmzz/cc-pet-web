@@ -19,6 +19,11 @@ class FakeAdapter implements PlatformAPI {
   disconnectWs = vi.fn();
   sendWsMessage = vi.fn();
   getWsBufferedAmount = vi.fn(() => 0);
+  uploadAttachment = vi.fn(async (_connectionId: string, file: File) => ({
+    name: file.name,
+    size: file.size,
+    agentPath: `/root/code/hyworkspace/.cc-connect/attachments/${file.name}`,
+  }));
 
   fetchApi = vi.fn();
   fetchApiRaw = vi.fn();
@@ -1554,6 +1559,104 @@ describe("App integration", () => {
     });
 
     expect(screen.getAllByText(/demo\.txt/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("streams attachments to disk and sends only paths when the bridge has a workspace", async () => {
+    // A bridge with a workspace can stage files; the agent reads them from disk, so the
+    // base64 WebSocket frame (and its ~75 MiB ceiling) is bypassed entirely.
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: true }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    const file = new File(["x".repeat(1024)], "big.zip", { type: "application/zip" });
+    await user.upload(fileInput!, file);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(adapter.uploadAttachment).toHaveBeenCalledWith(
+        "cc-connect",
+        expect.objectContaining({ name: "big.zip" }),
+        expect.any(Function),
+      );
+    });
+    await waitFor(() => {
+      expect(adapter.sendWsMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: WS_EVENTS.SEND_FILE,
+          files: [
+            expect.objectContaining({
+              file_name: "big.zip",
+              agent_path: "/root/code/hyworkspace/.cc-connect/attachments/big.zip",
+            }),
+          ],
+        }),
+      );
+    });
+    // The whole point: no base64 blob crosses the socket.
+    const sent = adapter.sendWsMessage.mock.calls.at(-1)?.[0];
+    expect(sent.files[0].data).toBeUndefined();
+  });
+
+  it("surfaces upload failures on the bubble instead of reporting success", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: true }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    adapter.uploadAttachment.mockRejectedValueOnce(new Error("工作区磁盘空间不足，上传未完成。"));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    await user.upload(fileInput!, new File(["x"], "doomed.zip", { type: "application/zip" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText(/上传失败，未发送给 agent/)).toBeInTheDocument();
+    expect(screen.getByText(/工作区磁盘空间不足/)).toBeInTheDocument();
+    // A failed upload must not be handed to the agent as if it had arrived.
+    expect(adapter.sendWsMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: WS_EVENTS.SEND_FILE }),
+    );
+  });
+
+  it("blocks an oversized file before sending when the bridge cannot stage", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: false }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const oversized = new File(["x"], "huge.zip", { type: "application/zip" });
+    // Avoid allocating 80 MiB in the test: only `size` is inspected.
+    Object.defineProperty(oversized, "size", { value: 80 * 1024 * 1024 });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    await user.upload(fileInput!, oversized);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/huge\.zip/);
+    // Nothing was sent, and no bubble claims otherwise.
+    expect(adapter.sendWsMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: WS_EVENTS.SEND_FILE }),
+    );
   });
 
   it("keeps caption visible when sending attachment with text", async () => {

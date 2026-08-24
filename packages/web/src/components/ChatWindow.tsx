@@ -20,10 +20,27 @@ const EMPTY_AGENT_COMMANDS: SlashCommand[] = [];
 const UPLOAD_PROGRESS_MIN_BYTES = 1_000_000;
 
 /**
- * Attachments are base64-encoded and pushed as a single large WebSocket frame.
- * On a slow link that frame can take minutes to drain, during which the UI would
- * otherwise look frozen. Poll the socket's buffered byte count to surface progress
- * on the optimistic message bubble, then clear the flag once fully flushed.
+ * Largest raw file the base64 WebSocket fallback can carry. Mirrors
+ * WS_FALLBACK_MAX_FILE_BYTES on the server: base64 inflates by 4/3 against the 100 MiB
+ * frame cap, minus envelope margin. Only bridges without a configured workspace take
+ * this path; everything else streams to disk with no such ceiling.
+ */
+const WS_FALLBACK_MAX_FILE_BYTES = Math.floor((100 * 1024 * 1024 * 3) / 4) - 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/**
+ * Progress for the base64 WebSocket fallback only.
+ *
+ * CAVEAT — this measures the browser's send buffer draining, which says nothing about
+ * whether the server accepted the frame. An oversized frame is dropped server-side while
+ * the buffer still drains, so this reports success on failure. That is precisely why the
+ * size guard above must run *before* sending, and why staged uploads use real HTTP
+ * progress instead.
  */
 function trackUploadProgress(chatKey: string, messageId: string): void {
   const platform = getPlatform();
@@ -104,6 +121,8 @@ export function ChatWindow() {
 
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+  /** Pre-send rejection shown above the composer (e.g. file too large for this bridge). */
+  const [uploadNotice, setUploadNotice] = useState("");
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -115,6 +134,7 @@ export function ChatWindow() {
   useEffect(() => {
     setInput("");
     setPendingAttachments([]);
+    setUploadNotice("");
   }, [composerResetToken]);
 
   const { isActive: slashMenuVisible, query: slashQuery } = useSlashMenu(input);
@@ -189,17 +209,30 @@ export function ChatWindow() {
     if (pendingAttachments.length > 0) {
       const filesToSend = pendingAttachments;
       const caption = text || undefined;
-      const encodedFiles = await Promise.all(
-        filesToSend.map(async (file) => ({
-          file_name: file.name,
-          mime_type: file.type || "application/octet-stream",
-          size: file.size,
-          data: await fileToBase64(file),
-        })),
-      );
+      const canStage =
+        useConnectionStore
+          .getState()
+          .connections.find((c) => c.id === activeConnectionId)?.attachmentStaging === true;
+
+      // Reject before showing an optimistic bubble: the base64 fallback would otherwise
+      // "send" the file, drop it server-side, and leave a bubble that looks delivered.
+      if (!canStage) {
+        const tooBig = filesToSend.find((file) => file.size > WS_FALLBACK_MAX_FILE_BYTES);
+        if (tooBig) {
+          setUploadNotice(
+            `「${tooBig.name}」${formatBytes(tooBig.size)}，超过该连接的 ` +
+              `${formatBytes(WS_FALLBACK_MAX_FILE_BYTES)} 上限（此连接未配置工作区，` +
+              `只能走内联通道）。`,
+          );
+          return;
+        }
+      }
+
       setInput("");
       setPendingAttachments([]);
+      setUploadNotice("");
       const uploadMessageId = `file-${Date.now()}`;
+      const { patchMessage } = useMessageStore.getState();
       useMessageStore.getState().addMessage(chatKey, {
         id: uploadMessageId,
         role: "user",
@@ -218,6 +251,57 @@ export function ChatWindow() {
       }
       useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
 
+      if (canStage) {
+        // Stream each file to the workspace, then hand the agent paths. Sequential on
+        // purpose: parallel multi-hundred-MB uploads just contend for the same uplink
+        // and make per-file progress meaningless.
+        patchMessage(chatKey, uploadMessageId, { uploading: true, uploadProgress: 0 });
+        const staged: { file_name: string; size: number; agent_path: string }[] = [];
+        for (let index = 0; index < filesToSend.length; index += 1) {
+          const file = filesToSend[index];
+          try {
+            const result = await getPlatform().uploadAttachment(
+              activeConnectionId,
+              file,
+              (percent) => {
+                const overall = Math.floor((index * 100 + percent) / filesToSend.length);
+                patchMessage(chatKey, uploadMessageId, { uploading: true, uploadProgress: overall });
+              },
+            );
+            staged.push({ file_name: result.name, size: result.size, agent_path: result.agentPath });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            patchMessage(chatKey, uploadMessageId, {
+              uploading: false,
+              uploadProgress: undefined,
+              uploadError: `「${file.name}」${message}`,
+            });
+            return;
+          }
+        }
+        patchMessage(chatKey, uploadMessageId, {
+          uploading: false,
+          uploadProgress: 100,
+          uploadError: undefined,
+        });
+        getPlatform().sendWsMessage({
+          type: WS_EVENTS.SEND_FILE,
+          connectionId: activeConnectionId,
+          sessionKey: activeSessionKey,
+          content: caption ?? "",
+          files: staged,
+        });
+        return;
+      }
+
+      const encodedFiles = await Promise.all(
+        filesToSend.map(async (file) => ({
+          file_name: file.name,
+          mime_type: file.type || "application/octet-stream",
+          size: file.size,
+          data: await fileToBase64(file),
+        })),
+      );
       getPlatform().sendWsMessage({
         type: WS_EVENTS.SEND_FILE,
         connectionId: activeConnectionId,
@@ -395,6 +479,22 @@ export function ChatWindow() {
         </div>
       )}
       <MessageList messages={messages} streamingContent={streaming} sessionKey={activeSessionKey} previews={chatPreviews} processing={showStopButton} />
+      {uploadNotice && (
+        <div
+          role="alert"
+          style={{
+            margin: "0 12px 6px",
+            padding: "8px 10px",
+            borderRadius: 8,
+            background: "#fdecea",
+            color: "#b3261e",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          {uploadNotice}
+        </div>
+      )}
       <MessageInput
         ref={inputRef}
         value={input}

@@ -25,6 +25,10 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
     typeof x.workspacePath === "string" && x.workspacePath.trim().length > 0
       ? x.workspacePath.trim()
       : undefined;
+  const workspaceAgentPath =
+    typeof x.workspaceAgentPath === "string" && x.workspaceAgentPath.trim().length > 0
+      ? x.workspaceAgentPath.trim()
+      : undefined;
   return {
     id: x.id,
     name: typeof x.name === "string" ? x.name : x.id,
@@ -33,6 +37,7 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
     token: typeof x.token === "string" ? x.token : "",
     enabled: typeof x.enabled === "boolean" ? x.enabled : true,
     workspacePath,
+    workspaceAgentPath,
   };
 }
 

@@ -701,6 +701,14 @@ function MessageBubble({ message, answeredWith }: { message: ChatMessage; answer
               </span>
             </div>
           ) : null}
+          {/* A failed upload must stay visible on the bubble. Clearing the spinner and
+              leaving the attachment looking sent is what made a dropped message
+              indistinguishable from a lost session. */}
+          {message.uploadError ? (
+            <div className="mt-1.5 rounded-md bg-red-50 px-2 py-1 text-[11px] leading-snug text-red-600">
+              上传失败，未发送给 agent：{message.uploadError}
+            </div>
+          ) : null}
           <div className={`text-[10px] mt-1 ${isUser ? "text-blue-400" : "text-green-500"}`}>
             {formatMessageTime(message.timestamp)}
           </div>
