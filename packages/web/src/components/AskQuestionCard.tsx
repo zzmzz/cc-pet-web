@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import type { ChatCard, ChatCardElement } from "@cc-pet/shared";
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import { CardMarkdown } from "./CardMarkdown.js";
 import { getPlatform } from "../lib/platform.js";
 import { useConnectionStore } from "../lib/store/connection.js";
+import { useMessageStore } from "../lib/store/message.js";
 import { useSessionStore } from "../lib/store/session.js";
 
 interface AskOption {
@@ -115,11 +116,22 @@ function dispatchMessage(content: string) {
   if (!connectionId) return;
   const sessionKey = useSessionStore.getState().activeSessionKey[connectionId] ?? "default";
   useSessionStore.getState().noteStickySession(connectionId, sessionKey);
-  getPlatform().sendWsMessage({
+  const clientMsgId = getPlatform().sendWsMessage({
     type: WS_EVENTS.SEND_MESSAGE,
     connectionId,
     sessionKey,
     content,
+  }, "manual");
+  if (!clientMsgId) return;
+  // Echo locally under the clientMsgId so MessageList can find the outbox entry
+  // by message.id and render the pending/failed state with its retry button.
+  useMessageStore.getState().addMessage(makeChatKey(connectionId, sessionKey), {
+    id: clientMsgId,
+    role: "user",
+    content,
+    timestamp: Date.now(),
+    connectionId,
+    sessionKey,
   });
 }
 

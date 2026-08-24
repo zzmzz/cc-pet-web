@@ -5,6 +5,7 @@ import fstatic from "@fastify/static";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { COMMANDS_PROBE_REPLY_CTX, SKILLS_PROBE_REPLY_CTX, WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeIncoming, FileAttachment } from "@cc-pet/shared";
 import type { SlashCommand } from "@cc-pet/shared";
@@ -386,8 +387,9 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         break;
       }
       const replyContent = bridgeReplyTextContent(raw);
-      messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant", content: replyContent,
+      const replyMsgId = `msg-${randomUUID()}`;
+      const replySeq = messageStore.save({
+        id: replyMsgId, role: "assistant", content: replyContent,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
       bumpResidentUnread(replyContent);
@@ -396,6 +398,8 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         sessionKey,
         content: replyContent,
         replyCtx: replyCtx || undefined,
+        msgId: replyMsgId,
+        seq: replySeq,
       });
       replyCollector.onReply(connId, sessionKey ?? "default", replyContent);
       break;
@@ -428,14 +432,17 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
       }
       if (bridgeReplyStreamDone(raw)) {
         const fullText = extractReplyStreamFullText(raw);
+        let doneMsgId: string | undefined;
+        let doneSeq: number | undefined;
         if (fullText) {
-          messageStore.save({
-            id: `msg-${Date.now()}`, role: "assistant", content: fullText,
+          doneMsgId = `msg-${randomUUID()}`;
+          doneSeq = messageStore.save({
+            id: doneMsgId, role: "assistant", content: fullText,
             timestamp: Date.now(), connectionId: connId, sessionKey,
           });
           bumpResidentUnread(fullText ?? "");
         }
-        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText });
+        hub.broadcast(WS_EVENTS.BRIDGE_STREAM_DONE, { connectionId: connId, sessionKey, fullText, msgId: doneMsgId, seq: doneSeq });
         replyCollector.onDone(connId, sessionKey ?? "default", fullText);
       } else {
         const delta = extractReplyStreamChunk(raw) ?? (typeof raw.content === "string" ? raw.content : undefined);
@@ -464,7 +471,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         { connectionId: connId, fileName, hasData: !!fileData },
         "Bridge file frame received",
       );
-      let attachment: FileAttachment = { id: `file-${Date.now()}`, name: fileName, size: 0 };
+      let attachment: FileAttachment = { id: `file-${randomUUID()}`, name: fileName, size: 0 };
       if (fileData) {
         try {
           attachment = saveBase64File(DATA_DIR, fileName, fileData);
@@ -472,8 +479,9 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
           app.log.error({ err, connectionId: connId, name: fileName }, "Failed to persist bridge file attachment");
         }
       }
-      messageStore.save({
-        id: `msg-${Date.now()}`,
+      const fileMsgId = `msg-${randomUUID()}`;
+      const fileReceivedSeq = messageStore.save({
+        id: fileMsgId,
         role: "assistant",
         content: fileName,
         files: [attachment],
@@ -482,7 +490,10 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         sessionKey,
       });
       bumpResidentUnread(fileName);
-      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, { connectionId: connId, sessionKey, name: fileName, file: attachment });
+      hub.broadcast(WS_EVENTS.BRIDGE_FILE_RECEIVED, {
+        connectionId: connId, sessionKey, name: fileName, file: attachment,
+        msgId: fileMsgId, seq: fileReceivedSeq,
+      });
       break;
     }
     case "card":
@@ -505,27 +516,30 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
         break;
       }
       const normalizedCard = msg.card ? normalizeBridgeCard(msg.card) : undefined;
-      messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant",
+      const cardMsgId = `msg-${randomUUID()}`;
+      const cardSeq = messageStore.save({
+        id: cardMsgId, role: "assistant",
         content: msg.card?.header?.title ?? "",
         card: normalizedCard,
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
       bumpResidentUnread(msg.card?.header?.title ?? "");
       hub.broadcast(WS_EVENTS.BRIDGE_CARD, {
-        connectionId: connId, sessionKey, card: normalizedCard,
+        connectionId: connId, sessionKey, card: normalizedCard, msgId: cardMsgId, seq: cardSeq,
       });
       break;
-    case "audio":
-      messageStore.save({
-        id: `msg-${Date.now()}`, role: "assistant",
+    case "audio": {
+      const audioMsgId = `msg-${randomUUID()}`;
+      const audioSeq = messageStore.save({
+        id: audioMsgId, role: "assistant",
         content: "[音频消息]",
         timestamp: Date.now(), connectionId: connId, sessionKey,
       });
       hub.broadcast(WS_EVENTS.BRIDGE_AUDIO, {
-        connectionId: connId, sessionKey, data: msg.data, format: msg.format ?? "mp3",
+        connectionId: connId, sessionKey, data: msg.data, format: msg.format ?? "mp3", msgId: audioMsgId, seq: audioSeq,
       });
       break;
+    }
     case "skills_updated":
       latestSkillsByConnection.set(connId, msg.commands);
       hub.broadcast(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId: connId, commands: msg.commands });
@@ -557,7 +571,7 @@ bridgeManager.on("message", (connId: string, msg: BridgeIncoming) => {
 });
 
 hub.onMessage = (msg: any, client) => {
-  const { type, connectionId, sessionKey, content, buttonId, customInput, fileId, name, data, mimeType, files } = msg;
+  const { type, connectionId, sessionKey, content, buttonId, customInput, fileId, name, data, mimeType, files, clientMsgId } = msg;
   if (typeof connectionId === "string" && connectionId.length > 0 && !client.auth.bridgeIds.has(connectionId)) {
     app.log.warn(
       { tokenName: client.auth.tokenName, connectionId, eventType: type },
@@ -566,21 +580,35 @@ hub.onMessage = (msg: any, client) => {
     return;
   }
   switch (type) {
-    case WS_EVENTS.SEND_MESSAGE:
-      const msgId = `msg-${Date.now()}`;
+    case WS_EVENTS.SEND_MESSAGE: {
+      const msgId = typeof clientMsgId === "string" && clientMsgId.length > 0
+        ? clientMsgId
+        : `msg-${randomUUID()}`;
       app.log.info(
         {
           connectionId,
           sessionKey,
           contentLength: typeof content === "string" ? content.length : 0,
           msgId,
+          clientMsgId,
         },
         "Dashboard sent message"
       );
-      messageStore.save({
+      const { seq, inserted } = messageStore.saveWithStatus({
         id: msgId, role: "user", content,
         timestamp: Date.now(), connectionId, sessionKey,
       });
+      // Ack even on a resend: the client is retrying because it never saw the
+      // first ack, and it needs one to clear its outbox entry.
+      if (typeof clientMsgId === "string" && clientMsgId.length > 0) {
+        hub.broadcast(WS_EVENTS.MESSAGE_ACK, {
+          connectionId, sessionKey, clientMsgId, id: msgId, seq,
+        });
+      }
+      if (!inserted) {
+        app.log.info({ connectionId, sessionKey, msgId }, "Skipped bridge forward for already-known message id");
+        break;
+      }
       bridgeManager.send(connectionId, {
         type: "message",
         msg_id: msgId,
@@ -594,6 +622,7 @@ hub.onMessage = (msg: any, client) => {
         proactiveDetector.markUserSend(connectionId, sessionKey);
       }
       break;
+    }
     case WS_EVENTS.SEND_BUTTON:
       app.log.info({ connectionId, sessionKey, buttonId }, "Dashboard sent button response");
       bridgeManager.send(connectionId, {
@@ -667,13 +696,16 @@ hub.onMessage = (msg: any, client) => {
         app.log.warn({ connectionId, sessionKey }, "Dashboard sent file event with empty payload");
         break;
       }
-      app.log.info({ connectionId, sessionKey, files: normalizedFiles.length }, "Dashboard sent file");
-      messageStore.save({
-        id: `msg-${Date.now()}`,
+      app.log.info({ connectionId, sessionKey, files: normalizedFiles.length, clientMsgId }, "Dashboard sent file");
+      const fileMsgId = typeof clientMsgId === "string" && clientMsgId.length > 0
+        ? clientMsgId
+        : `msg-${randomUUID()}`;
+      const { seq: fileSeq, inserted: fileInserted } = messageStore.saveWithStatus({
+        id: fileMsgId,
         role: "user",
         content: caption,
         files: normalizedFiles.map((file) => ({
-          id: `file-${Date.now()}-${file.file_name}`,
+          id: `file-${randomUUID()}-${file.file_name}`,
           name: file.file_name,
           // base64 length → decoded byte count; the old hardcoded 0 made every
           // historical attachment render as an empty file.
@@ -683,9 +715,18 @@ hub.onMessage = (msg: any, client) => {
         connectionId,
         sessionKey,
       });
+      if (typeof clientMsgId === "string" && clientMsgId.length > 0) {
+        hub.broadcast(WS_EVENTS.MESSAGE_ACK, {
+          connectionId, sessionKey, clientMsgId, id: fileMsgId, seq: fileSeq,
+        });
+      }
+      if (!fileInserted) {
+        app.log.info({ connectionId, sessionKey, msgId: fileMsgId }, "Skipped bridge forward for already-known file message id");
+        break;
+      }
       bridgeManager.send(connectionId, {
         type: "message",
-        msg_id: `msg-file-${Date.now()}`,
+        msg_id: `msg-file-${randomUUID()}`,
         session_key: sessionKey,
         user_id: connectionId,
         user_name: "cc-pet-user",

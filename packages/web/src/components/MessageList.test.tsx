@@ -2,7 +2,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ChatMessage } from "@cc-pet/shared";
 import { MessageList } from "./MessageList.js";
+import { useOutboxStore } from "../lib/store/outbox.js";
 import { useSessionStore } from "../lib/store/session.js";
+import { getPlatform } from "../lib/platform.js";
+
+vi.mock("../lib/platform.js", () => ({
+  getPlatform: vi.fn(),
+}));
 
 function buildMessages(count: number): ChatMessage[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -16,6 +22,8 @@ function buildMessages(count: number): ChatMessage[] {
 describe("MessageList", () => {
   beforeEach(() => {
     cleanup();
+    localStorage.clear();
+    useOutboxStore.setState({ entries: [] });
     if (!window.HTMLElement.prototype.scrollIntoView) {
       window.HTMLElement.prototype.scrollIntoView = vi.fn();
     }
@@ -354,6 +362,104 @@ describe("MessageList", () => {
 
     expect(screen.getByText(/🔧 Bash/)).toBeInTheDocument();
     expect(screen.getByText(/💭 思考/)).toBeInTheDocument();
+  });
+
+  describe("outbox send status", () => {
+    it("renders a pending user message with opacity-60 class", () => {
+      const msgId = crypto.randomUUID();
+      useOutboxStore.getState().enqueue({ content: "hi" }, "auto");
+      // Manually set the entry's clientMsgId to match the message id
+      const entry = useOutboxStore.getState().entries[0]!;
+      useOutboxStore.setState({
+        entries: [{ ...entry, clientMsgId: msgId }],
+      });
+
+      const messages: ChatMessage[] = [
+        { id: msgId, role: "user", content: "hi", timestamp: Date.now() },
+      ];
+
+      const { container } = render(<MessageList messages={messages} />);
+
+      // The bubble wrapper should have opacity-60
+      const bubble = container.querySelector(".opacity-60");
+      expect(bubble).toBeInTheDocument();
+      // The clock glyph is aria-hidden, so the label must come from its sr-only sibling
+      expect(screen.getByText("发送中")).toBeInTheDocument();
+    });
+
+    it("renders a failed user message with border-red-500 and 重新发送 button", () => {
+      const flushOutbox = vi.fn();
+      vi.mocked(getPlatform).mockReturnValue({ flushOutbox } as any);
+
+      const msgId = crypto.randomUUID();
+      useOutboxStore.getState().enqueue({ content: "hello" }, "auto");
+      const entry = useOutboxStore.getState().entries[0]!;
+      useOutboxStore.setState({
+        entries: [{ ...entry, clientMsgId: msgId, status: "failed" }],
+      });
+
+      const messages: ChatMessage[] = [
+        { id: msgId, role: "user", content: "hello", timestamp: Date.now() },
+      ];
+
+      render(<MessageList messages={messages} />);
+
+      expect(screen.getByRole("button", { name: "重新发送" })).toBeInTheDocument();
+    });
+
+    it("flushes only the clicked message when 重新发送 is clicked", () => {
+      const flushOutbox = vi.fn();
+      vi.mocked(getPlatform).mockReturnValue({ flushOutbox } as any);
+
+      const msgId = crypto.randomUUID();
+      useOutboxStore.getState().enqueue({ content: "retry me" }, "auto");
+      const entry = useOutboxStore.getState().entries[0]!;
+      useOutboxStore.setState({
+        entries: [{ ...entry, clientMsgId: msgId, status: "failed" }],
+      });
+
+      const messages: ChatMessage[] = [
+        { id: msgId, role: "user", content: "retry me", timestamp: Date.now() },
+      ];
+
+      render(<MessageList messages={messages} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "重新发送" }));
+
+      // Scoped to this one id: a bare flushOutbox() would revive every failed
+      // auto entry in the queue.
+      expect(flushOutbox).toHaveBeenCalledWith(msgId);
+    });
+
+    it("shows payloadDropped message instead of retry button when payload is gone", () => {
+      const msgId = crypto.randomUUID();
+      useOutboxStore.getState().enqueue({ content: "big file" }, "auto");
+      const entry = useOutboxStore.getState().entries[0]!;
+      useOutboxStore.setState({
+        entries: [{ ...entry, clientMsgId: msgId, status: "failed", payloadDropped: true }],
+      });
+
+      const messages: ChatMessage[] = [
+        { id: msgId, role: "user", content: "big file", timestamp: Date.now() },
+      ];
+
+      render(<MessageList messages={messages} />);
+
+      expect(screen.getByText("发送失败，请重新选择文件")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument();
+    });
+
+    it("renders a normal user message without outbox entry with no status indicator", () => {
+      const messages: ChatMessage[] = [
+        { id: "normal-msg-id", role: "user", content: "normal", timestamp: Date.now() },
+      ];
+
+      const { container } = render(<MessageList messages={messages} />);
+
+      expect(container.querySelector(".opacity-60")).not.toBeInTheDocument();
+      expect(container.querySelector(".border-red-500")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "重新发送" })).not.toBeInTheDocument();
+    });
   });
 
   describe("jump to message from search", () => {

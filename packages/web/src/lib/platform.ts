@@ -1,3 +1,5 @@
+import type { RetryPolicy } from "./store/outbox.js";
+
 export interface StagedAttachmentResult {
   name: string;
   size: number;
@@ -8,7 +10,15 @@ export interface PlatformAPI {
   connectWs(): void;
   disconnectWs(): void;
   onWsEvent(handler: (type: string, payload: any) => void): () => void;
-  sendWsMessage(msg: any): void;
+  sendWsMessage(msg: any, policy: RetryPolicy): string;
+  /**
+   * Write queued outbox entries to the socket.
+   *
+   * With no argument this is the reconnect path: failed auto entries are revived
+   * and everything sendable goes out. With a clientMsgId it is the user tapping
+   * retry on one bubble, and only that entry is touched.
+   */
+  flushOutbox(clientMsgId?: string): void;
   /** Bytes still queued in the WebSocket send buffer (0 if not open). */
   getWsBufferedAmount(): number;
 

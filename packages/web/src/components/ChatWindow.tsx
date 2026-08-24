@@ -8,6 +8,7 @@ import { useCommandStore } from "../lib/store/commands.js";
 import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
 import { extractFiles, dragHasFiles } from "../lib/file-transfer.js";
+import { sendStagedAttachments } from "../lib/attachment-upload.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -231,8 +232,45 @@ export function ChatWindow() {
       setInput("");
       setPendingAttachments([]);
       setUploadNotice("");
-      const uploadMessageId = `file-${Date.now()}`;
-      const { patchMessage } = useMessageStore.getState();
+
+      if (canStage) {
+        // Streams to disk, then delivers only paths through the outbox. Owns its own
+        // bubble because the outbox clientMsgId does not exist until the upload lands.
+        await sendStagedAttachments({
+          chatKey,
+          connectionId: activeConnectionId,
+          sessionKey: activeSessionKey,
+          files: filesToSend,
+          caption,
+        });
+        if (caption) {
+          useSessionStore
+            .getState()
+            .touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
+        }
+        useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
+        return;
+      }
+
+      const encodedFiles = await Promise.all(
+        filesToSend.map(async (file) => ({
+          file_name: file.name,
+          mime_type: file.type || "application/octet-stream",
+          size: file.size,
+          data: await fileToBase64(file),
+        })),
+      );
+
+      // Send first: the outbox's clientMsgId doubles as the bubble id, which is
+      // what lets the bubble render pending/failed and offer a retry.
+      const uploadMessageId = getPlatform().sendWsMessage({
+        type: WS_EVENTS.SEND_FILE,
+        connectionId: activeConnectionId,
+        sessionKey: activeSessionKey,
+        content: caption ?? "",
+        files: encodedFiles,
+      }, "auto");
+
       useMessageStore.getState().addMessage(chatKey, {
         id: uploadMessageId,
         role: "user",
@@ -250,73 +288,23 @@ export function ChatWindow() {
         useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, caption);
       }
       useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
-
-      if (canStage) {
-        // Stream each file to the workspace, then hand the agent paths. Sequential on
-        // purpose: parallel multi-hundred-MB uploads just contend for the same uplink
-        // and make per-file progress meaningless.
-        patchMessage(chatKey, uploadMessageId, { uploading: true, uploadProgress: 0 });
-        const staged: { file_name: string; size: number; agent_path: string }[] = [];
-        for (let index = 0; index < filesToSend.length; index += 1) {
-          const file = filesToSend[index];
-          try {
-            const result = await getPlatform().uploadAttachment(
-              activeConnectionId,
-              file,
-              (percent) => {
-                const overall = Math.floor((index * 100 + percent) / filesToSend.length);
-                patchMessage(chatKey, uploadMessageId, { uploading: true, uploadProgress: overall });
-              },
-            );
-            staged.push({ file_name: result.name, size: result.size, agent_path: result.agentPath });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            patchMessage(chatKey, uploadMessageId, {
-              uploading: false,
-              uploadProgress: undefined,
-              uploadError: `「${file.name}」${message}`,
-            });
-            return;
-          }
-        }
-        patchMessage(chatKey, uploadMessageId, {
-          uploading: false,
-          uploadProgress: 100,
-          uploadError: undefined,
-        });
-        getPlatform().sendWsMessage({
-          type: WS_EVENTS.SEND_FILE,
-          connectionId: activeConnectionId,
-          sessionKey: activeSessionKey,
-          content: caption ?? "",
-          files: staged,
-        });
-        return;
-      }
-
-      const encodedFiles = await Promise.all(
-        filesToSend.map(async (file) => ({
-          file_name: file.name,
-          mime_type: file.type || "application/octet-stream",
-          size: file.size,
-          data: await fileToBase64(file),
-        })),
-      );
-      getPlatform().sendWsMessage({
-        type: WS_EVENTS.SEND_FILE,
-        connectionId: activeConnectionId,
-        sessionKey: activeSessionKey,
-        content: caption ?? "",
-        files: encodedFiles,
-      });
+      // After the bubble exists (patchMessage needs it) and after the send, so
+      // the buffered byte count reflects this frame.
       trackUploadProgress(chatKey, uploadMessageId);
       return;
     }
 
     setInput("");
 
+    const clientMsgId = getPlatform().sendWsMessage({
+      type: WS_EVENTS.SEND_MESSAGE,
+      connectionId: activeConnectionId,
+      sessionKey: activeSessionKey,
+      content: text,
+    }, "auto");
+
     useMessageStore.getState().addMessage(chatKey, {
-      id: `msg-${Date.now()}`,
+      id: clientMsgId,
       role: "user",
       content: text,
       timestamp: Date.now(),
@@ -325,13 +313,6 @@ export function ChatWindow() {
     });
     useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
     useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
-
-    getPlatform().sendWsMessage({
-      type: WS_EVENTS.SEND_MESSAGE,
-      connectionId: activeConnectionId,
-      sessionKey: activeSessionKey,
-      content: text,
-    });
   }, [
     input,
     pendingAttachments,
@@ -450,7 +431,7 @@ export function ChatWindow() {
       connectionId: activeConnectionId,
       sessionKey: activeSessionKey,
       content: "/stop",
-    });
+    }, "never");
   }, [activeConnectionId, activeSessionKey]);
 
   const slashMenu = (

@@ -11,6 +11,7 @@ export interface ChatMessage {
   preview?: PreviewBlock;
   card?: ChatCard;
   audio?: ChatAudio;
+  seq?: number;
   /** True while an attached file is still being uploaded over the WebSocket. */
   uploading?: boolean;
   /** Upload progress 0-100 while `uploading` is true. */

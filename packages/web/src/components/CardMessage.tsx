@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { ChatCard, ChatCardElement } from "@cc-pet/shared";
 import { CardMarkdown } from "./CardMarkdown.js";
 import { getPlatform } from "../lib/platform.js";
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
 import { useConnectionStore } from "../lib/store/connection.js";
+import { useMessageStore } from "../lib/store/message.js";
 import { useSessionStore } from "../lib/store/session.js";
 import { AskQuestionCard, detectAskQuestion } from "./AskQuestionCard.js";
 
@@ -29,11 +30,22 @@ function sendCardAction(value: string) {
   useSessionStore.getState().noteStickySession(connectionId, sessionKey);
   // card button values starting with "cmd:" are sent as chat messages
   const content = value.startsWith("cmd:") ? value.slice(4) : value;
-  getPlatform().sendWsMessage({
+  const clientMsgId = getPlatform().sendWsMessage({
     type: WS_EVENTS.SEND_MESSAGE,
     connectionId,
     sessionKey,
     content,
+  }, "manual");
+  if (!clientMsgId) return;
+  // Echo locally under the clientMsgId so MessageList can find the outbox entry
+  // by message.id and render the pending/failed state with its retry button.
+  useMessageStore.getState().addMessage(makeChatKey(connectionId, sessionKey), {
+    id: clientMsgId,
+    role: "user",
+    content,
+    timestamp: Date.now(),
+    connectionId,
+    sessionKey,
   });
 }
 

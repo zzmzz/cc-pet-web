@@ -98,7 +98,11 @@ async function fetchAndStoreHistory(
     `/api/history/${encodeURIComponent(chatKey)}`,
   );
   const messages = histRes.messages ?? [];
-  useMessageStore.getState().setMessages(chatKey, messages);
+  // Merge rather than overwrite: the user may have sent a message while the
+  // fetch was in flight, and its locally-rendered bubble must survive.
+  // mergeMessages also seeds the watermark from the highest seq fetched, so the
+  // first reconnect backfill starts from here instead of re-paging everything.
+  useMessageStore.getState().mergeMessages(chatKey, messages);
   useMessageStore.getState().markChatLoaded(chatKey);
   // chatKey format: `${connectionId}::${sessionKey}`
   const sep = chatKey.indexOf("::");

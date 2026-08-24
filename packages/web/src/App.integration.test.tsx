@@ -17,7 +17,8 @@ class FakeAdapter implements PlatformAPI {
 
   connectWs = vi.fn();
   disconnectWs = vi.fn();
-  sendWsMessage = vi.fn();
+  sendWsMessage = vi.fn().mockReturnValue("fake-client-msg-id");
+  flushOutbox = vi.fn();
   getWsBufferedAmount = vi.fn(() => 0);
   uploadAttachment = vi.fn(async (_connectionId: string, file: File) => ({
     name: file.name,
@@ -149,6 +150,33 @@ describe("App integration", () => {
 
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
     expect(createWebAdapter).toHaveBeenCalledWith("", "manual-token");
+  });
+
+  // The service worker precaches the shell, so a cold start with no network
+  // reaches this verify call and fails it. Dropping the token there logged the
+  // user out permanently — the reported "隔几天不打开就要重新输 token".
+  it("keeps the stored token and enters the app when verification cannot reach the server", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("keeps the stored token when verification returns a server error", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("clears the stored token when the server rejects it", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByText("输入访问 Token");
+    expect(localStorage.getItem("cc-pet-token")).toBeNull();
   });
 
   it("shows connection status and updates to connected after bridge event", async () => {
@@ -1405,7 +1433,7 @@ describe("App integration", () => {
         connectionId: "cc-connect",
         sessionKey: "default",
         content: "hello from ui",
-      });
+      }, "auto");
     });
     expect(screen.getByText("hello from ui")).toBeInTheDocument();
 
@@ -1437,7 +1465,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "/stop",
-    });
+    }, "never");
   });
 
   it("still sends message even when bridge is currently disconnected", async () => {
@@ -1454,7 +1482,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "will fail",
-    });
+    }, "auto");
     expect(screen.queryByText("当前连接已断开，消息未发送。请等待重连后重试。")).not.toBeInTheDocument();
   });
 
@@ -1555,6 +1583,7 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
 
@@ -1599,11 +1628,23 @@ describe("App integration", () => {
             }),
           ],
         }),
+        // Delivery of the paths is ordinary message delivery: it goes through the
+        // outbox, so it gets ack tracking and retry like any other message.
+        "auto",
       );
     });
     // The whole point: no base64 blob crosses the socket.
     const sent = adapter.sendWsMessage.mock.calls.at(-1)?.[0];
     expect(sent.files[0].data).toBeUndefined();
+    // Payload small enough to persist in the outbox — a base64 blob would exceed
+    // PERSIST_MAX_BYTES and be dropped as unresendable on reload.
+    expect(JSON.stringify(sent).length).toBeLessThan(1024);
+    // The bubble must adopt the outbox id, or its pending/failed state never renders.
+    await waitFor(() => {
+      const chatKey = makeChatKey("cc-connect", "default");
+      const ids = (useMessageStore.getState().messagesByChat[chatKey] ?? []).map((m) => m.id);
+      expect(ids).toContain("fake-client-msg-id");
+    });
   });
 
   it("surfaces upload failures on the bubble instead of reporting success", async () => {
@@ -1684,6 +1725,7 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
     expect(await screen.findByText("这是说明文字")).toBeInTheDocument();
@@ -1712,6 +1754,7 @@ describe("App integration", () => {
             expect.objectContaining({ file_name: "b.txt" }),
           ]),
         }),
+        "auto",
       );
     });
   });
