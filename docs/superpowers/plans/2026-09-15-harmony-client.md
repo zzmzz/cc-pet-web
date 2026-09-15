@@ -26,6 +26,19 @@
 - `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
 - 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
 - **REST 路径不得硬编码**：Task 10B 之后，所有 gateway 从 `model/Endpoints.ets` 取端点与 URL 构造函数。服务端改了方法或路径，`pnpm test` 会红。
+- **组件访问 store 必须用 `@Local` 持有引用**，不要在 `build()` 里直接写 `SomeStore.instance.field`。ArkUI V2 的依赖收集基于组件持有的可观察对象，静态访问不建立依赖，表现为数据变了但界面不刷新——Task 10 真机实测踩到，当时用恒真条件 `this.tick >= 0` 绕过，那是症状不是解法。正确写法：
+
+  ```typescript
+  @ComponentV2
+  struct SomePage {
+    @Local auth: AuthStore = AuthStore.instance;   // 持有引用，V2 才能追踪
+    build() {
+      if (this.auth.authorized) { /* ... */ }      // 通过 this.auth 访问
+    }
+  }
+  ```
+
+  同理，组件间传递 store 用 `@Param`，不要各自去取静态实例。
 - 工作分支：`harmony-client`。
 - **真机构建与安装（已验证可用）**：
 

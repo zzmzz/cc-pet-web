@@ -45,7 +45,7 @@ harmony/entry/src/main/ets/
     RestClient.ets                   Bearer 封装 + 401 统一处理
     SessionApi.ets  HistoryApi.ets  PetImageApi.ets
     NotificationGateway.ets          本地通知（接口化，将来换 Push Kit 不动业务层）
-  store/                             状态：@ObservedV2 + AppStorageV2
+  store/                             状态：@ObservedV2 单例；组件用 @Local 持有引用后访问
     ConnectionStore  SessionStore  ChatStore  TaskStore
   model/
     Protocol.ets                     协议类型，对齐 packages/shared
