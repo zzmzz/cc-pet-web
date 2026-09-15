@@ -4,6 +4,7 @@ import normalizeEventTest from './NormalizeEvent.test';
 import derivePetStateTest from './DerivePetState.test';
 import parseMarkdownBlockTest from './ParseMarkdownBlock.test';
 import parseInlineTest from './ParseInline.test';
+import slashCommandsTest from './SlashCommands.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -12,4 +13,5 @@ export default function testsuite() {
   derivePetStateTest();
   parseMarkdownBlockTest();
   parseInlineTest();
+  slashCommandsTest();
 }
