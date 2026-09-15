@@ -854,7 +854,7 @@ export interface PetInputs {
 
 /**
  * Pet state is derived, never set imperatively. Priority is fixed and total:
- * error > working > fresh-connection > unread > idle.
+ * error > working/thinking > fresh-connection > unread > idle.
  */
 export function derivePetState(inputs: PetInputs): PetState {
   if (!inputs.bridgeConnected) {
