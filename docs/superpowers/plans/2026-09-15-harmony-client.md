@@ -70,6 +70,12 @@
 
   详细复现证据、两次失败的修复尝试记录、以及排查过程见
   `.superpowers/sdd/2026-09-15-harmony-client/reactivity-fix-report.md`。
+- **分清「渲染依赖」和「副作用」，不要用轮询代替任何一个。** ArkUI V2 里这是两套机制：
+
+  - **渲染依赖是自动收集的**：组件在 `build()` 里读到的 `@Trace` 字段（含 `@Trace` 的 `Map`/`Set`/数组），变化时自动重渲染。**不需要 `@Monitor`，字段是 `private` 也不妨碍**——组件调的是 store 的公开方法（如 `phaseOf(chatKey)`、`unreadOf(chatKey)`），依赖由读取行为本身建立。`MessageList` 就是这样实时刷新消息的，全程没有 `@Monitor`。
+  - **`@Monitor('store.field')` 是给副作用用的**：字段变化时要执行一段非渲染逻辑（启动网关、初始化会话）才用它。
+
+  因此：**想让界面跟着 store 变，直接在 `build()` 里读，不要加定时器**。本工程唯一正当的轮询是 `MessageList` 对 Outbox 状态的轮询——`Outbox` 是 `logic/` 里的纯类、不是 `@Trace` 对象，UI 确实没有响应式渠道；除此之外出现 `setInterval` 都应视为缺陷。
 - 工作分支：`harmony-client`。
 - **真机构建与安装（已验证可用）**：
 
