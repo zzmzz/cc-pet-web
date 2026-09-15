@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
-import { Outbox, RetryPolicy } from '../logic/outbox';
+import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
@@ -227,6 +227,18 @@ export class ConnectionGateway {
     if (ConnectionStore.connect().phase === 'connected') {
       this.transmit([clientMsgId]);
     }
+  }
+
+  /**
+   * Read-only outbox snapshot for one chat's bubbles. Added for Task 12: the
+   * Task 11 contract (see that brief's Interfaces block) didn't expose the
+   * outbox, but the send-state UI it specifies ("failed 的气泡标红...来自
+   * Outbox，不在 ChatStore 里另存一份") has no other way to read per-message
+   * status. Purely additive — returns a snapshot, never mutates — so it does
+   * not change any behavior the Task 11 contract already relies on.
+   */
+  outboxEntriesOf(chatKey: string): OutboxEntry[] {
+    return this.outbox.entriesOf(chatKey);
   }
 
   private transmit(ids: string[]): void {
