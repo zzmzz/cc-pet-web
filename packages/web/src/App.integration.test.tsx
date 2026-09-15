@@ -17,9 +17,17 @@ class FakeAdapter implements PlatformAPI {
 
   connectWs = vi.fn();
   disconnectWs = vi.fn();
-  sendWsMessage = vi.fn();
+  sendWsMessage = vi.fn().mockReturnValue("fake-client-msg-id");
+  flushOutbox = vi.fn();
+  getWsBufferedAmount = vi.fn(() => 0);
+  uploadAttachment = vi.fn(async (_connectionId: string, file: File) => ({
+    name: file.name,
+    size: file.size,
+    agentPath: `/root/code/hyworkspace/.cc-connect/attachments/${file.name}`,
+  }));
 
   fetchApi = vi.fn();
+  fetchApiRaw = vi.fn();
 
   onWsEvent(handler: (type: string, payload: any) => void): () => void {
     this.handler = handler;
@@ -57,8 +65,15 @@ function defaultConnectSnapshot(bridges: { id: string; name: string }[]): void {
 
 function resetStores() {
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useMessageStore.setState({ messagesByChat: {}, streamingContent: {}, loadedChatKeys: new Set() });
+  useSessionStore.setState({
+    sessions: {},
+    activeSessionKey: {},
+    unread: {},
+    taskStateByConnection: {},
+    lazyLoadChat: null,
+    stickySessionByConnection: {},
+  });
   useUIStore.setState({
     chatOpen: true,
     petState: "idle",
@@ -135,6 +150,33 @@ describe("App integration", () => {
 
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
     expect(createWebAdapter).toHaveBeenCalledWith("", "manual-token");
+  });
+
+  // The service worker precaches the shell, so a cold start with no network
+  // reaches this verify call and fails it. Dropping the token there logged the
+  // user out permanently — the reported "隔几天不打开就要重新输 token".
+  it("keeps the stored token and enters the app when verification cannot reach the server", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("keeps the stored token when verification returns a server error", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(localStorage.getItem("cc-pet-token")).toBe("test-token");
+  });
+
+  it("clears the stored token when the server rejects it", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByText("输入访问 Token");
+    expect(localStorage.getItem("cc-pet-token")).toBeNull();
   });
 
   it("shows connection status and updates to connected after bridge event", async () => {
@@ -240,7 +282,8 @@ describe("App integration", () => {
     await waitFor(() => {
       expect(screen.getAllByText("README.md").length).toBeGreaterThanOrEqual(2);
     });
-    expect(screen.getByRole("textbox", { name: "文件内容" })).toHaveValue("# cc-pet-web\n");
+    const preview = await screen.findByLabelText("文件预览");
+    expect(preview).toHaveTextContent("# cc-pet-web");
     expect(useWorkspaceStore.getState().activeConnectionId).toBe("cc-connect");
   });
 
@@ -456,6 +499,7 @@ describe("App integration", () => {
       expect(await screen.findByText("cc-pet-web")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: /README\.md/ }));
+      await user.click(await screen.findByRole("button", { name: "编辑" }));
       const editor = await screen.findByRole("textbox", { name: "文件内容" });
       await user.clear(editor);
       await user.type(editor, "# Updated");
@@ -557,6 +601,7 @@ describe("App integration", () => {
     render(<App />);
     await openWorkspaceTab(user);
     await user.click(await screen.findByRole("button", { name: /README\.md/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑" }));
     const editor = await screen.findByRole("textbox", { name: "文件内容" });
     await user.clear(editor);
     await user.type(editor, "# Updated");
@@ -811,6 +856,103 @@ describe("App integration", () => {
     });
   });
 
+  it("renders tool-progress preview updates but ignores text previews", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    // A plain-text preview must be ignored (the final reply delivers the text).
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "这是普通正文预览，应该被忽略",
+    });
+    expect(Object.keys(useMessageStore.getState().previewMessages)).toHaveLength(0);
+
+    // A progress card (tool steps) must render as a live preview.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**",
+    });
+    await waitFor(() => {
+      const pv = useMessageStore.getState().previewMessages["pv-cc-connect-default"];
+      expect(pv?.content).toContain("工具 #1");
+    });
+
+    // Subsequent update upserts (replaces) the same preview in place.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash**\n2. 🧾 ok",
+    });
+    await waitFor(() => {
+      expect(useMessageStore.getState().previewMessages["pv-cc-connect-default"]?.content).toContain("🧾");
+    });
+  });
+
+  it("tool messages keep the session working; only a text reply completes it", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const phase = () =>
+      useSessionStore.getState().taskStateByConnection["cc-connect"]?.default?.phase;
+
+    // Mid-turn tool call/result (no typing active) must NOT complete the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+    await waitFor(() => expect(phase()).toBe("working"));
+
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🧾\n🟢 状态: ok",
+    });
+    await waitFor(() =>
+      expect(
+        (useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "default")] ?? []).some((m) =>
+          m.content.startsWith("🧾"),
+        ),
+      ).toBe(true),
+    );
+    // Still working after the tool result — the turn is not done.
+    expect(phase()).toBe("working");
+
+    // The final text reply (typing inactive) completes the turn.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "运行完成，目录里有 3 个文件。",
+    });
+    await waitFor(() => expect(phase()).toBe("completed"));
+  });
+
+  it("commits tool-call messages immediately without the typewriter reveal", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const key = makeChatKey("cc-connect", "default");
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      sessionKey: "default",
+      content: "🔧 **工具 #1: Bash**\n```bash\nls\n```",
+    });
+
+    // Tool content must land in the message list right away (rendered live via
+    // ActivityBlock) and must never be routed through streamingContent, which
+    // would hide it mid-turn.
+    await waitFor(() => {
+      const st = useMessageStore.getState();
+      expect((st.messagesByChat[key] ?? []).some((m) => m.content.startsWith("🔧"))).toBe(true);
+    });
+    expect(useMessageStore.getState().streamingContent[key] ?? "").toBe("");
+  });
+
   it("routes fallback typing_stop to in-flight session after user switches active session", async () => {
     useSessionStore.setState({
       sessions: {
@@ -847,6 +989,130 @@ describe("App integration", () => {
       expect(state["session-a"]?.phase).toBe("completed");
       expect(state["session-b"]?.phase).not.toBe("completed");
     });
+  });
+
+  it("does not leak a keyless in-flight reply into a freshly created session", async () => {
+    // User is in session-old and sends a message; the bridge's reply arrives
+    // WITHOUT echoing a sessionKey (no ccpet reply_ctx, no typing). Meanwhile the
+    // user has created and switched to a brand-new empty session. The keyless
+    // reply must stay with the session that made the request, not follow the
+    // active-session pointer into the fresh session.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [
+          { key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 },
+        ],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    const input = screen.getByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "question in old session");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    // User creates a brand-new session and switches to it while old is in-flight.
+    useSessionStore.setState((s) => ({
+      sessions: {
+        "cc-connect": [
+          ...(s.sessions["cc-connect"] ?? []),
+          { key: "session-new", connectionId: "cc-connect", createdAt: 3, lastActiveAt: 3 },
+        ],
+      },
+    }));
+    useSessionStore.getState().setActiveSession("cc-connect", "session-new");
+
+    // The old session's reply lands WITHOUT an explicit sessionKey.
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "reply belonging to old session",
+    });
+
+    await waitFor(() => {
+      const oldKey = makeChatKey("cc-connect", "session-old");
+      const newKey = makeChatKey("cc-connect", "session-new");
+      const newMsgs = useMessageStore.getState().messagesByChat[newKey] ?? [];
+      const oldMsgs = useMessageStore.getState().messagesByChat[oldKey] ?? [];
+      // The freshly-created session must stay empty.
+      expect(newMsgs.map((m) => m.content)).not.toContain("reply belonging to old session");
+      expect(oldMsgs.map((m) => m.content)).toContain("reply belonging to old session");
+    });
+  });
+
+  it("does not paint an in-flight progress card into a session created after a reload", async () => {
+    // The reported leak: the page was reloaded (or the PWA reopened) while a turn
+    // from before it was still running, so nothing in memory ties the bridge's
+    // keyless frames to the session that started them. The user then creates a
+    // new session — the still-arriving agent output must not land in it.
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+      stickySessionByConnection: {}, // in-memory sticky was lost with the reload
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+    const newKey = useSessionStore.getState().activeSessionKey["cc-connect"]!;
+    expect(newKey).not.toBe("session-old");
+
+    // Progress card + final reply of the OLD turn, arriving with no session_key.
+    adapter.emit(WS_EVENTS.BRIDGE_PREVIEW_UPDATE, {
+      connectionId: "cc-connect",
+      previewId: "pv-cc-connect-default",
+      content: "⏳ **Progress**\n\n1. 🔧 **工具 #1: Bash** 上一段对话的工具输出",
+    });
+    adapter.emit(WS_EVENTS.BRIDGE_MESSAGE, {
+      connectionId: "cc-connect",
+      content: "上一段对话的回复",
+    });
+
+    // It belongs to the session the user left, which is where it must show up
+    // (the reply is committed after the typewriter reveal finishes).
+    await waitFor(() => {
+      const oldMsgs = useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "session-old")] ?? [];
+      expect(oldMsgs.map((m) => m.content)).toContain("上一段对话的回复");
+    });
+
+    const newChatKey = makeChatKey("cc-connect", newKey);
+    expect(useMessageStore.getState().messagesByChat[newChatKey] ?? []).toEqual([]);
+    expect(useMessageStore.getState().streamingContent[newChatKey]).toBeUndefined();
+    expect(
+      Object.values(useMessageStore.getState().previewMessages).filter((pv) => pv.chatKey === newChatKey),
+    ).toEqual([]);
+  });
+
+  it("creating a session empties the composer so no draft carries over from the previous conversation", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({
+      sessions: {
+        "cc-connect": [{ key: "session-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 1 }],
+      },
+      activeSessionKey: { "cc-connect": "session-old" },
+    });
+
+    render(<App />);
+    const input = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await user.type(input, "还没发出去的草稿");
+    expect(input).toHaveValue("还没发出去的草稿");
+
+    await user.click(screen.getByRole("button", { name: "＋新建会话" }));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(INPUT_PLACEHOLDER)).toHaveValue("");
+    });
+    const activeKey = useSessionStore.getState().activeSessionKey["cc-connect"];
+    expect(activeKey).not.toBe("session-old");
+    expect(useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", activeKey!)] ?? []).toEqual([]);
   });
 
   it("increments unread and shows pet talking when assistant message targets a non-active session", async () => {
@@ -899,6 +1165,55 @@ describe("App integration", () => {
       const keyA = makeChatKey("cc-connect", "session-a");
       expect(useSessionStore.getState().unread[keyA] ?? 0).toBe(0);
     });
+  });
+
+  it("does not clear/persist resident unread when the matching session is active on a non-focused connection", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([
+        { id: "cc-connect", name: "cc-connect" },
+        { id: "cs-connect", name: "cs-connect" },
+      ]);
+    });
+    // cc-connect has the globally-newest session so it becomes the focused connection;
+    // cs-connect's only (and thus "active") session is the resident one. The user is
+    // NOT actually looking at cs-connect, so a RESIDENT_UNREAD broadcast for it must
+    // not be treated as "currently viewing" even though its activeSessionKey matches.
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return { sessions: [{ key: "default", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 }] };
+      }
+      if (path.includes("connectionId=cs-connect")) {
+        return {
+          sessions: [
+            { key: "resident-key", connectionId: "cs-connect", createdAt: 1, lastActiveAt: 100, isResident: true },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    await waitFor(() => {
+      expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
+      expect(useSessionStore.getState().activeSessionKey["cs-connect"]).toBe("resident-key");
+    });
+
+    adapter.fetchApi.mockClear();
+    adapter.emit(WS_EVENTS.RESIDENT_UNREAD, {
+      connectionId: "cs-connect",
+      sessionKey: "resident-key",
+      unreadCount: 3,
+    });
+
+    const residentChatKey = makeChatKey("cs-connect", "resident-key");
+    await waitFor(() => {
+      expect(useSessionStore.getState().unread[residentChatKey]).toBe(3);
+    });
+    expect(
+      adapter.fetchApi.mock.calls.some((call) => typeof call[0] === "string" && call[0].includes("/read")),
+    ).toBe(false);
   });
 
   it("routes incoming text by replyCtx when payload sessionKey is missing", async () => {
@@ -1003,7 +1318,7 @@ describe("App integration", () => {
     expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("sess-restored");
   });
 
-  it("defaults active connection to the one with newest message after hydrate", async () => {
+  it("defaults active connection to the one with newest server lastActiveAt after hydrate", async () => {
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([
         { id: "cc-connect", name: "cc-connect" },
@@ -1013,46 +1328,15 @@ describe("App integration", () => {
     adapter.fetchApi.mockImplementation(async (path: string) => {
       if (path.includes("connectionId=cc-connect")) {
         return {
-          sessions: [{ key: "s1", connectionId: "cc-connect", createdAt: 100, lastActiveAt: 100 }],
+          sessions: [{ key: "s1", connectionId: "cc-connect", createdAt: 100, lastActiveAt: 1000 }],
         };
       }
       if (path.includes("connectionId=cs-connect")) {
         return {
-          sessions: [{ key: "s2", connectionId: "cs-connect", createdAt: 100, lastActiveAt: 100 }],
+          sessions: [{ key: "s2", connectionId: "cs-connect", createdAt: 100, lastActiveAt: 2000 }],
         };
       }
-      if (path.startsWith("/api/history/")) {
-        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
-        if (chatKey === makeChatKey("cc-connect", "s1")) {
-          return {
-            messages: [
-              {
-                id: "cc-old",
-                role: "assistant",
-                content: "older",
-                timestamp: 1000,
-                connectionId: "cc-connect",
-                sessionKey: "s1",
-              },
-            ],
-          };
-        }
-        if (chatKey === makeChatKey("cs-connect", "s2")) {
-          return {
-            messages: [
-              {
-                id: "cs-new",
-                role: "assistant",
-                content: "newer",
-                timestamp: 2000,
-                connectionId: "cs-connect",
-                sessionKey: "s2",
-              },
-            ],
-          };
-        }
-        return { messages: [] };
-      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
       return {};
     });
 
@@ -1064,7 +1348,7 @@ describe("App integration", () => {
     });
   });
 
-  it("defaults active session to newest message in connection, not API lastActiveAt order", async () => {
+  it("defaults active session to the one with the largest server lastActiveAt", async () => {
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
     });
@@ -1072,43 +1356,12 @@ describe("App integration", () => {
       if (path.includes("connectionId=cc-connect")) {
         return {
           sessions: [
-            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 900 },
-            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 100 },
+            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 100 },
+            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 900 },
           ],
         };
       }
-      if (path.startsWith("/api/history/")) {
-        const chatKey = decodeURIComponent(path.slice("/api/history/".length));
-        if (chatKey === makeChatKey("cc-connect", "s-old")) {
-          return {
-            messages: [
-              {
-                id: "a",
-                role: "user",
-                content: "older",
-                timestamp: 1000,
-                connectionId: "cc-connect",
-                sessionKey: "s-old",
-              },
-            ],
-          };
-        }
-        if (chatKey === makeChatKey("cc-connect", "s-new")) {
-          return {
-            messages: [
-              {
-                id: "b",
-                role: "user",
-                content: "newer",
-                timestamp: 5000,
-                connectionId: "cc-connect",
-                sessionKey: "s-new",
-              },
-            ],
-          };
-        }
-        return { messages: [] };
-      }
+      if (path.startsWith("/api/history/")) return { messages: [] };
       return {};
     });
 
@@ -1119,6 +1372,46 @@ describe("App integration", () => {
       expect(useSessionStore.getState().activeSessionKey["cc-connect"]).toBe("s-new");
       expect(useConnectionStore.getState().activeConnectionId).toBe("cc-connect");
     });
+  });
+
+  it("only fetches history for the active session at hydrate, lazy-loads others on switch", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
+    });
+    const fetched: string[] = [];
+    adapter.fetchApi.mockImplementation(async (path: string) => {
+      if (path.includes("connectionId=cc-connect")) {
+        return {
+          sessions: [
+            { key: "s-old", connectionId: "cc-connect", createdAt: 1, lastActiveAt: 100 },
+            { key: "s-new", connectionId: "cc-connect", createdAt: 2, lastActiveAt: 900 },
+          ],
+        };
+      }
+      if (path.startsWith("/api/history/")) {
+        fetched.push(decodeURIComponent(path.slice("/api/history/".length)));
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    await waitFor(() => {
+      expect(fetched).toEqual([makeChatKey("cc-connect", "s-new")]);
+    });
+
+    useSessionStore.getState().setActiveSession("cc-connect", "s-old");
+    await waitFor(() => {
+      expect(fetched).toContain(makeChatKey("cc-connect", "s-old"));
+    });
+
+    // Switching back to an already-loaded chat must not re-fetch.
+    const before = fetched.length;
+    useSessionStore.getState().setActiveSession("cc-connect", "s-new");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetched.length).toBe(before);
   });
 
   it("sends message to websocket and renders incoming bridge reply", async () => {
@@ -1140,7 +1433,7 @@ describe("App integration", () => {
         connectionId: "cc-connect",
         sessionKey: "default",
         content: "hello from ui",
-      });
+      }, "auto");
     });
     expect(screen.getByText("hello from ui")).toBeInTheDocument();
 
@@ -1172,7 +1465,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "/stop",
-    });
+    }, "never");
   });
 
   it("still sends message even when bridge is currently disconnected", async () => {
@@ -1189,7 +1482,7 @@ describe("App integration", () => {
       connectionId: "cc-connect",
       sessionKey: "default",
       content: "will fail",
-    });
+    }, "auto");
     expect(screen.queryByText("当前连接已断开，消息未发送。请等待重连后重试。")).not.toBeInTheDocument();
   });
 
@@ -1290,10 +1583,121 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
 
     expect(screen.getAllByText(/demo\.txt/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("streams attachments to disk and sends only paths when the bridge has a workspace", async () => {
+    // A bridge with a workspace can stage files; the agent reads them from disk, so the
+    // base64 WebSocket frame (and its ~75 MiB ceiling) is bypassed entirely.
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: true }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    const file = new File(["x".repeat(1024)], "big.zip", { type: "application/zip" });
+    await user.upload(fileInput!, file);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      expect(adapter.uploadAttachment).toHaveBeenCalledWith(
+        "cc-connect",
+        expect.objectContaining({ name: "big.zip" }),
+        expect.any(Function),
+      );
+    });
+    await waitFor(() => {
+      expect(adapter.sendWsMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: WS_EVENTS.SEND_FILE,
+          files: [
+            expect.objectContaining({
+              file_name: "big.zip",
+              agent_path: "/root/code/hyworkspace/.cc-connect/attachments/big.zip",
+            }),
+          ],
+        }),
+        // Delivery of the paths is ordinary message delivery: it goes through the
+        // outbox, so it gets ack tracking and retry like any other message.
+        "auto",
+      );
+    });
+    // The whole point: no base64 blob crosses the socket.
+    const sent = adapter.sendWsMessage.mock.calls.at(-1)?.[0];
+    expect(sent.files[0].data).toBeUndefined();
+    // Payload small enough to persist in the outbox — a base64 blob would exceed
+    // PERSIST_MAX_BYTES and be dropped as unresendable on reload.
+    expect(JSON.stringify(sent).length).toBeLessThan(1024);
+    // The bubble must adopt the outbox id, or its pending/failed state never renders.
+    await waitFor(() => {
+      const chatKey = makeChatKey("cc-connect", "default");
+      const ids = (useMessageStore.getState().messagesByChat[chatKey] ?? []).map((m) => m.id);
+      expect(ids).toContain("fake-client-msg-id");
+    });
+  });
+
+  it("surfaces upload failures on the bubble instead of reporting success", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: true }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    adapter.uploadAttachment.mockRejectedValueOnce(new Error("工作区磁盘空间不足，上传未完成。"));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    await user.upload(fileInput!, new File(["x"], "doomed.zip", { type: "application/zip" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText(/上传失败，未发送给 agent/)).toBeInTheDocument();
+    expect(screen.getByText(/工作区磁盘空间不足/)).toBeInTheDocument();
+    // A failed upload must not be handed to the agent as if it had arrived.
+    expect(adapter.sendWsMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: WS_EVENTS.SEND_FILE }),
+    );
+  });
+
+  it("blocks an oversized file before sending when the bridge cannot stage", async () => {
+    adapter.connectWs.mockImplementation(() => {
+      queueMicrotask(() => {
+        adapter.emit(WS_EVENTS.BRIDGE_MANIFEST, {
+          bridges: [{ id: "cc-connect", name: "cc-connect", attachmentStaging: false }],
+        });
+        adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, { connectionId: "cc-connect", connected: true });
+      });
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const oversized = new File(["x"], "huge.zip", { type: "application/zip" });
+    // Avoid allocating 80 MiB in the test: only `size` is inspected.
+    Object.defineProperty(oversized, "size", { value: 80 * 1024 * 1024 });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement | null;
+    await user.upload(fileInput!, oversized);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/huge\.zip/);
+    // Nothing was sent, and no bubble claims otherwise.
+    expect(adapter.sendWsMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: WS_EVENTS.SEND_FILE }),
+    );
   });
 
   it("keeps caption visible when sending attachment with text", async () => {
@@ -1321,6 +1725,7 @@ describe("App integration", () => {
             }),
           ]),
         }),
+        "auto",
       );
     });
     expect(await screen.findByText("这是说明文字")).toBeInTheDocument();
@@ -1349,7 +1754,48 @@ describe("App integration", () => {
             expect.objectContaining({ file_name: "b.txt" }),
           ]),
         }),
+        "auto",
       );
     });
+  });
+
+  it("attaches a file dropped anywhere on the chat page", async () => {
+    render(<App />);
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    adapter.emit(WS_EVENTS.BRIDGE_CONNECTED, {
+      connectionId: "cc-connect",
+      connected: true,
+    });
+
+    // Drop on the input container; the handler lives on the chat-page root, so
+    // the event must bubble up and still register — proving the whole page is a drop zone.
+    const dropZone = (document.querySelector('input[type="file"]') as HTMLInputElement)
+      .parentElement as HTMLElement;
+    const file = new File(["dropped"], "dropped.txt", { type: "text/plain" });
+    fireEvent.drop(dropZone, {
+      dataTransfer: {
+        types: ["Files"],
+        files: [file],
+        items: [{ kind: "file", getAsFile: () => file }],
+      },
+    });
+
+    expect(await screen.findByText(/dropped\.txt/)).toBeInTheDocument();
+  });
+
+  it("attaches a clipboard image pasted into the textarea with a generated name", async () => {
+    render(<App />);
+    const textarea = await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+
+    const img = new File(["img-bytes"], "image.png", { type: "image/png" });
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        types: ["Files"],
+        files: [img],
+        items: [{ kind: "file", getAsFile: () => img }],
+      },
+    });
+
+    expect(await screen.findByText(/pasted-.*\.png/)).toBeInTheDocument();
   });
 });

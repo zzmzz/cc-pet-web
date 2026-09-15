@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Fastify from "fastify";
+import multipart from "@fastify/multipart";
 import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { initSchema } from "../src/storage/db.js";
 import { ConfigStore } from "../src/storage/config.js";
 import { authGuard } from "../src/middleware/auth.js";
 import { registerWorkspaceRoutes } from "../src/api/workspace.js";
-import { FILE_PREVIEW_MAX_BYTES } from "../src/workspace/file-service.js";
+import { FILE_PREVIEW_MAX_BYTES, FILE_UPLOAD_MAX_BYTES } from "../src/workspace/file-service.js";
 import { GIT_OUTPUT_MAX_BYTES } from "../src/workspace/git-service.js";
 import {
   assertWritablePath,
@@ -394,6 +395,193 @@ describe("workspace file api", () => {
       content: "export const ok = true;\n",
     });
     expect(result.body.size).toBeGreaterThan(0);
+  });
+
+  it("streams raw bytes for downloads with attachment headers", async () => {
+    const binaryPath = path.join(workspaceDir, "中文 名.bin");
+    const binaryPayload = Buffer.from([0x00, 0x01, 0xff, 0x10, 0x20, 0x30]);
+    await writeFile(binaryPath, binaryPayload);
+
+    const app = Fastify();
+    app.addHook("onRequest", authGuard(config.load().tokens));
+    registerWorkspaceRoutes(app, config);
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/workspaces/conn-1/file/download?path=${encodeURIComponent("中文 名.bin")}`,
+        headers: { Authorization: "Bearer token-1" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("application/octet-stream");
+      expect(res.headers["content-length"]).toBe(String(binaryPayload.length));
+      const disposition = String(res.headers["content-disposition"]);
+      expect(disposition).toContain("attachment");
+      expect(disposition).toContain(`filename*=UTF-8''${encodeURIComponent("中文 名.bin")}`);
+      expect(res.rawPayload.equals(binaryPayload)).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects download requests for missing files", async () => {
+    const result = await injectWorkspace("/api/workspaces/conn-1/file/download?path=nope.txt");
+    expect(result.statusCode).toBe(404);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_FILE_NOT_FOUND" });
+  });
+
+  it("rejects download requests for directories", async () => {
+    const result = await injectWorkspace("/api/workspaces/conn-1/file/download?path=src");
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_PATH_NOT_FILE" });
+  });
+
+  async function injectUpload(
+    connectionId: string,
+    parts: {
+      parentPath?: string;
+      filename?: string;
+      content?: Buffer | string;
+      omitFile?: boolean;
+    },
+    token = "token-1",
+  ): Promise<{ statusCode: number; body: any }> {
+    const app = Fastify();
+    await app.register(multipart);
+    app.addHook("onRequest", authGuard(config.load().tokens));
+    registerWorkspaceRoutes(app, config);
+    try {
+      const boundary = `----TestBoundary${Math.random().toString(16).slice(2)}`;
+      const segments: Buffer[] = [];
+      if (parts.parentPath !== undefined) {
+        segments.push(
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="parentPath"\r\n\r\n${parts.parentPath}\r\n`,
+            "utf8",
+          ),
+        );
+      }
+      if (!parts.omitFile) {
+        const filename = parts.filename ?? "upload.bin";
+        const content = parts.content ?? Buffer.from("hello upload\n");
+        const fileBuf = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+        segments.push(
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+            "utf8",
+          ),
+        );
+        segments.push(fileBuf);
+        segments.push(Buffer.from("\r\n", "utf8"));
+      }
+      segments.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));
+      const payload = Buffer.concat(segments);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/workspaces/${connectionId}/items/upload`,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        payload,
+      });
+      return { statusCode: res.statusCode, body: res.json() };
+    } finally {
+      await app.close();
+    }
+  }
+
+  it("uploads a file via multipart and persists it inside the workspace", async () => {
+    const payload = Buffer.from("uploaded body 中文\n", "utf8");
+    const result = await injectUpload("conn-1", {
+      parentPath: "src",
+      filename: "uploaded 中文.txt",
+      content: payload,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toMatchObject({
+      ok: true,
+      entry: { name: "uploaded 中文.txt", path: "src/uploaded 中文.txt", kind: "file" },
+    });
+    const written = await readFile(path.join(workspaceDir, "src", "uploaded 中文.txt"));
+    expect(written.equals(payload)).toBe(true);
+  });
+
+  it("rejects upload when no file part is included", async () => {
+    const result = await injectUpload("conn-1", { parentPath: "", omitFile: true });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_CONTENT_INVALID" });
+  });
+
+  it("rejects upload when the parent directory does not exist", async () => {
+    const result = await injectUpload("conn-1", {
+      parentPath: "no-such-dir",
+      filename: "x.txt",
+      content: "hi",
+    });
+    expect(result.statusCode).toBe(404);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_LIST_STALE" });
+  });
+
+  it("rejects upload that would overwrite an existing file", async () => {
+    const result = await injectUpload("conn-1", {
+      parentPath: "",
+      filename: "README.md",
+      content: "x",
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_ITEM_ALREADY_EXISTS" });
+  });
+
+  it("rejects upload when the explicit name field contains path separators", async () => {
+    const app = Fastify();
+    await app.register(multipart);
+    app.addHook("onRequest", authGuard(config.load().tokens));
+    registerWorkspaceRoutes(app, config);
+    try {
+      const boundary = `----TestBoundary${Math.random().toString(16).slice(2)}`;
+      const payload = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="parentPath"\r\n\r\n\r\n`,
+          "utf8",
+        ),
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="legit.txt"\r\nContent-Type: application/octet-stream\r\n\r\nhi\r\n`,
+          "utf8",
+        ),
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="name"\r\n\r\n../escape.txt\r\n`,
+          "utf8",
+        ),
+        Buffer.from(`--${boundary}--\r\n`, "utf8"),
+      ]);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/workspaces/conn-1/items/upload`,
+        headers: {
+          Authorization: `Bearer token-1`,
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: "WORKSPACE_NAME_INVALID" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects upload exceeding the size limit", async () => {
+    const oversized = Buffer.alloc(FILE_UPLOAD_MAX_BYTES + 1, 0x61);
+    const result = await injectUpload("conn-1", {
+      parentPath: "",
+      filename: "big.bin",
+      content: oversized,
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body).toMatchObject({ error: "WORKSPACE_FILE_TOO_LARGE" });
   });
 
   it("returns a non-previewable response for files over the preview limit", async () => {

@@ -6,6 +6,11 @@ function msg(id: string, role: ChatMessage["role"], content: string): ChatMessag
   return { id, role, content, timestamp: Date.now() };
 }
 
+function toolGroup(item: RenderItem) {
+  if (item.kind !== "tool-group") throw new Error("expected tool-group");
+  return item;
+}
+
 describe("groupMessages", () => {
   it("returns all messages as-is when no tool calls", () => {
     const msgs = [msg("1", "user", "hello"), msg("2", "assistant", "hi there")];
@@ -27,7 +32,7 @@ describe("groupMessages", () => {
     const items = groupMessages(msgs);
     expect(items).toHaveLength(3);
     expect(items[1]).toMatchObject({ kind: "tool-group", done: true });
-    expect((items[1] as Extract<RenderItem, { kind: "tool-group" }>).messages).toHaveLength(2);
+    expect(toolGroup(items[1]).steps).toHaveLength(2);
     expect(items[2]).toEqual({ kind: "message", message: msgs[4] });
   });
 
@@ -56,8 +61,54 @@ describe("groupMessages", () => {
     expect(items).toHaveLength(3);
     expect(items[0]).toEqual({ kind: "message", message: msgs[0] });
     expect(items[1]).toMatchObject({ kind: "tool-group", done: true });
-    expect((items[1] as Extract<RenderItem, { kind: "tool-group" }>).messages).toHaveLength(4);
+    expect(toolGroup(items[1]).steps).toHaveLength(4);
     expect(items[2]).toEqual({ kind: "message", message: msgs[5] });
+  });
+
+  it("pairs a 🧾 result with its preceding 🔧 call into one step", () => {
+    const msgs = [
+      msg("1", "user", "run it"),
+      msg("2", "assistant", '🔧 **工具 #1: Bash**\n---\n```bash\necho hi\n```'),
+      msg("3", "assistant", "🧾\n🟢 状态: ok\n🔢 退出码: 0\n```text\nhi\n```"),
+      msg("4", "assistant", "done"),
+    ];
+    const items = groupMessages(msgs);
+    expect(items).toHaveLength(3);
+    const group = toolGroup(items[1]);
+    expect(group.steps).toHaveLength(1);
+    expect(group.steps[0].call.id).toBe("2");
+    expect(group.steps[0].result?.id).toBe("3");
+    expect(items[2]).toEqual({ kind: "message", message: msgs[3] });
+  });
+
+  it("does not break the group when a 🧾 result appears mid-stream", () => {
+    const msgs = [
+      msg("1", "user", "run them"),
+      msg("2", "assistant", '🔧 **工具 #1: Bash**\n---\n`a`'),
+      msg("3", "assistant", "🧾\n🟢 状态: ok\n```text\nout-a\n```"),
+      msg("4", "assistant", '🔧 **工具 #2: Bash**\n---\n`b`'),
+      msg("5", "assistant", "🧾\n🔴 状态: failed\n🔢 退出码: 1\n```text\nboom\n```"),
+      msg("6", "assistant", "都跑完了"),
+    ];
+    const items = groupMessages(msgs);
+    expect(items).toHaveLength(3);
+    const group = toolGroup(items[1]);
+    expect(group.steps).toHaveLength(2);
+    expect(group.steps[0].result?.id).toBe("3");
+    expect(group.steps[1].result?.id).toBe("5");
+    expect(items[2]).toEqual({ kind: "message", message: msgs[5] });
+  });
+
+  it("keeps a tool call with no result as a step with null result", () => {
+    const msgs = [
+      msg("1", "user", "do it"),
+      msg("2", "assistant", '🔧 **工具 #1: Bash**\n---\n`a`'),
+      msg("3", "assistant", "回复"),
+    ];
+    const items = groupMessages(msgs);
+    const group = toolGroup(items[1]);
+    expect(group.steps).toHaveLength(1);
+    expect(group.steps[0].result).toBeNull();
   });
 
   it("marks trailing tool group as not done (no streaming)", () => {

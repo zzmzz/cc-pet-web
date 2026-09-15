@@ -42,15 +42,15 @@ export function WorkspacePanel() {
   return (
     <section
       data-testid="workspace-panel"
-      className="flex min-h-0 flex-1 flex-col rounded-xl border border-border bg-surface-tertiary/40"
+      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border bg-surface-tertiary/40"
     >
-      <header className="border-b border-border px-3 py-2">
+      <header className="min-w-0 border-b border-border px-3 py-2">
         <div className="text-sm font-semibold text-text-primary">工作区</div>
         <div className="truncate text-[11px] text-text-secondary">
           {activeConnectionId ?? "暂无活动连接"}
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-2">
         {!activeConnectionId && (
           <div className="px-2 py-3 text-xs text-text-secondary">请选择一个连接后浏览工作区。</div>
         )}

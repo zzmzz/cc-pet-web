@@ -6,6 +6,7 @@ import { SessionDropdown, formatSessionPhase } from "./SessionDropdown.js";
 import { useConnectionStore } from "../lib/store/connection.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useSessionStore } from "../lib/store/session.js";
+import { useUIStore } from "../lib/store/ui.js";
 
 const fetchApi = vi.fn().mockResolvedValue({ ok: true });
 
@@ -14,9 +15,22 @@ vi.mock("../lib/platform.js", () => ({
 }));
 
 function resetStores() {
+  localStorage.clear();
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
-  useMessageStore.setState({ messagesByChat: {}, streamingContent: {} });
-  useSessionStore.setState({ sessions: {}, activeSessionKey: {}, unread: {}, taskStateByConnection: {} });
+  useMessageStore.setState({
+    messagesByChat: {},
+    streamingContent: {},
+    previewMessages: {},
+    loadedChatKeys: new Set(),
+  });
+  useSessionStore.setState({
+    sessions: {},
+    activeSessionKey: {},
+    unread: {},
+    taskStateByConnection: {},
+    lazyLoadChat: null,
+    stickySessionByConnection: {},
+  });
 }
 
 describe("formatSessionPhase", () => {
@@ -238,6 +252,167 @@ describe("SessionDropdown", () => {
 
     await user.click(screen.getByRole("button", { name: /First/ }));
     expect(useConnectionStore.getState().activeConnectionId).toBe("c1");
+  });
+
+  it("shows resident session as a standalone top entry, separate from 最近会话, without a delete button", async () => {
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "res", connectionId: "c1", label: "常驻助手", createdAt: 1, lastActiveAt: 100, isResident: true },
+          { key: "a", connectionId: "c1", label: "Alpha", createdAt: 2, lastActiveAt: 200 },
+          { key: "b", connectionId: "c1", label: "Beta", createdAt: 3, lastActiveAt: 300 },
+        ],
+      },
+      activeSessionKey: { c1: "a" },
+      unread: { [makeChatKey("c1", "res")]: 3 },
+    });
+
+    render(<SessionDropdown variant="panel" testShowDeleteButtons />);
+
+    // (a) 常驻 label（含 📌）出现在顶部区块
+    expect(screen.getByText("常驻")).toBeInTheDocument();
+    expect(screen.getByText("📌 常驻助手")).toBeInTheDocument();
+
+    // (b) 常驻不出现在「最近会话」列表：最近会话下只有 Beta，不含常驻的 label
+    const recentHeading = screen.getByText("最近会话");
+    const recentSection = recentHeading.parentElement;
+    expect(recentSection).toHaveTextContent("Beta");
+    expect(recentSection).not.toHaveTextContent("常驻助手");
+
+    // (c) 常驻卡片区不含删除按钮——即便 testShowDeleteButtons 强开了删除按钮，
+    // 而其余会话（最近会话中的 Beta）应能看到删除按钮，证明强开确实生效。
+    const residentHeading = screen.getByText("常驻");
+    const residentSection = residentHeading.parentElement;
+    expect(residentSection?.querySelector('[title="删除会话"]')).toBeNull();
+    expect(residentSection?.querySelector('[title="再次点击确认删除"]')).toBeNull();
+    expect(screen.getAllByTitle("删除会话").length).toBeGreaterThan(0);
+  });
+
+  it("clicking the resident entry switches connection/session, clears unread, and calls the read API", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [
+        { id: "c1", name: "First", connected: true },
+        { id: "c2", name: "Second", connected: true },
+      ],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [{ key: "a", connectionId: "c1", createdAt: 1, lastActiveAt: 1 }],
+        c2: [{ key: "res", connectionId: "c2", label: "常驻助手", createdAt: 1, lastActiveAt: 1, isResident: true }],
+      },
+      activeSessionKey: { c1: "a", c2: "res" },
+      unread: { [makeChatKey("c2", "res")]: 3 },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+
+    await user.click(screen.getByText("📌 常驻助手"));
+
+    expect(useConnectionStore.getState().activeConnectionId).toBe("c2");
+    expect(useSessionStore.getState().activeSessionKey.c2).toBe("res");
+    expect(useSessionStore.getState().unread[makeChatKey("c2", "res")]).toBeFalsy();
+    expect(fetchApi).toHaveBeenCalledWith("/api/sessions/c2/res/read", { method: "POST" });
+  });
+
+  it("当激活的就是常驻会话时，不渲染「当前会话」行也不显示裸 key", async () => {
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "First", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "res", connectionId: "c1", label: "常驻助手", createdAt: 1, lastActiveAt: 100, isResident: true },
+          { key: "beta", connectionId: "c1", label: "Beta", createdAt: 2, lastActiveAt: 2 },
+        ],
+      },
+      activeSessionKey: { c1: "res" },
+      unread: {},
+      taskStateByConnection: {},
+    });
+
+    render(<SessionDropdown variant="panel" />);
+
+    // 常驻仍以顶部独立入口呈现
+    expect(screen.getByText("📌 常驻助手")).toBeInTheDocument();
+    // 激活项是常驻 → listSessions 无对应项 → 不渲染「当前会话」行
+    expect(screen.queryByText("当前会话")).toBeNull();
+    // 不出现裸露的 session key 文案
+    expect(screen.queryByText("res")).toBeNull();
+  });
+
+  it("新建会话：清掉该 chatKey 的客户端残留、把在途消息钉回旧会话、并要求清空输入框", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: { c1: [{ key: "old", connectionId: "c1", createdAt: 1, lastActiveAt: 100 }] },
+      activeSessionKey: { c1: "old" },
+      stickySessionByConnection: {},
+    });
+    const resetTokenBefore = useUIStore.getState().composerResetToken;
+
+    // Freeze the generated key so the residue can be planted under it first.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const newKey = "session-1000";
+    const newChatKey = makeChatKey("c1", newKey);
+    useMessageStore.setState({
+      messagesByChat: {
+        [newChatKey]: [
+          {
+            id: "leaked",
+            role: "assistant",
+            content: "上一个会话漏过来的内容",
+            timestamp: 1,
+            connectionId: "c1",
+            sessionKey: newKey,
+          },
+        ],
+      },
+      streamingContent: { [newChatKey]: "半截回复" },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+    await user.click(screen.getByText("新建会话"));
+
+    expect(fetchApi).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ connectionId: "c1", key: newKey }),
+    });
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe(newKey);
+    expect(useMessageStore.getState().messagesByChat[newChatKey]).toBeUndefined();
+    expect(useMessageStore.getState().streamingContent[newChatKey]).toBeUndefined();
+    // Keyless replies still in flight belong to the session we just left.
+    expect(useSessionStore.getState().stickySessionByConnection.c1).toBe("old");
+    expect(useUIStore.getState().composerResetToken).toBe(resetTokenBefore + 1);
+
+    nowSpy.mockRestore();
+  });
+
+  it("新建会话不覆盖已有的 sticky 会话", async () => {
+    const user = userEvent.setup();
+    useConnectionStore.setState({
+      connections: [{ id: "c1", name: "B1", connected: true }],
+      activeConnectionId: "c1",
+    });
+    useSessionStore.setState({
+      sessions: { c1: [{ key: "old", connectionId: "c1", createdAt: 1, lastActiveAt: 100 }] },
+      activeSessionKey: { c1: "old" },
+      stickySessionByConnection: { c1: "in-flight" },
+    });
+
+    render(<SessionDropdown variant="panel" />);
+    await user.click(screen.getByText("新建会话"));
+
+    expect(useSessionStore.getState().stickySessionByConnection.c1).toBe("in-flight");
   });
 
   it("uses shared theme classes for opened dropdown menu surface", async () => {

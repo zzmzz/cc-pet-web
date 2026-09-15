@@ -29,6 +29,12 @@ export interface ConnectionInfo {
   id: string;
   name: string;
   connected: boolean;
+  /**
+   * True when the backend can stream attachments to a workspace directory the agent
+   * reads from. False for bridges without a configured workspace (e.g. a remote host
+   * with no shared disk), which stay on the size-capped base64 WebSocket fallback.
+   */
+  attachmentStaging?: boolean;
 }
 
 interface ConnectionState {

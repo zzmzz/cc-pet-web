@@ -5,3 +5,6 @@ export { useMessageStore } from "./message.js";
 export { useCommandStore } from "./commands.js";
 export { useSearchStore } from "./search.js";
 export { useWorkspaceStore } from "./workspace.js";
+export { useOutboxStore } from "./outbox.js";
+export type { RetryPolicy, OutboxStatus, OutboxEntry } from "./outbox.js";
+export { MANUAL_WINDOW_MS, ACK_TIMEOUT_MS, PERSIST_MAX_BYTES, OUTBOX_STORAGE_KEY } from "./outbox.js";

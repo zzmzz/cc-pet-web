@@ -11,6 +11,7 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "rehype-raw": "^7.0.0",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "zustand": "^5.0.12"
   },
@@ -40,6 +41,7 @@
     "typescript": "^6.0.2",
     "vite": "^8.0.3",
     "vite-plugin-pwa": "^1.2.0",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.2",
+    "workbox-precaching": "7.4.0"
   }
 }

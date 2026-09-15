@@ -90,7 +90,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 关闭
               </button>
             </header>
-            <div className="min-h-0 flex-1 overflow-hidden p-3">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-3">
               <WorkspacePanel />
             </div>
             <FileViewer variant="mobile" />
@@ -143,7 +143,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 工作区
               </button>
             </div>
-            <div className="min-h-0 flex flex-1 overflow-hidden">
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
               {sidebarTab === "connections" ? <SessionDropdown variant="panel" /> : <WorkspacePanel />}
             </div>
           </aside>

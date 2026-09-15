@@ -6,14 +6,15 @@ import { useUIStore } from "./ui.js";
 
 const ACTIVE_SESSION_STORAGE_KEY = "cc-pet-active-session-map";
 const TASK_STATE_STORAGE_KEY = "cc-pet-task-state";
+const STICKY_SESSION_STORAGE_KEY = "cc-pet-sticky-session-map";
 
 /** Max age (ms) for a persisted task state entry to be considered valid after reload. */
 export const TASK_STATE_STALE_MS = 5 * 60 * 1000;
 
-function readPersistedActiveSessionMap(): Record<string, string> {
+function readPersistedStringMap(storageKey: string): Record<string, string> {
   if (typeof localStorage === "undefined") return {};
   try {
-    const raw = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return {};
@@ -29,13 +30,27 @@ function readPersistedActiveSessionMap(): Record<string, string> {
   }
 }
 
-function persistActiveSessionMap(activeSessionKey: Record<string, string>): void {
+function persistStringMap(storageKey: string, map: Record<string, string>): void {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(activeSessionKey));
+    localStorage.setItem(storageKey, JSON.stringify(map));
   } catch {
     // Ignore storage errors; state still works in memory.
   }
+}
+
+function persistActiveSessionMap(activeSessionKey: Record<string, string>): void {
+  persistStringMap(ACTIVE_SESSION_STORAGE_KEY, activeSessionKey);
+}
+
+/**
+ * Sticky routing must survive a reload: a turn started before the reload can
+ * still deliver keyless replies afterwards, and an empty sticky map would let
+ * those replies follow the active-session pointer into whatever session the
+ * user opened (or created) next.
+ */
+function persistStickySessionMap(sticky: Record<string, string>): void {
+  persistStringMap(STICKY_SESSION_STORAGE_KEY, sticky);
 }
 
 function isValidTaskState(v: unknown): v is SessionTaskState {
@@ -125,9 +140,38 @@ interface SessionState {
   unread: Record<string, number>;
   /** Per-connection session task state for dropdown labels and task lifecycle. */
   taskStateByConnection: Record<string, Record<string, SessionTaskState>>;
+  /** Optional lazy-loader registered by hydrate; invoked when activating a session. */
+  lazyLoadChat: ((chatKey: string) => Promise<void>) | null;
+  /**
+   * Message a search result asked to jump to. MessageList consumes this once the
+   * target message is rendered (scrolls to it + briefly highlights) and clears
+   * it. Cleared automatically when the active session changes without consuming.
+   */
+  pendingScrollMessageId: string | null;
+  /**
+   * Per-connection "session a keyless incoming event most likely belongs to":
+   * the last session that exchanged a keyed message (sent from the dashboard or
+   * received with an explicit key). Used to route keyless bridge replies back to
+   * the requesting session instead of whatever session is currently active —
+   * otherwise a late reply leaks into a freshly-created/switched session.
+   */
+  stickySessionByConnection: Record<string, string>;
 
   setSessions: (connectionId: string, sessions: Session[]) => void;
   setActiveSession: (connectionId: string, key: string) => void;
+  /** Activate a session and request MessageList to scroll to a specific message. */
+  jumpToMessage: (connectionId: string, key: string, messageId: string) => void;
+  clearPendingScroll: () => void;
+  setLazyLoader: (loader: ((chatKey: string) => Promise<void>) | null) => void;
+  /** Record the session a keyless reply should route back to (outgoing send or keyed incoming). */
+  noteStickySession: (connectionId: string, sessionKey: string) => void;
+  /**
+   * Drop every client-only leftover for a session (messages, live stream text,
+   * preview cards, task state, unread). Used when a session is created: a fresh
+   * key can only ever hold residue that leaked in from another conversation,
+   * since the server has no history for it yet.
+   */
+  resetSessionResidue: (connectionId: string, sessionKey: string) => void;
   setSessionTaskState: (connectionId: string, sessionKey: string, taskState: SessionTaskState) => void;
   patchSessionTaskState: (
     connectionId: string,
@@ -139,6 +183,9 @@ interface SessionState {
   setSessionTaskPhase: (connectionId: string, sessionKey: string, phase: TaskPhase) => void;
   touchSessionLastActive: (connectionId: string, sessionKey: string) => void;
   incrementUnread: (chatKey: string) => void;
+  /** chatKeys whose unread is server-driven (resident sessions); client increments are ignored. */
+  residentChatKeys: Set<string>;
+  setUnread: (chatKey: string, count: number) => void;
   clearUnread: (chatKey: string) => void;
   clearSessionUnread: (connectionId: string, sessionKey: string) => void;
   /** True if any chatKey has unread count > 0. */
@@ -158,18 +205,69 @@ interface SessionState {
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: {},
-  activeSessionKey: readPersistedActiveSessionMap(),
+  activeSessionKey: readPersistedStringMap(ACTIVE_SESSION_STORAGE_KEY),
   unread: {},
   taskStateByConnection: readPersistedTaskState(),
+  lazyLoadChat: null,
+  pendingScrollMessageId: null,
+  stickySessionByConnection: readPersistedStringMap(STICKY_SESSION_STORAGE_KEY),
+  residentChatKeys: new Set(),
 
   setSessions: (connectionId, sessions) =>
-    set((s) => ({ sessions: { ...s.sessions, [connectionId]: sessions } })),
-  setActiveSession: (connectionId, key) =>
+    set((s) => {
+      const nextSessions = { ...s.sessions, [connectionId]: sessions };
+      const residentChatKeys = new Set<string>();
+      for (const [cid, list] of Object.entries(nextSessions)) {
+        for (const sess of list) {
+          if (sess.isResident) residentChatKeys.add(makeChatKey(cid, sess.key));
+        }
+      }
+      return { sessions: nextSessions, residentChatKeys };
+    }),
+  noteStickySession: (connectionId, sessionKey) =>
+    set((s) => {
+      if (s.stickySessionByConnection[connectionId] === sessionKey) return s;
+      const next = { ...s.stickySessionByConnection, [connectionId]: sessionKey };
+      persistStickySessionMap(next);
+      return { stickySessionByConnection: next };
+    }),
+  setActiveSession: (connectionId, key) => {
     set((s) => {
       const next = { ...s.activeSessionKey, [connectionId]: key };
       persistActiveSessionMap(next);
-      return { activeSessionKey: next };
-    }),
+      // A plain session switch cancels any unconsumed jump request.
+      return { activeSessionKey: next, pendingScrollMessageId: null };
+    });
+    const loader = get().lazyLoadChat;
+    if (loader) {
+      void loader(makeChatKey(connectionId, key)).catch((err) => {
+        console.error("lazy load chat failed:", connectionId, key, err);
+      });
+    }
+  },
+  jumpToMessage: (connectionId, key, messageId) => {
+    set((s) => {
+      const next = { ...s.activeSessionKey, [connectionId]: key };
+      persistActiveSessionMap(next);
+      return { activeSessionKey: next, pendingScrollMessageId: messageId };
+    });
+    const loader = get().lazyLoadChat;
+    if (loader) {
+      void loader(makeChatKey(connectionId, key)).catch((err) => {
+        console.error("lazy load chat failed:", connectionId, key, err);
+      });
+    }
+  },
+  clearPendingScroll: () => {
+    if (get().pendingScrollMessageId !== null) set({ pendingScrollMessageId: null });
+  },
+  resetSessionResidue: (connectionId, sessionKey) => {
+    const chatKey = makeChatKey(connectionId, sessionKey);
+    useMessageStore.getState().purgeChat(chatKey);
+    get().clearSessionTaskState(connectionId, sessionKey);
+    get().clearUnread(chatKey);
+  },
+  setLazyLoader: (loader) => set({ lazyLoadChat: loader }),
   setSessionTaskState: (connectionId, sessionKey, taskState) =>
     set((s) => {
       const prevConn = s.taskStateByConnection[connectionId] ?? {};
@@ -236,10 +334,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: { ...s.sessions, [connectionId]: next } };
     }),
   incrementUnread: (chatKey) => {
+    if (get().residentChatKeys.has(chatKey)) return; // server-driven via RESIDENT_UNREAD
     set((s) => ({ unread: { ...s.unread, [chatKey]: (s.unread[chatKey] ?? 0) + 1 } }));
     const processing = get().hasProcessingSessions();
     useUIStore.getState().setPetState(processing ? "thinking" : "talking");
   },
+  setUnread: (chatKey, count) =>
+    set((s) => ({ unread: { ...s.unread, [chatKey]: Math.max(0, count) } })),
   clearUnread: (chatKey) =>
     set((s) => {
       const nextUnread = { ...s.unread, [chatKey]: 0 };
@@ -280,11 +381,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       persistActiveSessionMap(nextActive);
 
+      const nextSticky = { ...s.stickySessionByConnection };
+      if (nextSticky[connectionId] === sessionKey) {
+        delete nextSticky[connectionId];
+        persistStickySessionMap(nextSticky);
+      }
+
       return {
         sessions: { ...s.sessions, [connectionId]: nextList },
         activeSessionKey: nextActive,
         unread: restUnread,
         taskStateByConnection: nextTaskState,
+        stickySessionByConnection: nextSticky,
       };
     }),
   touchSessionAutoTitle: (connectionId, sessionKey, userText) =>

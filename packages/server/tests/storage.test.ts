@@ -43,6 +43,139 @@ describe("Storage", () => {
       messages.deleteByChatKey("conn-1::default");
       expect(messages.getByChatKey("conn-1::default")).toHaveLength(0);
     });
+
+    it("keeps both messages written within the same millisecond", () => {
+      const ts = Date.now();
+      messages.save({
+        id: "msg-a", role: "assistant", content: "first",
+        timestamp: ts, connectionId: "conn-1", sessionKey: "default",
+      });
+      messages.save({
+        id: "msg-b", role: "assistant", content: "second",
+        timestamp: ts, connectionId: "conn-1", sessionKey: "default",
+      });
+      const result = messages.getByChatKey("conn-1::default");
+      expect(result).toHaveLength(2);
+      expect(result.map((m) => m.content).sort()).toEqual(["first", "second"]);
+    });
+
+    it("updates the same id in place without moving its row", () => {
+      const rowidOf = (id: string) =>
+        (db.prepare(`SELECT rowid FROM messages WHERE id = ?`).get(id) as { rowid: number }).rowid;
+
+      messages.save({
+        id: "msg-dup", role: "user", content: "original",
+        timestamp: 1000, connectionId: "conn-1", sessionKey: "default",
+      });
+      const originalRowid = rowidOf("msg-dup");
+      messages.save({
+        id: "msg-later", role: "assistant", content: "later",
+        timestamp: 2000, connectionId: "conn-1", sessionKey: "default",
+      });
+      messages.save({
+        id: "msg-dup", role: "user", content: "edited",
+        timestamp: 1000, connectionId: "conn-1", sessionKey: "default",
+      });
+
+      expect(rowidOf("msg-dup")).toBe(originalRowid);
+      const result = messages.getByChatKey("conn-1::default");
+      expect(result).toHaveLength(2);
+      expect(result.find((m) => m.id === "msg-dup")!.content).toBe("edited");
+    });
+
+    it("assigns monotonically increasing seq to new messages", () => {
+      messages.save({
+        id: "m1", role: "user", content: "a",
+        timestamp: 5000, connectionId: "c", sessionKey: "s",
+      });
+      messages.save({
+        id: "m2", role: "assistant", content: "b",
+        timestamp: 5000, connectionId: "c", sessionKey: "s",
+      });
+      const [first, second] = messages.getByChatKey("c::s");
+      expect(typeof first.seq).toBe("number");
+      expect(second.seq!).toBeGreaterThan(first.seq!);
+    });
+
+    it("preserves seq when an existing message is updated", () => {
+      messages.save({
+        id: "m1", role: "user", content: "a",
+        timestamp: 1000, connectionId: "c", sessionKey: "s",
+      });
+      const originalSeq = messages.getByChatKey("c::s")[0].seq;
+      messages.save({
+        id: "m2", role: "assistant", content: "b",
+        timestamp: 2000, connectionId: "c", sessionKey: "s",
+      });
+      messages.save({
+        id: "m1", role: "user", content: "a-edited",
+        timestamp: 1000, connectionId: "c", sessionKey: "s",
+      });
+      const rows = messages.getByChatKey("c::s");
+      const m1 = rows.find((r) => r.id === "m1")!;
+      expect(m1.seq).toBe(originalSeq);
+      expect(m1.content).toBe("a-edited");
+      expect(rows[0].id).toBe("m1");
+    });
+
+    it("returns the assigned seq from save and the original seq on conflict", () => {
+      const first = messages.save({
+        id: "m1", role: "user", content: "a",
+        timestamp: 1000, connectionId: "c", sessionKey: "s",
+      });
+      messages.save({
+        id: "m2", role: "assistant", content: "b",
+        timestamp: 2000, connectionId: "c", sessionKey: "s",
+      });
+      const again = messages.save({
+        id: "m1", role: "user", content: "a-edited",
+        timestamp: 1000, connectionId: "c", sessionKey: "s",
+      });
+      expect(again).toBe(first);
+    });
+
+    it("orders by seq so same-timestamp messages stay stable", () => {
+      const ts = 7000;
+      for (const id of ["x1", "x2", "x3"]) {
+        messages.save({
+          id, role: "assistant", content: id,
+          timestamp: ts, connectionId: "c", sessionKey: "s",
+        });
+      }
+      expect(messages.getByChatKey("c::s").map((m) => m.id)).toEqual(["x1", "x2", "x3"]);
+    });
+
+    describe("incremental history", () => {
+      beforeEach(() => {
+        for (let i = 1; i <= 5; i++) {
+          messages.save({
+            id: `n${i}`, role: "assistant", content: `c${i}`,
+            timestamp: 1000 + i, connectionId: "c", sessionKey: "s",
+          });
+        }
+      });
+
+      it("returns only messages after the given seq", () => {
+        const all = messages.getByChatKey("c::s");
+        const cursor = all[1].seq!;
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", cursor, 200);
+        expect(got.map((m) => m.id)).toEqual(["n3", "n4", "n5"]);
+        expect(hasMore).toBe(false);
+      });
+
+      it("caps at limit and reports hasMore", () => {
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", 0, 2);
+        expect(got).toHaveLength(2);
+        expect(hasMore).toBe(true);
+      });
+
+      it("returns empty and hasMore=false when already caught up", () => {
+        const all = messages.getByChatKey("c::s");
+        const { messages: got, hasMore } = messages.getByChatKeyAfterSeq("c::s", all[4].seq!, 200);
+        expect(got).toEqual([]);
+        expect(hasMore).toBe(false);
+      });
+    });
   });
 
   describe("SessionStore", () => {
@@ -93,6 +226,29 @@ describe("Storage", () => {
       expect(after.map((s) => s.key)).toEqual(["b", "a"]);
       expect(after.find((s) => s.key === "b")?.lastActiveAt).toBe(touched);
     });
+  });
+
+  it("backfills seq for a pre-existing database ordered by timestamp", () => {
+    const legacy = new Database(":memory:");
+    legacy.exec(`
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY, chat_key TEXT NOT NULL, role TEXT NOT NULL,
+        content TEXT NOT NULL, timestamp INTEGER NOT NULL,
+        connection_id TEXT, session_key TEXT, extra TEXT
+      );
+    `);
+    const ins = legacy.prepare(
+      `INSERT INTO messages (id, chat_key, role, content, timestamp) VALUES (?, ?, 'user', ?, ?)`
+    );
+    ins.run("old-b", "c::s", "second", 2000);
+    ins.run("old-a", "c::s", "first", 1000);
+
+    initSchema(legacy);
+
+    const rows = new MessageStore(legacy).getByChatKey("c::s");
+    expect(rows.map((r) => r.id)).toEqual(["old-a", "old-b"]);
+    expect(rows[0].seq!).toBeLessThan(rows[1].seq!);
+    legacy.close();
   });
 
   describe("ConfigStore", () => {

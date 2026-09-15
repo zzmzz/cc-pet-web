@@ -8,7 +8,7 @@ export type BridgeIncoming =
   | { type: "preview_start"; session_key: string; preview_id: string; content: string }
   | { type: "update_message"; session_key: string; preview_id: string; content: string }
   | { type: "delete_message"; session_key: string; preview_id: string }
-  | { type: "file"; session_key: string; name: string; data: string }
+  | { type: "file"; session_key: string; file_name?: string; name?: string; mime_type?: string; data: string; reply_ctx?: string }
   | { type: "card"; session_key: string; reply_ctx?: string; card: BridgeCard }
   | { type: "audio"; session_key: string; reply_ctx?: string; data: string; format?: string }
   | { type: "skills_updated"; commands: SlashCommand[] }

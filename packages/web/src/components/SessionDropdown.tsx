@@ -5,6 +5,7 @@ import { makeChatKey } from "@cc-pet/shared";
 import { useSessionStore } from "../lib/store/session.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useConnectionStore } from "../lib/store/connection.js";
+import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
 
 const EMPTY_SESSIONS: Session[] = [];
@@ -43,7 +44,8 @@ function formatUnread(count: number): string {
 }
 
 function sessionLabelText(s: Session): string {
-  return s.label?.trim() || s.key.split(":").pop() || s.key;
+  const base = s.label?.trim() || s.key.split(":").pop() || s.key;
+  return s.isResident ? `📌 ${base}` : base;
 }
 
 /** Shown next to session title: last message time, not “last opened”. */
@@ -53,8 +55,10 @@ function lastMessageOrCreatedAt(
   messagesByChat: Record<string, ChatMessage[]>,
 ): number {
   const msgs = messagesByChat[makeChatKey(connectionId, session.key)] ?? [];
-  if (msgs.length === 0) return session.createdAt;
-  return Math.max(...msgs.map((m) => m.timestamp));
+  if (msgs.length > 0) return Math.max(...msgs.map((m) => m.timestamp));
+  // For sessions whose history hasn't been lazy-loaded yet, fall back to
+  // the server-maintained lastActiveAt instead of createdAt.
+  return session.lastActiveAt ?? session.createdAt;
 }
 
 function phaseForSession(
@@ -66,21 +70,25 @@ function phaseForSession(
   return formatSessionPhase(p ?? "idle");
 }
 
+const SPINNER_DOT = "w-2 h-2 rounded-full border-[1.5px] border-t-transparent animate-spin";
+const SOLID_DOT = "w-1.5 h-1.5 rounded-full";
+
 function isActivePhaseCss(
   connectionId: string,
   sessionKey: string,
   taskStateByConnection: Record<string, Record<string, SessionTaskState>>,
+  activeAccent = false,
 ): { dot: string; text: string } {
   const p = taskStateByConnection[connectionId]?.[sessionKey]?.phase ?? "idle";
   if (p === "thinking" || p === "processing" || p === "working")
-    return { dot: "bg-accent animate-pulse", text: "text-accent font-medium" };
+    return { dot: `${SPINNER_DOT} border-accent`, text: "text-accent font-medium" };
   if (p === "waiting_confirm" || p === "awaiting_confirmation")
-    return { dot: "bg-amber-500 animate-pulse", text: "text-amber-600 font-medium" };
+    return { dot: `${SOLID_DOT} bg-amber-500 animate-pulse`, text: "text-amber-600 font-medium" };
   if (p === "possibly_stuck" || p === "stalled")
-    return { dot: "bg-amber-500", text: "text-amber-600 font-medium" };
+    return { dot: `${SOLID_DOT} bg-amber-500`, text: "text-amber-600 font-medium" };
   if (p === "failed")
-    return { dot: "bg-red-500", text: "text-red-500 font-medium" };
-  return { dot: "bg-gray-500", text: "text-gray-600" };
+    return { dot: `${SOLID_DOT} bg-red-500`, text: "text-red-500 font-medium" };
+  return { dot: `${SOLID_DOT} ${activeAccent ? "bg-accent" : "bg-gray-500"}`, text: "text-gray-600" };
 }
 
 function latestMessageByConnection(messagesByChat: Record<string, ChatMessage[]>): Record<string, number> {
@@ -129,9 +137,12 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   const sessions = useSessionStore((s) =>
     activeConnectionId ? s.sessions[activeConnectionId] ?? EMPTY_SESSIONS : EMPTY_SESSIONS,
   );
+  // 常驻会话可能挂在任意连接下（不一定是当前激活连接），顶部入口需要跨连接可达。
+  const allSessions = useSessionStore((s) => s.sessions);
   const activeKey = useSessionStore((s) =>
     activeConnectionId ? s.activeSessionKey[activeConnectionId] ?? "default" : "default",
   );
+  const activeSessionKey = useSessionStore((s) => s.activeSessionKey);
   const unreadMap = useSessionStore((s) => s.unread);
   const taskStateByConnection = useSessionStore((s) => s.taskStateByConnection);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
@@ -139,6 +150,10 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   const removeSession = useSessionStore((s) => s.removeSession);
   const setSessions = useSessionStore((s) => s.setSessions);
   const messagesByChat = useMessageStore((s) => s.messagesByChat);
+
+  const residentSession = Object.values(allSessions)
+    .flat()
+    .find((s) => s.isResident);
 
   useEffect(() => {
     if (panelMode || !open) return;
@@ -174,8 +189,12 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   const activeConnectionName = activeConnection?.name ?? activeConnectionId;
   const isConnected = activeConnection?.connected ?? false;
 
-  const currentSession = sessions.find((s) => s.key === activeKey);
-  const activeLabel = currentSession ? sessionLabelText(currentSession) : activeKey;
+  // 常驻会话已从列表中剥离，仅用于「最近会话」展示；折叠按钮标题需用全量 sessions 解析，
+  // 这样当前激活的正是常驻会话时标题也能正确显示。
+  const listSessions = sessions.filter((s) => !s.isResident);
+  const currentSession = listSessions.find((s) => s.key === activeKey);
+  const activeSession = sessions.find((s) => s.key === activeKey);
+  const activeLabel = activeSession ? sessionLabelText(activeSession) : activeKey;
   const activeStatusLabel = phaseForSession(activeConnectionId, activeKey, taskStateByConnection);
 
   const unreadFor = (sessionKey: string): number => {
@@ -191,7 +210,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
       ? `${activeConnectionName}${activeLabel ? ` · ${activeLabel}` : ""}`
       : activeLabel || activeConnectionName;
 
-  const inactive = sessions
+  const inactive = listSessions
     .filter((s) => s.key !== activeKey)
     .sort(
       (a, b) =>
@@ -208,6 +227,22 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     if (!activeConnectionId) return;
     setActiveSession(activeConnectionId, key);
     clearSessionUnread(activeConnectionId, key);
+    setOpen(false);
+    setShowAll(false);
+    setConfirmDeleteId(null);
+  };
+
+  // 常驻会话独立入口的点击处理：可能需要跨连接切换（常驻会话所属连接不一定是当前激活连接）。
+  const openResident = () => {
+    if (!residentSession) return;
+    const rc = residentSession.connectionId;
+    const rk = residentSession.key;
+    setActiveConnection(rc);
+    setActiveSession(rc, rk);
+    clearSessionUnread(rc, rk);
+    void getPlatform()
+      .fetchApi(`/api/sessions/${encodeURIComponent(rc)}/${encodeURIComponent(rk)}/read`, { method: "POST" })
+      .catch((e) => console.error("mark resident read failed:", e));
     setOpen(false);
     setShowAll(false);
     setConfirmDeleteId(null);
@@ -245,6 +280,22 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
         method: "POST",
         body: JSON.stringify({ connectionId: activeConnectionId, key }),
       });
+      const sessionStore = useSessionStore.getState();
+
+      // Anything still in flight belongs to the session the user is leaving.
+      // Without this, a keyless reply arriving after the switch would follow
+      // the active-session pointer straight into the new session (sticky is
+      // only set by an outgoing send or a keyed reply, so it can be empty —
+      // e.g. right after a reload while a turn from before it is unfinished).
+      const leavingKey = sessionStore.activeSessionKey[activeConnectionId];
+      if (leavingKey && leavingKey !== key && !sessionStore.stickySessionByConnection[activeConnectionId]) {
+        sessionStore.noteStickySession(activeConnectionId, leavingKey);
+      }
+
+      // A brand-new key has no server history, so any client-side state under
+      // it is residue from another conversation — drop it before we focus it.
+      sessionStore.resetSessionResidue(activeConnectionId, key);
+
       const list = useSessionStore.getState().sessions[activeConnectionId] ?? [];
       const now = Date.now();
       setSessions(activeConnectionId, [
@@ -252,6 +303,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
         { key, connectionId: activeConnectionId, createdAt: now, lastActiveAt: now },
       ]);
       setActiveSession(activeConnectionId, key);
+      useUIStore.getState().resetComposer();
       setOpen(false);
       setShowAll(false);
       setConfirmDeleteId(null);
@@ -303,6 +355,51 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
           : "absolute top-full left-0 mt-1 w-72 bg-surface-secondary border border-border rounded-xl shadow-lg z-50 overflow-hidden"
       }
     >
+          {residentSession && (
+            <>
+              <div className="px-3 pt-2.5 pb-1">
+                <p className="text-xs font-semibold text-gray-700 mb-1">常驻</p>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={openResident}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openResident();
+                    }
+                  }}
+                  className={`w-full flex items-center gap-2 ${mPad} rounded-lg transition-colors text-left cursor-pointer ${
+                    activeConnectionId === residentSession.connectionId &&
+                    (activeSessionKey[residentSession.connectionId] ?? "default") === residentSession.key
+                      ? "bg-accent/10 border border-accent/20"
+                      : "hover:bg-surface-tertiary"
+                  }`}
+                >
+                  <span
+                    className={`${isActivePhaseCss(residentSession.connectionId, residentSession.key, taskStateByConnection).dot} flex-shrink-0`}
+                  />
+                  <span
+                    className={`${mFont} truncate flex-1 ${
+                      activeConnectionId === residentSession.connectionId &&
+                      (activeSessionKey[residentSession.connectionId] ?? "default") === residentSession.key
+                        ? "text-accent font-medium"
+                        : "text-gray-800"
+                    }`}
+                  >
+                    {sessionLabelText(residentSession)}
+                  </span>
+                  {(unreadMap[makeChatKey(residentSession.connectionId, residentSession.key)] ?? 0) > 0 && (
+                    <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
+                      {formatUnread(unreadMap[makeChatKey(residentSession.connectionId, residentSession.key)] ?? 0)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="border-t border-border mx-2" />
+            </>
+          )}
+
           {bridgeList.length > 1 && (
             <>
               <div className="px-3 pt-2.5 pb-1">
@@ -344,27 +441,29 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
             </>
           )}
 
-          {sessions.length > 0 && (
+          {listSessions.length > 0 && (
             <>
-              <div className="px-3 pt-2 pb-1">
-                <p className="text-xs font-semibold text-gray-700 mb-1">当前会话</p>
-                <div className={`flex items-center gap-2 ${mPad} bg-accent/10 rounded-lg group/active border border-accent/20`}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-                  <span className={`${mFont} text-accent font-medium truncate flex-1`}>{activeLabel}</span>
-                  <span className="text-xs text-accent/90 flex-shrink-0">{activeStatusLabel}</span>
-                  {unreadFor(activeKey) > 0 && (
-                    <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
-                      {formatUnread(unreadFor(activeKey))}
-                    </span>
-                  )}
-                  {currentSession && confirmDeleteId !== activeKey && (
-                    <span className="text-xs text-gray-600 flex-shrink-0 group-hover/active:hidden">
-                      {formatTime(lastMessageOrCreatedAt(activeConnectionId, currentSession, messagesByChat))}
-                    </span>
-                  )}
-                  {sessions.length > 1 && <DeleteBtn sid={activeKey} className="group-hover/active:flex" />}
+              {currentSession && (
+                <div className="px-3 pt-2 pb-1">
+                  <p className="text-xs font-semibold text-gray-700 mb-1">当前会话</p>
+                  <div className={`flex items-center gap-2 ${mPad} bg-accent/10 rounded-lg group/active border border-accent/20`}>
+                    <span className={`${isActivePhaseCss(activeConnectionId, activeKey, taskStateByConnection, true).dot} flex-shrink-0`} />
+                    <span className={`${mFont} text-accent font-medium truncate flex-1`}>{activeLabel}</span>
+                    <span className="text-xs text-accent/90 flex-shrink-0">{activeStatusLabel}</span>
+                    {unreadFor(activeKey) > 0 && (
+                      <span className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-semibold leading-none flex-shrink-0">
+                        {formatUnread(unreadFor(activeKey))}
+                      </span>
+                    )}
+                    {confirmDeleteId !== activeKey && (
+                      <span className="text-xs text-gray-600 flex-shrink-0 group-hover/active:hidden">
+                        {formatTime(lastMessageOrCreatedAt(activeConnectionId, currentSession, messagesByChat))}
+                      </span>
+                    )}
+                    {listSessions.length > 1 && <DeleteBtn sid={activeKey} className="group-hover/active:flex" />}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {inactive.length > 0 && (
                 <div className="px-3 pb-1">
@@ -386,7 +485,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                         }}
                         className={`w-full flex items-center gap-2 ${mPad} rounded-lg hover:bg-surface-tertiary transition-colors text-left group/item cursor-pointer`}
                       >
-                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${phaseCss.dot}`} />
+                        <span className={`${phaseCss.dot} flex-shrink-0`} />
                         <span className={`${mFont} text-gray-800 truncate flex-1`}>{sessionLabelText(sess)}</span>
                         <span className={`text-xs flex-shrink-0 ${phaseCss.text}`}>
                           {phaseForSession(activeConnectionId, sess.key, taskStateByConnection)}

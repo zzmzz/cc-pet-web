@@ -11,6 +11,17 @@ export interface ChatMessage {
   preview?: PreviewBlock;
   card?: ChatCard;
   audio?: ChatAudio;
+  seq?: number;
+  /** True while an attached file is still being uploaded over the WebSocket. */
+  uploading?: boolean;
+  /** Upload progress 0-100 while `uploading` is true. */
+  uploadProgress?: number;
+  /**
+   * Set when an attachment upload failed. The bubble stays in the transcript so the
+   * user can see *which* file was lost — a silently dropped message is
+   * indistinguishable from a lost session.
+   */
+  uploadError?: string;
 }
 
 export interface ChatCard {

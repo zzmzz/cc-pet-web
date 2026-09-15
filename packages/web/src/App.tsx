@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
-import { setPlatform, type PlatformAPI } from "./lib/platform.js";
+import { setPlatform, getPlatform, type PlatformAPI } from "./lib/platform.js";
 import { createWebAdapter } from "./lib/web-adapter.js";
 import { Layout } from "./components/Layout.js";
 import { ChatWindow } from "./components/ChatWindow.js";
@@ -14,6 +14,8 @@ import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
+import { revealTypewriter, flushTypewriter } from "./lib/typewriter.js";
+import { isToolCallContent, isToolResultContent, looksLikeToolProgress } from "./lib/tool-call.js";
 import {
   checkNotificationSupport,
   getNotificationPermission,
@@ -24,6 +26,24 @@ import {
 } from "./lib/notification.js";
 
 const PET_HAPPY_AFTER_CONNECT_MS = 5000;
+
+/**
+ * Events that put content in the chat. When one of these arrives without a
+ * sessionKey we have to guess its session, which is the only way a previous
+ * conversation can surface inside another one — so those get a console
+ * breadcrumb. Typing/error frames are routinely keyless and stay silent.
+ */
+const CONTENT_BEARING_WS_EVENTS = new Set<string>([
+  WS_EVENTS.BRIDGE_MESSAGE,
+  WS_EVENTS.BRIDGE_STREAM_DELTA,
+  WS_EVENTS.BRIDGE_STREAM_DONE,
+  WS_EVENTS.BRIDGE_BUTTONS,
+  WS_EVENTS.BRIDGE_FILE_RECEIVED,
+  WS_EVENTS.BRIDGE_CARD,
+  WS_EVENTS.BRIDGE_AUDIO,
+  WS_EVENTS.BRIDGE_PREVIEW_START,
+  WS_EVENTS.BRIDGE_PREVIEW_UPDATE,
+]);
 
 export default function App() {
   useVisualViewport();
@@ -47,14 +67,19 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token: storedToken }),
         });
-        if (!cancelled && res.ok) {
+        // Only an authoritative rejection invalidates the token. A 5xx says the
+        // server is broken, not that the credential is — dropping it there logs
+        // the user out for something they cannot have caused.
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem("cc-pet-token");
+        } else if (!cancelled) {
           setAuthToken(storedToken);
         }
-        if (!res.ok) {
-          localStorage.removeItem("cc-pet-token");
-        }
       } catch {
-        localStorage.removeItem("cc-pet-token");
+        // Unreachable server: the shell is precached so this is the normal
+        // offline cold start. Trust the stored token and let the websocket
+        // layer reconnect; re-verification happens on the next boot online.
+        if (!cancelled) setAuthToken(storedToken);
       } finally {
         if (!cancelled) setAuthBooting(false);
       }
@@ -98,7 +123,6 @@ export default function App() {
     let happyAfterConnectTimer: ReturnType<typeof setTimeout> | null = null;
     let unsub: (() => void) | null = null;
     const typingActiveByChatKey: Record<string, boolean> = {};
-    const stickySessionByConnection: Record<string, string> = {};
     let activeAdapter: PlatformAPI | null = null;
     let isPageHidden = typeof document !== "undefined" && document.hidden;
     let permissionRequestTimer: ReturnType<typeof setTimeout> | null = null;
@@ -112,8 +136,15 @@ export default function App() {
         };
 
         if (type === WS_EVENTS.BRIDGE_MANIFEST) {
-          const bridges = (payload as { bridges?: { id: string; name: string }[] }).bridges ?? [];
-          const connections = bridges.map((b) => ({ id: b.id, name: b.name, connected: false }));
+          const bridges =
+            (payload as { bridges?: { id: string; name: string; attachmentStaging?: boolean }[] })
+              .bridges ?? [];
+          const connections = bridges.map((b) => ({
+            id: b.id,
+            name: b.name,
+            connected: false,
+            attachmentStaging: b.attachmentStaging === true,
+          }));
           useConnectionStore.getState().setConnections(connections);
           void (async () => {
             try {
@@ -138,12 +169,33 @@ export default function App() {
         let resolvedSessionKey =
           connectionId ? (sessionKey ?? useSessionStore.getState().activeSessionKey[connectionId] ?? "default") : undefined;
         if (connectionId && resolvedSessionKey && (routeSource === "payload" || routeSource === "reply_ctx")) {
-          stickySessionByConnection[connectionId] = resolvedSessionKey;
+          useSessionStore.getState().noteStickySession(connectionId, resolvedSessionKey);
         }
-        if (connectionId && (routeSource === "active" || routeSource === "known" || routeSource === "fallback")) {
-          const sticky = stickySessionByConnection[connectionId];
+        const guessedFromActiveSession =
+          routeSource === "active" || routeSource === "known" || routeSource === "fallback";
+        // True when nothing but the active-session pointer identifies the target,
+        // i.e. we are guessing. Refined below once sticky/typing are consulted.
+        let sessionIsGuess = guessedFromActiveSession;
+        if (connectionId && guessedFromActiveSession) {
+          // A keyless reply belongs to the session that made the request, not to
+          // whatever session is currently active — otherwise a late reply leaks
+          // into a freshly-created/switched session.
+          const sticky = useSessionStore.getState().stickySessionByConnection[connectionId];
           if (sticky) {
             resolvedSessionKey = sticky;
+            sessionIsGuess = false;
+          }
+          // The server log sees the missing session_key but not where the event
+          // landed. Leave a breadcrumb so a reported leak can be traced without
+          // needing a live repro.
+          if (CONTENT_BEARING_WS_EVENTS.has(type)) {
+            console.warn("[cc-pet] content event without sessionKey routed by fallback", {
+              type,
+              connectionId,
+              routeSource,
+              sticky: sticky ?? null,
+              resolvedSessionKey,
+            });
           }
         }
         const findTypingActiveSession = (cid: string): string | undefined => {
@@ -155,10 +207,11 @@ export default function App() {
           }
           return undefined;
         };
-        if (connectionId && (routeSource === "active" || routeSource === "known" || routeSource === "fallback")) {
+        if (connectionId && guessedFromActiveSession) {
           const typingSession = findTypingActiveSession(connectionId);
           if (typingSession) {
             resolvedSessionKey = typingSession;
+            sessionIsGuess = false;
           }
         }
         const chatKey = connectionId && resolvedSessionKey ? makeChatKey(connectionId, resolvedSessionKey) : "";
@@ -209,7 +262,7 @@ export default function App() {
 
         const trySendNotification = (cid: string, sKey: string): void => {
           if (!cid || !sKey) return;
-
+          if (useSessionStore.getState().residentChatKeys.has(makeChatKey(cid, sKey))) return; // resident → Web Push handles it
           if (shouldShowNotification(cid, sKey, isPageHidden)) {
             const ck = makeChatKey(cid, sKey);
             const content = getLastMessageContent(ck);
@@ -239,28 +292,73 @@ export default function App() {
               happyAfterConnectTimer = null;
             }
             break;
-          case WS_EVENTS.BRIDGE_MESSAGE:
-            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              useSessionStore.getState().incrementUnread(chatKey);
-            }
-            setTaskPhase("working");
-            useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
-              role: "assistant",
+          case WS_EVENTS.BRIDGE_MESSAGE: {
+            const content = payload.content ?? "";
+            // Adopt the server's id and seq: the id keeps a replayed message from
+            // being stored twice, and the seq is what advances the sync watermark.
+            const finalMessage = {
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
+              role: "assistant" as const,
               content: payload.content,
               timestamp: Date.now(),
               connectionId,
               sessionKey: resolvedSessionKey,
-            });
-            const isCompleted = !isTypingActiveForSession();
-            setTaskPhase(isCompleted ? "completed" : "working");
-            if (isCompleted && connectionId && resolvedSessionKey) {
-              trySendNotification(connectionId, resolvedSessionKey);
+            };
+            // Tool-call / tool-result messages are mid-turn progress. They render
+            // live via ActivityBlock but must NOT drive session state: no unread
+            // bump, no completion check, no notification. Before tool progress was
+            // delivered as individual replies, it flowed through a (discarded)
+            // preview card and never reached this handler, so completion was only
+            // ever decided by the final text reply. Running the completion check
+            // on every tool step (as separate replies) is what made in-flight
+            // turns flip to "completed" mid-way. Keep the session "working".
+            const isStructured = isToolCallContent(content) || isToolResultContent(content);
+            if (isStructured || content.length === 0) {
+              flushTypewriter(chatKey); // commit any in-flight text reveal first, preserving order
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              setTaskPhase("working");
+              break;
             }
-            if (!connectionId || !resolvedSessionKey || !shouldMarkUnread(connectionId, resolvedSessionKey)) {
-              setPetStateSafely("idle");
+            // Plain text reply: this is what decides unread + completion.
+            if (connectionId && resolvedSessionKey && shouldMarkUnread(connectionId, resolvedSessionKey)) {
+              useSessionStore.getState().incrementUnread(chatKey);
+            }
+            setTaskPhase("working");
+            const commit = () => {
+              useMessageStore.getState().clearStreaming(chatKey);
+              useMessageStore.getState().addMessage(chatKey, finalMessage);
+              const isCompleted = !isTypingActiveForSession();
+              setTaskPhase(isCompleted ? "completed" : "working");
+              if (isCompleted && connectionId && resolvedSessionKey) {
+                trySendNotification(connectionId, resolvedSessionKey);
+              }
+              if (
+                !connectionId ||
+                !resolvedSessionKey ||
+                !shouldMarkUnread(connectionId, resolvedSessionKey)
+              ) {
+                setPetStateSafely("idle");
+              } else {
+                // Background session with fresh unread: keep the pet "talking".
+                // Runs after setTaskPhase so the session is no longer processing
+                // and won't be forced to "thinking" by setPetStateSafely.
+                setPetStateSafely("talking");
+              }
+            };
+            {
+              // Reveal the (already-complete) reply with a typewriter effect. The
+              // committed content is identical; onDone runs synchronously when the
+              // reveal is disabled or prefers-reduced-motion (legacy behavior).
+              setPetStateSafely("talking");
+              revealTypewriter(chatKey, content, {
+                onFrame: (text) => useMessageStore.getState().setStreaming(chatKey, text),
+                onDone: commit,
+              });
             }
             break;
+          }
           case WS_EVENTS.BRIDGE_STREAM_DELTA: {
             const firstChunk =
               connectionId && resolvedSessionKey
@@ -280,7 +378,7 @@ export default function App() {
             break;
           }
           case WS_EVENTS.BRIDGE_STREAM_DONE:
-            useMessageStore.getState().finalizeStream(chatKey, payload.fullText);
+            useMessageStore.getState().finalizeStream(chatKey, payload.fullText, payload.msgId, payload.seq);
             const isStreamCompleted = !isTypingActiveForSession();
             setTaskPhase(isStreamCompleted ? "completed" : "working");
             if (isStreamCompleted && connectionId && resolvedSessionKey) {
@@ -297,7 +395,7 @@ export default function App() {
               useSessionStore.getState().incrementUnread(chatKey);
             }
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: crypto.randomUUID(),
               role: "assistant",
               content: payload.content ?? "",
               timestamp: Date.now(),
@@ -319,15 +417,16 @@ export default function App() {
               setPetStateSafely("happy");
             }
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: payload.name ?? "",
               timestamp: Date.now(),
               connectionId,
               sessionKey: resolvedSessionKey,
               files: [
-                {
-                  id: `recv-${Date.now()}`,
+                payload.file ?? {
+                  id: `recv-${crypto.randomUUID()}`,
                   name: payload.name ?? "收到文件",
                   size: 0,
                 },
@@ -361,7 +460,8 @@ export default function App() {
             }
             setTaskPhase("working");
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: payload.card?.header?.title ?? "",
               timestamp: Date.now(),
@@ -386,7 +486,8 @@ export default function App() {
             }
             setTaskPhase("working");
             useMessageStore.getState().addMessage(chatKey, {
-              id: `msg-${Date.now()}`,
+              id: payload.msgId ?? `msg-${crypto.randomUUID()}`,
+              seq: payload.seq,
               role: "assistant",
               content: "[音频消息]",
               timestamp: Date.now(),
@@ -405,16 +506,31 @@ export default function App() {
               setPetStateSafely("idle");
             }
             break;
+          // cc-connect streams a live-updating progress card (tool steps) via the
+          // preview channel. We render only progress/tool-like content as a live
+          // preview bubble (keyed per session) so tool activity is visible; text
+          // previews are ignored because the final reply delivers the text (and
+          // the typewriter reveals it), which would otherwise double up.
           case WS_EVENTS.BRIDGE_PREVIEW_START:
-            if (chatKey && payload.previewId) {
+          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
+            // cc-connect keys progress cards by ref_id/preview_handle, so these
+            // frames can arrive with no session at all. Unlike a reply, a preview
+            // card is pure progress that the final (always-keyed) reply repeats —
+            // so when the session is only a guess, drop it instead of painting a
+            // previous conversation's tool output into an unrelated session.
+            if (sessionIsGuess) {
+              console.warn("[cc-pet] dropped preview with unattributable session", {
+                type,
+                connectionId,
+                previewId: payload.previewId,
+              });
+              break;
+            }
+            if (chatKey && payload.previewId && looksLikeToolProgress(payload.content)) {
+              // startPreview upserts: creates on first sight, replaces content thereafter.
               useMessageStore.getState().startPreview(chatKey, payload.previewId, payload.content ?? "");
               setTaskPhase("working");
               setPetStateSafely("talking");
-            }
-            break;
-          case WS_EVENTS.BRIDGE_PREVIEW_UPDATE:
-            if (payload.previewId) {
-              useMessageStore.getState().updatePreview(payload.previewId, payload.content ?? "");
             }
             break;
           case WS_EVENTS.BRIDGE_PREVIEW_DELETE:
@@ -427,6 +543,29 @@ export default function App() {
             if (!cid) break;
             const cmds = normalizeBridgeSlashCommands(payload.commands as unknown[]);
             useCommandStore.getState().setAgentCommands(cid, cmds);
+            break;
+          }
+          case WS_EVENTS.RESIDENT_UNREAD: {
+            const cid = (payload as { connectionId?: string }).connectionId;
+            const sKey = (payload as { sessionKey?: string }).sessionKey;
+            const count = (payload as { unreadCount?: number }).unreadCount ?? 0;
+            if (!cid || !sKey) break;
+            const ck = makeChatKey(cid, sKey);
+            const active = useSessionStore.getState().activeSessionKey[cid] ?? "default";
+            // If the user is currently viewing it, keep it read (and tell the server).
+            if (
+              active === sKey &&
+              useConnectionStore.getState().activeConnectionId === cid &&
+              (typeof document === "undefined" || !document.hidden)
+            ) {
+              void getPlatform()
+                .fetchApi(`/api/sessions/${encodeURIComponent(cid)}/${encodeURIComponent(sKey)}/read`, { method: "POST" })
+                .catch(() => {});
+              useSessionStore.getState().setUnread(ck, 0);
+            } else {
+              useSessionStore.getState().setUnread(ck, count);
+              setPetStateSafely("talking");
+            }
             break;
           }
           case WS_EVENTS.BRIDGE_ERROR:

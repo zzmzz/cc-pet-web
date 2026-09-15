@@ -6,14 +6,45 @@ interface MessageState {
   streamingContent: Record<string, string>;
   /** Live preview messages keyed by previewId → { chatKey, content } */
   previewMessages: Record<string, { chatKey: string; content: string }>;
+  /** Tracks which chatKeys have had their history hydrated from the server. */
+  loadedChatKeys: Set<string>;
+  /** Per-chatKey highest server seq seen; used as the sync cursor for backfill. */
+  watermarks: Record<string, number>;
 
   addMessage: (chatKey: string, msg: ChatMessage) => void;
+  /** Shallow-merge a patch into an existing message by id (no-op if absent). */
+  patchMessage: (chatKey: string, id: string, patch: Partial<ChatMessage>) => void;
+  /**
+   * Re-key an existing message.
+   *
+   * A staged attachment's bubble is created before its outbox entry exists — the file
+   * must finish uploading before there is anything to enqueue — so the bubble starts
+   * under a local id and adopts the outbox clientMsgId afterwards. The outbox renders
+   * pending/failed/retry by matching the bubble id, so without this the delivery state
+   * of a staged attachment would never show up.
+   */
+  reidentifyMessage: (chatKey: string, fromId: string, toId: string) => void;
   setMessages: (chatKey: string, msgs: ChatMessage[]) => void;
   appendStreamDelta: (chatKey: string, delta: string) => void;
-  finalizeStream: (chatKey: string, fullText: string) => void;
+  /** Set the live streaming text for a chat to an absolute value (used by the typewriter reveal). */
+  setStreaming: (chatKey: string, text: string) => void;
+  /** Drop the live streaming text for a chat without committing it to the message list. */
+  clearStreaming: (chatKey: string) => void;
+  /** Commit the streamed text as a message; msgId/seq adopt the server's identity + cursor. */
+  finalizeStream: (chatKey: string, fullText: string, msgId?: string, seq?: number) => void;
   clearMessages: (chatKey: string) => void;
+  /** Advance the watermark for chatKey to seq (never moves backwards). */
+  setWatermark: (chatKey: string, seq: number) => void;
+  /** Return the highest seq seen for chatKey, or 0 if unknown. */
+  getWatermark: (chatKey: string) => number;
+  /** Merge incoming messages into the store, deduping by id and re-sorting. */
+  mergeMessages: (chatKey: string, incoming: ChatMessage[]) => void;
   /** Remove chatKey from message + streaming maps (e.g. session delete). */
   purgeChat: (chatKey: string) => void;
+  /** Mark a chatKey as loaded so future ensureChatLoaded calls become no-ops. */
+  markChatLoaded: (chatKey: string) => void;
+  /** True if the chatKey has been hydrated from the server in this session. */
+  isChatLoaded: (chatKey: string) => boolean;
   /** Start a live preview message (preview_start). */
   startPreview: (chatKey: string, previewId: string, content: string) => void;
   /** Update a live preview message (update_message). */
@@ -22,10 +53,12 @@ interface MessageState {
   deletePreview: (previewId: string) => void;
 }
 
-export const useMessageStore = create<MessageState>((set) => ({
+export const useMessageStore = create<MessageState>((set, get) => ({
   messagesByChat: {},
   streamingContent: {},
   previewMessages: {},
+  loadedChatKeys: new Set<string>(),
+  watermarks: {},
 
   addMessage: (chatKey, msg) =>
     set((s) => ({
@@ -33,7 +66,37 @@ export const useMessageStore = create<MessageState>((set) => ({
         ...s.messagesByChat,
         [chatKey]: [...(s.messagesByChat[chatKey] ?? []), msg],
       },
+      ...(typeof msg.seq === "number"
+        ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, msg.seq) } }
+        : {}),
     })),
+  reidentifyMessage: (chatKey, fromId, toId) =>
+    set((s) => {
+      const list = s.messagesByChat[chatKey];
+      if (!list) return s;
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.id !== fromId) return m;
+        changed = true;
+        return { ...m, id: toId };
+      });
+      if (!changed) return s;
+      return { messagesByChat: { ...s.messagesByChat, [chatKey]: next } };
+    }),
+
+  patchMessage: (chatKey, id, patch) =>
+    set((s) => {
+      const list = s.messagesByChat[chatKey];
+      if (!list) return s;
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.id !== id) return m;
+        changed = true;
+        return { ...m, ...patch };
+      });
+      if (!changed) return s;
+      return { messagesByChat: { ...s.messagesByChat, [chatKey]: next } };
+    }),
   setMessages: (chatKey, msgs) =>
     set((s) => ({ messagesByChat: { ...s.messagesByChat, [chatKey]: msgs } })),
   appendStreamDelta: (chatKey, delta) =>
@@ -43,7 +106,15 @@ export const useMessageStore = create<MessageState>((set) => ({
         [chatKey]: (s.streamingContent[chatKey] ?? "") + delta,
       },
     })),
-  finalizeStream: (chatKey, fullText) =>
+  setStreaming: (chatKey, text) =>
+    set((s) => ({ streamingContent: { ...s.streamingContent, [chatKey]: text } })),
+  clearStreaming: (chatKey) =>
+    set((s) => {
+      if (!(chatKey in s.streamingContent)) return s;
+      const { [chatKey]: _drop, ...rest } = s.streamingContent;
+      return { streamingContent: rest };
+    }),
+  finalizeStream: (chatKey, fullText, msgId?, seq?) =>
     set((s) => {
       const { [chatKey]: _, ...rest } = s.streamingContent;
       return {
@@ -52,9 +123,12 @@ export const useMessageStore = create<MessageState>((set) => ({
           ...s.messagesByChat,
           [chatKey]: [
             ...(s.messagesByChat[chatKey] ?? []),
-            { id: `msg-${Date.now()}`, role: "assistant" as const, content: fullText, timestamp: Date.now() },
+            { id: msgId ?? `msg-${crypto.randomUUID()}`, seq, role: "assistant" as const, content: fullText, timestamp: Date.now() },
           ],
         },
+        ...(typeof seq === "number"
+          ? { watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, seq) } }
+          : {}),
       };
     }),
   clearMessages: (chatKey) =>
@@ -68,8 +142,21 @@ export const useMessageStore = create<MessageState>((set) => ({
       for (const [pid, pv] of Object.entries(previewMessages)) {
         if (pv.chatKey === chatKey) delete previewMessages[pid];
       }
-      return { messagesByChat, streamingContent, previewMessages };
+      const loadedChatKeys = new Set(s.loadedChatKeys);
+      loadedChatKeys.delete(chatKey);
+      // Drop the watermark too, or the reconnect backfill keeps polling a chat
+      // that no longer exists for the life of the page.
+      const { [chatKey]: _w, ...watermarks } = s.watermarks;
+      return { messagesByChat, streamingContent, previewMessages, loadedChatKeys, watermarks };
     }),
+  markChatLoaded: (chatKey) =>
+    set((s) => {
+      if (s.loadedChatKeys.has(chatKey)) return s;
+      const loadedChatKeys = new Set(s.loadedChatKeys);
+      loadedChatKeys.add(chatKey);
+      return { loadedChatKeys };
+    }),
+  isChatLoaded: (chatKey) => get().loadedChatKeys.has(chatKey),
   startPreview: (chatKey, previewId, content) =>
     set((s) => ({
       previewMessages: { ...s.previewMessages, [previewId]: { chatKey, content } },
@@ -107,4 +194,25 @@ export const useMessageStore = create<MessageState>((set) => ({
       }
       return { previewMessages };
     }),
+
+  setWatermark: (chatKey, seq) =>
+    set((s) => ({
+      watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, seq) },
+    })),
+
+  getWatermark: (chatKey) => get().watermarks[chatKey] ?? 0,
+
+  mergeMessages: (chatKey, incoming) => {
+    const existing = get().messagesByChat[chatKey] ?? [];
+    const byId = new Map(existing.map((m) => [m.id, m]));
+    for (const m of incoming) byId.set(m.id, m);
+    const merged = [...byId.values()].sort(
+      (a, b) => a.timestamp - b.timestamp || (a.seq ?? 0) - (b.seq ?? 0)
+    );
+    const maxSeq = merged.reduce((acc, m) => Math.max(acc, m.seq ?? 0), 0);
+    set((s) => ({
+      messagesByChat: { ...s.messagesByChat, [chatKey]: merged },
+      watermarks: { ...s.watermarks, [chatKey]: Math.max(s.watermarks[chatKey] ?? 0, maxSeq) },
+    }));
+  },
 }));

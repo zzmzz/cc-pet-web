@@ -6,9 +6,18 @@ import { useConnectionStore } from "../lib/store/connection.js";
 import { useUIStore } from "../lib/store/ui.js";
 import {
   checkNotificationSupport,
+  getNotificationPermission,
   getNotificationSettings,
+  requestNotificationPermission,
   updateNotificationSettings,
 } from "../lib/notification.js";
+import {
+  getVapidPublicKey,
+  isPushSubscribed,
+  isPushSupported,
+  subscribePush,
+  unsubscribePush,
+} from "../lib/push.js";
 import { AIVolumeDisplay } from "./AIVolumeDisplay.js";
 
 export function SettingsPanel() {
@@ -23,12 +32,17 @@ export function SettingsPanel() {
   const [tokenSaving, setTokenSaving] = useState(false);
   const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [activeTab, setActiveTab] = useState("general");
+  const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushAvailable, setPushAvailable] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setTokenDraft(localStorage.getItem(CC_PET_TOKEN_KEY)?.trim() ?? "");
     setTokenError(null);
     setNotifyEnabled(getNotificationSettings().enabled);
+    void getVapidPublicKey().then((k) => setPushAvailable(!!k));
+    if (isPushSupported()) void isPushSubscribed().then(setPushOn);
   }, [open]);
 
   const close = useCallback(() => {
@@ -94,6 +108,28 @@ export function SettingsPanel() {
     localStorage.removeItem(CC_PET_TOKEN_KEY);
     window.location.reload();
   }, []);
+
+  const togglePush = useCallback(async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      if (!pushOn) {
+        if (getNotificationPermission() !== "granted") {
+          const perm = await requestNotificationPermission();
+          if (perm !== "granted") return;
+        }
+        const ok = await subscribePush();
+        setPushOn(ok);
+      } else {
+        await unsubscribePush();
+        setPushOn(false);
+      }
+    } catch (err) {
+      console.error("toggle push failed:", err);
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushBusy, pushOn]);
 
   if (!open) return null;
 
@@ -195,6 +231,21 @@ export function SettingsPanel() {
                       }}
                     />
                     任务完成时在后台显示浏览器通知
+                  </label>
+                </section>
+              ) : null}
+
+              {isPushSupported() && pushAvailable ? (
+                <section className="mb-5 border-b border-border pb-5">
+                  <h3 className="mb-2 text-sm font-medium text-text-primary">后台推送</h3>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={pushOn}
+                      disabled={pushBusy}
+                      onChange={() => void togglePush()}
+                    />
+                    关闭页面也能收到消息提醒（系统推送）
                   </label>
                 </section>
               ) : null}

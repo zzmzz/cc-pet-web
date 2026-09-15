@@ -1,14 +1,18 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { ConfigStore } from "../storage/config.js";
-import { WorkspaceResolutionError, resolveConnectionWorkspace } from "../workspace/resolver.js";
+import { WorkspaceResolutionError, resolveConnectionWorkspace, resolveWorkspacePath } from "../workspace/resolver.js";
 import {
+  FILE_UPLOAD_MAX_BYTES,
   WorkspaceFileError,
   createItem,
   deleteItem,
   listDirectory,
   readFilePreview,
   renameItem,
+  uploadFile,
   writeFileContent,
 } from "../workspace/file-service.js";
 import type { WorkspaceMeta } from "../workspace/file-service.js";
@@ -67,6 +71,44 @@ export function registerWorkspaceRoutes(app: FastifyInstance, configStore: Pick<
     }
   });
 
+  app.get<{
+    Params: { connectionId: string };
+    Querystring: { path?: string };
+  }>("/api/workspaces/:connectionId/file/download", async (req, reply) => {
+    try {
+      if (!req.query.path) {
+        return reply.code(400).send({
+          error: "WORKSPACE_PATH_INVALID",
+          message: "File path is required",
+        });
+      }
+      const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
+      const resolved = await resolveWorkspacePath(workspace, req.query.path);
+      const stats = await stat(resolved.absolutePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          throw new WorkspaceFileError("WORKSPACE_FILE_NOT_FOUND", "File was not found", 404);
+        }
+        throw error;
+      });
+      if (!stats.isFile()) {
+        throw new WorkspaceFileError("WORKSPACE_PATH_NOT_FILE", "Workspace path is not a file", 400);
+      }
+
+      const filename = path.basename(resolved.relativePath);
+      const asciiFallback = filename.replace(/[^\x20-\x7E]+/g, "_").replace(/["\\]/g, "_");
+      const encoded = encodeURIComponent(filename);
+      reply.header("Content-Type", "application/octet-stream");
+      reply.header("Content-Length", String(stats.size));
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`,
+      );
+      return reply.send(createReadStream(resolved.absolutePath));
+    } catch (error) {
+      return sendWorkspaceError(reply, error);
+    }
+  });
+
   app.put<{
     Params: { connectionId: string };
     Body: { path?: unknown; content?: unknown; etag?: unknown };
@@ -85,6 +127,60 @@ export function registerWorkspaceRoutes(app: FastifyInstance, configStore: Pick<
       return sendWorkspaceError(reply, error);
     }
   });
+
+  app.post<{ Params: { connectionId: string } }>(
+    "/api/workspaces/:connectionId/items/upload",
+    async (req, reply) => {
+      try {
+        if (!req.isMultipart()) {
+          return reply.code(400).send({
+            error: "WORKSPACE_CONTENT_INVALID",
+            message: "需要 multipart/form-data 请求体。",
+          });
+        }
+        const workspace = await resolveConnectionWorkspace(req, req.params.connectionId, configStore);
+
+        let parentPath = "";
+        let filename: string | undefined;
+        let buffer: Buffer | undefined;
+        const limits = { fileSize: FILE_UPLOAD_MAX_BYTES + 1 };
+        const parts = req.parts({ limits });
+        for await (const part of parts) {
+          if (part.type === "file") {
+            if (buffer) {
+              return reply.code(400).send({
+                error: "WORKSPACE_CONTENT_INVALID",
+                message: "一次只允许上传一个文件。",
+              });
+            }
+            buffer = await part.toBuffer();
+            filename = typeof part.filename === "string" ? part.filename : undefined;
+            if (part.file.truncated) {
+              return reply.code(400).send({
+                error: "WORKSPACE_FILE_TOO_LARGE",
+                message: `文件过大，单个上传不超过 ${Math.floor(FILE_UPLOAD_MAX_BYTES / (1024 * 1024))} MB。`,
+              });
+            }
+          } else if (part.fieldname === "parentPath" && typeof part.value === "string") {
+            parentPath = part.value;
+          } else if (part.fieldname === "name" && typeof part.value === "string") {
+            filename = part.value;
+          }
+        }
+
+        if (!buffer) {
+          return reply.code(400).send({
+            error: "WORKSPACE_CONTENT_INVALID",
+            message: "未在请求中找到上传文件。",
+          });
+        }
+        const entry = await uploadFile(workspace, parentPath, filename, buffer);
+        return { ok: true, entry };
+      } catch (error) {
+        return sendWorkspaceError(reply, error);
+      }
+    },
+  );
 
   app.post<{
     Params: { connectionId: string };

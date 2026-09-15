@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, BridgeConfig, TokenConfig, TokenPetImages } from "@cc-pet/shared";
+import type { AppConfig, BridgeConfig, TokenConfig, TokenPetImages, ResidentSessionConfig, WebPushConfig } from "@cc-pet/shared";
 
 const DEFAULT_CONFIG: AppConfig = {
   bridges: [],
@@ -25,6 +25,10 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
     typeof x.workspacePath === "string" && x.workspacePath.trim().length > 0
       ? x.workspacePath.trim()
       : undefined;
+  const workspaceAgentPath =
+    typeof x.workspaceAgentPath === "string" && x.workspaceAgentPath.trim().length > 0
+      ? x.workspaceAgentPath.trim()
+      : undefined;
   return {
     id: x.id,
     name: typeof x.name === "string" ? x.name : x.id,
@@ -33,7 +37,27 @@ function normalizeBridge(b: unknown): BridgeConfig | null {
     token: typeof x.token === "string" ? x.token : "",
     enabled: typeof x.enabled === "boolean" ? x.enabled : true,
     workspacePath,
+    workspaceAgentPath,
   };
+}
+
+function normalizeResidentSession(v: unknown): ResidentSessionConfig | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const x = v as Record<string, unknown>;
+  if (typeof x.bridgeId !== "string" || x.bridgeId.trim().length === 0) return undefined;
+  if (typeof x.key !== "string" || x.key.trim().length === 0) return undefined;
+  const label = typeof x.label === "string" && x.label.trim().length > 0 ? x.label.trim() : undefined;
+  return { bridgeId: x.bridgeId.trim(), key: x.key.trim(), label };
+}
+
+function normalizeWebPush(v: unknown): WebPushConfig | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const x = v as Record<string, unknown>;
+  const pub = typeof x.vapidPublicKey === "string" ? x.vapidPublicKey.trim() : "";
+  const priv = typeof x.vapidPrivateKey === "string" ? x.vapidPrivateKey.trim() : "";
+  const subject = typeof x.subject === "string" ? x.subject.trim() : "";
+  if (!pub || !priv || !subject) return undefined;
+  return { vapidPublicKey: pub, vapidPrivateKey: priv, subject };
 }
 
 function normalizeToken(t: unknown): TokenConfig | null {
@@ -65,6 +89,7 @@ function normalizeToken(t: unknown): TokenConfig | null {
     name: typeof x.name === "string" && x.name.trim().length > 0 ? x.name : "token",
     bridgeIds,
     petImages,
+    residentSession: normalizeResidentSession(x.residentSession),
   };
 }
 
@@ -91,7 +116,8 @@ function normalizeAppConfig(raw: unknown): AppConfig {
       ? { ...DEFAULT_CONFIG.server, ...(o.server as AppConfig["server"]) }
       : { ...DEFAULT_CONFIG.server };
 
-  return { bridges, tokens, pet, server };
+  const webPush = normalizeWebPush(o.webPush);
+  return { bridges, tokens, pet, server, webPush };
 }
 
 export interface ConfigStoreOptions {

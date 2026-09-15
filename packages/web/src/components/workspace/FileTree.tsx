@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { MouseEvent, ReactNode } from "react";
+import { useRef, useState } from "react";
+import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import { useWorkspaceStore } from "../../lib/store/workspace.js";
 import type { FileEntry } from "../../lib/store/workspace.js";
 
@@ -45,6 +45,15 @@ function FolderPlusIcon() {
     <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
       <path d="M2.5 5A2.5 2.5 0 015 2.5h3.2c.55 0 1.07.22 1.45.6l1.15 1.15H15A2.5 2.5 0 0117.5 6.75v7.75A2.5 2.5 0 0115 17H5a2.5 2.5 0 01-2.5-2.5V5z" />
       <path d="M10 8a.75.75 0 01.75.75V10H12a.75.75 0 010 1.5h-1.25v1.25a.75.75 0 01-1.5 0V11.5H8A.75.75 0 018 10h1.25V8.75A.75.75 0 0110 8z" />
+    </svg>
+  );
+}
+
+function UploadIcon() {
+  return (
+    <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 2.5a.75.75 0 01.53.22l3.5 3.5a.75.75 0 11-1.06 1.06L10.75 5.56v7.69a.75.75 0 01-1.5 0V5.56L7.03 7.28A.75.75 0 015.97 6.22l3.5-3.5A.75.75 0 0110 2.5z" />
+      <path d="M3.5 13.25a.75.75 0 011.5 0v2A1.25 1.25 0 006.25 16.5h7.5a1.25 1.25 0 001.25-1.25v-2a.75.75 0 011.5 0v2A2.75 2.75 0 0113.75 18h-7.5A2.75 2.75 0 013.5 15.25v-2z" />
     </svg>
   );
 }
@@ -106,12 +115,15 @@ export function FileTree({
   title?: string;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [uploadTargetPath, setUploadTargetPath] = useState<string | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const entries = useWorkspaceStore((s) => s.treeByConnection[connectionId]?.[path]);
   const loading = useWorkspaceStore((s) => s.loadingTreeByConnection[connectionId]?.[path] ?? false);
   const error = useWorkspaceStore((s) => s.treeErrorByConnection[connectionId]?.[path]);
   const loadTree = useWorkspaceStore((s) => s.loadTree);
   const openFile = useWorkspaceStore((s) => s.openFile);
   const createItem = useWorkspaceStore((s) => s.createItem);
+  const uploadFile = useWorkspaceStore((s) => s.uploadFile);
   const renameItem = useWorkspaceStore((s) => s.renameItem);
   const deleteItem = useWorkspaceStore((s) => s.deleteItem);
   const addCustomGitScope = useWorkspaceStore((s) => s.addCustomGitScope);
@@ -124,10 +136,27 @@ export function FileTree({
     await createItem(connectionId, basePath, name, kind);
   };
 
+  const handleUploadClick = (basePath: string) => {
+    setUploadTargetPath(basePath);
+    if (uploadInputRef.current) {
+      uploadInputRef.current.value = "";
+      uploadInputRef.current.click();
+    }
+  };
+
+  const handleUploadChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    const target = uploadTargetPath ?? "";
+    event.target.value = "";
+    setUploadTargetPath(null);
+    if (!file) return;
+    await uploadFile(connectionId, target, file);
+  };
+
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       {title && (
-        <div className="mb-2 flex items-center gap-1 rounded-md bg-surface px-2 py-1.5">
+        <div className="mb-2 flex min-w-0 items-center gap-1 rounded-md bg-surface px-2 py-1.5">
           <div className="min-w-0 flex-1 truncate text-xs font-medium text-text-primary">{title}</div>
           <ActionIconButton label="新建文件" onClick={() => void handleCreate(path, "file")}>
             <FilePlusIcon />
@@ -135,8 +164,19 @@ export function FileTree({
           <ActionIconButton label="新建目录" onClick={() => void handleCreate(path, "directory")}>
             <FolderPlusIcon />
           </ActionIconButton>
+          <ActionIconButton label="上传文件" onClick={() => handleUploadClick(path)}>
+            <UploadIcon />
+          </ActionIconButton>
         </div>
       )}
+      <input
+        ref={uploadInputRef}
+        type="file"
+        aria-hidden="true"
+        tabIndex={-1}
+        className="hidden"
+        onChange={(event) => void handleUploadChange(event)}
+      />
       {loading && !entries && <div className="px-2 py-2 text-xs text-text-secondary">目录加载中...</div>}
       {error && <div className="px-2 py-2 text-xs text-red-400">{error}</div>}
       {!loading && !error && (!entries || entries.length === 0) && (
@@ -184,8 +224,8 @@ export function FileTree({
         const renderCreateActions = entry.kind === "directory" && !disabled;
 
         return (
-          <div key={entry.path} data-file-entry>
-            <div className="group relative flex items-center rounded-md text-xs hover:bg-surface">
+          <div key={entry.path} data-file-entry className="min-w-0">
+            <div className="group flex min-w-0 items-center rounded-md text-xs hover:bg-surface">
               <button
                 type="button"
                 disabled={disabled}
@@ -202,7 +242,7 @@ export function FileTree({
                 </span>
                 <span className="min-w-0 flex-1 truncate">{entry.name}</span>
                 {gitLabel && (
-                  <span className="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[10px] text-accent">
+                  <span className="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[10px] text-accent group-hover:hidden">
                     {gitLabel}
                   </span>
                 )}
@@ -214,7 +254,7 @@ export function FileTree({
               </button>
               {!disabled && (
                 <div
-                  className="absolute inset-y-0 right-1 z-10 flex items-center gap-0.5 rounded-md bg-surface px-1 opacity-0 shadow-sm ring-1 ring-border/40 transition focus-within:opacity-100 group-hover:opacity-100"
+                  className="flex shrink-0 items-center gap-0 overflow-hidden opacity-0 transition-[max-width,opacity,padding] duration-150 ease-out max-w-0 group-hover:max-w-[200px] group-hover:opacity-100 group-hover:pr-1 group-focus-within:max-w-[200px] group-focus-within:opacity-100 group-focus-within:pr-1"
                 >
                   {renderCreateActions && (
                     <>
@@ -223,6 +263,9 @@ export function FileTree({
                       </ActionIconButton>
                       <ActionIconButton label="新建目录" onClick={() => void handleCreate(entry.path, "directory")}>
                         <FolderPlusIcon />
+                      </ActionIconButton>
+                      <ActionIconButton label="上传文件" onClick={() => handleUploadClick(entry.path)}>
+                        <UploadIcon />
                       </ActionIconButton>
                       <ActionIconButton
                         label="在 Git 面板查看"

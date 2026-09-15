@@ -1,7 +1,11 @@
-import { WS_EVENTS } from "@cc-pet/shared";
+import { WS_EVENTS, makeChatKey } from "@cc-pet/shared";
+import type { ChatMessage } from "@cc-pet/shared";
 import type { PlatformAPI } from "./platform.js";
 import { resolveIncomingSessionRouting } from "./sessionRouting.js";
 import { useSessionStore } from "./store/session.js";
+import { useOutboxStore } from "./store/outbox.js";
+import { useMessageStore } from "./store/message.js";
+import { useUIStore } from "./store/ui.js";
 
 const INITIAL_RECONNECT_MS = 3000;
 const MAX_RECONNECT_MS = 60_000;
@@ -84,6 +88,31 @@ export function applyIncomingWsSessionRouting(
   return { ...p, sessionKey: resolved.sessionKey, sessionRouteSource: resolved.source };
 }
 
+/**
+ * Tell the user a `never`-policy send went nowhere.
+ *
+ * A `never` message (today: `/stop`) must not be queued or replayed — replaying
+ * a stop into a later turn would cancel the wrong work. That leaves the drop
+ * completely silent, so surface it the same way a bridge error is surfaced: a
+ * local assistant bubble in the target chat plus the error pet state.
+ */
+function reportDroppedControlMessage(msg: unknown): void {
+  if (!msg || typeof msg !== "object") return;
+  const p = msg as Record<string, unknown>;
+  const connectionId = typeof p.connectionId === "string" ? p.connectionId : "";
+  const sessionKey = typeof p.sessionKey === "string" ? p.sessionKey : "";
+  if (!connectionId || !sessionKey) return;
+  useMessageStore.getState().addMessage(makeChatKey(connectionId, sessionKey), {
+    id: `msg-${crypto.randomUUID()}`,
+    role: "assistant",
+    content: "发送失败：网络未连接，请重试",
+    timestamp: Date.now(),
+    connectionId,
+    sessionKey,
+  });
+  useUIStore.getState().setPetState("error");
+}
+
 export function createWebAdapter(serverUrl: string, token: string): PlatformAPI {
   let ws: WebSocket | null = null;
   let eventHandler: ((type: string, payload: any) => void) | null = null;
@@ -92,6 +121,9 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
   let reconnectAttempt = 0;
   let connectGeneration = 0;
   let onlineHookInstalled = false;
+  let expireStaleInterval: ReturnType<typeof setInterval> | null = null;
+  /** The first onopen is the initial connect; only later ones need a backfill. */
+  let hasOpenedOnce = false;
 
   const clearReconnectTimer = (): void => {
     if (reconnectTimer) {
@@ -134,6 +166,54 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
     onlineHookInstalled = false;
   };
 
+  /**
+   * Page a single chat forward from its watermark until it is caught up.
+   *
+   * Terminates on: a fetch error, an empty page, a page that fails to advance
+   * the watermark, or hasMore=false. The strict-advance check is what makes the
+   * loop safe — the watermark is the loop variable, so a page whose seqs are all
+   * at or below it would otherwise spin forever.
+   */
+  const backfillChat = async (chatKey: string): Promise<void> => {
+    for (;;) {
+      const after = useMessageStore.getState().getWatermark(chatKey);
+      let res: { messages: ChatMessage[]; hasMore: boolean };
+      try {
+        res = await api.fetchApi<{ messages: ChatMessage[]; hasMore: boolean }>(
+          `/api/history/${encodeURIComponent(chatKey)}?afterSeq=${after}&limit=200`
+        );
+      } catch (e) {
+        console.warn("[cc-pet] backfill fetch failed", { chatKey, error: e });
+        return;
+      }
+      if (res.messages.length === 0) return;
+      useMessageStore.getState().mergeMessages(chatKey, res.messages);
+      if (useMessageStore.getState().getWatermark(chatKey) <= after) {
+        console.warn("[cc-pet] backfill stopped: watermark did not advance", { chatKey, after });
+        return;
+      }
+      if (!res.hasMore) return;
+    }
+  };
+
+  /**
+   * Backfill every chat the client holds state for, not just the active one.
+   *
+   * A non-active chat is already marked loaded, so switching to it never
+   * re-fetches; and live pushes after the reconnect advance its watermark past
+   * the gap, making the missed messages unreachable by any later incremental
+   * fetch. The cost is proportional to each chat's gap, which is exactly what
+   * the afterSeq cursor buys. Sequential to avoid a burst of parallel requests
+   * on a phone that just regained signal.
+   */
+  const backfillAllChats = async (): Promise<void> => {
+    const { watermarks, loadedChatKeys } = useMessageStore.getState();
+    const chatKeys = new Set<string>([...Object.keys(watermarks), ...loadedChatKeys]);
+    for (const chatKey of chatKeys) {
+      await backfillChat(chatKey);
+    }
+  };
+
   const api: PlatformAPI = {
     connectWs() {
       clearReconnectTimer();
@@ -159,12 +239,34 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
         if (connectGeneration !== gen || ws !== socket) return;
         reconnectAttempt = 0;
         console.info("[cc-pet] ws connected");
+        api.flushOutbox();
+        if (!expireStaleInterval) {
+          expireStaleInterval = setInterval(() => {
+            if (ws?.readyState === WebSocket.OPEN) {
+              useOutboxStore.getState().expireStale();
+            }
+          }, 5_000);
+        }
+
+        // Backfill missed downstream messages. Skipped on the very first open
+        // because nothing has been fetched yet — hydrate runs later, off the
+        // manifest that this open triggers, so there are no watermarks to
+        // backfill from and the call would be an empty loop.
+        if (hasOpenedOnce) {
+          void backfillAllChats();
+        } else {
+          hasOpenedOnce = true;
+        }
       };
 
       socket.onmessage = (e) => {
         if (ws !== socket) return;
         try {
-          const msg = JSON.parse(e.data) as { type: string };
+          const msg = JSON.parse(e.data) as { type: string; clientMsgId?: string };
+          if (msg.type === WS_EVENTS.MESSAGE_ACK) {
+            if (msg.clientMsgId) useOutboxStore.getState().markSent(msg.clientMsgId);
+            return;
+          }
           const routed = applyIncomingWsSessionRouting(msg.type, msg) as typeof msg;
           eventHandler?.(routed.type, routed);
         } catch {
@@ -201,6 +303,10 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       clearReconnectTimer();
       connectGeneration += 1;
       removeOnlineListener();
+      if (expireStaleInterval) {
+        clearInterval(expireStaleInterval);
+        expireStaleInterval = null;
+      }
       detachWebSocket(ws);
       ws = null;
     },
@@ -212,32 +318,128 @@ export function createWebAdapter(serverUrl: string, token: string): PlatformAPI 
       };
     },
 
-    sendWsMessage(msg) {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(msg));
-        return;
+    sendWsMessage(msg, policy) {
+      if (policy === "never") {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        } else {
+          console.warn("[cc-pet] control message dropped: socket not open", { msgType: msg?.type });
+          reportDroppedControlMessage(msg);
+        }
+        return "";
       }
-      console.error("[cc-pet] ws send skipped: socket is not open", {
-        readyState: ws?.readyState ?? "null",
-        msgType: msg?.type,
+
+      const clientMsgId = useOutboxStore.getState().enqueue(msg, policy);
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ ...msg, clientMsgId }));
+        useOutboxStore.getState().markTransmitted([clientMsgId]);
+      }
+      return clientMsgId;
+    },
+
+    flushOutbox(clientMsgId) {
+      const outbox = useOutboxStore.getState();
+      // Revive before the socket check: tapping 重新发送 while offline must still
+      // leave the entry pending so the next reconnect flush carries it. Gating
+      // this on OPEN made the tap a no-op, and a manual entry — which reviveAuto
+      // deliberately skips — had no other way back out of failed.
+      if (clientMsgId) {
+        // Explicit per-message retry: revive just this entry. reviveAuto here
+        // would drag every other failed auto entry back onto the wire, which is
+        // not what tapping one bubble asked for.
+        outbox.resend(clientMsgId);
+      } else {
+        outbox.reviveAuto();
+      }
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      const sendable = useOutboxStore
+        .getState()
+        .takeSendable()
+        .filter((e) => !clientMsgId || e.clientMsgId === clientMsgId);
+      for (const entry of sendable) {
+        ws.send(JSON.stringify({ ...entry.payload, clientMsgId: entry.clientMsgId }));
+      }
+      // Start the ack budget now that the bytes are on the socket, not at
+      // enqueue time — otherwise an entry queued during an outage burns its
+      // whole 15 s window offline and expires on the first tick after reconnect.
+      useOutboxStore.getState().markTransmitted(sendable.map((e) => e.clientMsgId));
+    },
+
+    getWsBufferedAmount() {
+      return ws?.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0;
+    },
+
+    uploadAttachment(connectionId, file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const base = serverUrl.trim();
+        const path = `/api/attachments/${encodeURIComponent(connectionId)}`;
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", base.length > 0 ? `${base}${path}` : path);
+        if (token.trim().length > 0) {
+          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        }
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          // Cap at 99: the last percent belongs to the server's fsync + response, and
+          // reporting 100 before the ack is exactly the lie this replaces.
+          onProgress(Math.min(99, Math.floor((event.loaded / event.total) * 100)));
+        };
+        xhr.onload = () => {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(xhr.responseText);
+          } catch {
+            // A non-JSON body means the response came from the reverse proxy, not the
+            // app. 502/504 there is almost always the entrypoint's readTimeout cutting
+            // the request body mid-upload — say so, because "响应无法解析" sent a real
+            // debugging session looking in the wrong place.
+            const gatewayCut = xhr.status === 502 || xhr.status === 504;
+            reject(
+              new Error(
+                gatewayCut
+                  ? `上传被网关中断（HTTP ${xhr.status}）—— 通常是上传耗时超过网关上限，` +
+                    `换更快的网络或更小的文件再试。`
+                  : `上传失败（HTTP ${xhr.status}，响应不是 JSON，可能来自反向代理）`,
+              ),
+            );
+            return;
+          }
+          if (xhr.status >= 200 && xhr.status < 300 && parsed?.attachment) {
+            onProgress(100);
+            resolve(parsed.attachment);
+            return;
+          }
+          reject(new Error(parsed?.message ?? `上传失败（HTTP ${xhr.status}）`));
+        };
+        xhr.onerror = () => reject(new Error("上传失败：网络中断"));
+        xhr.onabort = () => reject(new Error("上传已取消"));
+        const form = new FormData();
+        form.append("file", file, file.name);
+        xhr.send(form);
       });
     },
 
     async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+      const res = await api.fetchApiRaw(path, options);
+      return res.json() as T;
+    },
+
+    async fetchApiRaw(path: string, options?: RequestInit): Promise<Response> {
       const base = serverUrl.trim();
       const requestUrl = base.length > 0 ? `${base}${path}` : path;
       const headers = new Headers(options?.headers ?? {});
-      if (options?.body && !headers.has("Content-Type")) {
+      const body = options?.body;
+      const isFormBody = typeof FormData !== "undefined" && body instanceof FormData;
+      if (body && !isFormBody && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
       if (token.trim().length > 0) {
         headers.set("Authorization", `Bearer ${token}`);
       }
-      const res = await fetch(requestUrl, {
+      return fetch(requestUrl, {
         ...options,
         headers,
       });
-      return res.json() as T;
     },
   };
 

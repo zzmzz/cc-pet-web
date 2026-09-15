@@ -266,6 +266,48 @@ export async function readFilePreview(
   };
 }
 
+export const FILE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+
+export async function uploadFile(
+  workspace: WorkspaceContext,
+  parentPath: string | undefined,
+  name: unknown,
+  data: Buffer,
+): Promise<FileEntry> {
+  if (data.byteLength > FILE_UPLOAD_MAX_BYTES) {
+    throw workspaceFileError(
+      "WORKSPACE_FILE_TOO_LARGE",
+      `文件过大，单个上传不超过 ${Math.floor(FILE_UPLOAD_MAX_BYTES / (1024 * 1024))} MB。`,
+      400,
+    );
+  }
+
+  const safeName = validateItemName(name);
+  const parent = await resolveWorkspacePath(workspace, parentPath ?? "");
+  await assertDirectory(parent.absolutePath, "父目录已不存在，列表已过期，可刷新后继续。");
+
+  const targetRelativePath = joinRelativePath(parent.relativePath, safeName);
+  const target = await assertWritablePath(workspace, targetRelativePath);
+  const existing = await stat(target.absolutePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existing) {
+    throw conflictError("同名文件已存在，请重命名后再上传。");
+  }
+
+  try {
+    await writeFile(target.absolutePath, data, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw conflictError("同名文件已存在，请重命名后再上传。");
+    }
+    throw error;
+  }
+
+  return entryForResolvedPath(target.relativePath, target.absolutePath);
+}
+
 export async function createItem(
   workspace: WorkspaceContext,
   parentPath: string | undefined,
