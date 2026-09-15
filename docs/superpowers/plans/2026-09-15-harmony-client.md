@@ -186,7 +186,7 @@ git commit -m "chore(harmony): scaffold ArkTS project with signing and hypium"
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `WS_EVENTS`（含全部 17 个事件名的常量对象）、`ChatMessage`、`Session`、`TaskPhase`、`PetState`、`SlashCommandSpec` 等 ArkTS 类型，供后续所有任务 import。
+- Produces: `WS_EVENTS`（含全部 21 个事件名的常量对象，与 `packages/shared` 逐字一致）、`ChatMessage`、`Session`、`TaskPhase`、`PetState`、`SlashCommandSpec` 等 ArkTS 类型，供后续所有任务 import。
 
 - [ ] **Step 1: 写 Protocol.ets**
 
