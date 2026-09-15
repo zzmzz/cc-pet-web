@@ -6,6 +6,7 @@ import parseMarkdownBlockTest from './ParseMarkdownBlock.test';
 import parseInlineTest from './ParseInline.test';
 import slashCommandsTest from './SlashCommands.test';
 import outboxTest from './Outbox.test';
+import assistantMessageFromFrameTest from './AssistantMessageFromFrame.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -16,4 +17,5 @@ export default function testsuite() {
   parseInlineTest();
   slashCommandsTest();
   outboxTest();
+  assistantMessageFromFrameTest();
 }

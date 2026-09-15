@@ -2,12 +2,13 @@ import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
-import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
+import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
+import { Outbox, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
 import { TaskStore } from '../store/TaskStore';
-import { ConnectionStore } from '../store/ConnectionStore';
+import { ConnectionStore, ConnectionPhase } from '../store/ConnectionStore';
 import { NotificationGateway } from './NotificationGateway';
 
 // ConnectionPhase itself lives in store/ConnectionStore.ets — the field it
@@ -174,6 +175,15 @@ export class ConnectionGateway {
     const netConn: connection.NetConnection = connection.createNetConnection();
     this.netConn = netConn;
     netConn.on('netAvailable', () => {
+      // netAvailable also fires on Wi-Fi/cellular handoff and DHCP renewal,
+      // not just after an outage. Tearing down an already-connected (or
+      // in-flight) socket here would kill a healthy connection and make
+      // flushOutbox() re-revive and re-send messages that were merely
+      // awaiting ack.
+      const phase: ConnectionPhase = ConnectionStore.connect().phase;
+      if (phase === 'connected' || phase === 'connecting') {
+        return;
+      }
       this.attempt = 0;
       this.clearTimer();
       this.open();
@@ -312,21 +322,21 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
-      const text: string = event.frame.fullText ?? '';
-      ChatStore.connect().finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
+      // Use the server's own id and seq. Synthesising them breaks maxSeqOf(),
+      // which Task 17's incremental history backfill reads as its cursor.
+      const message: ChatMessage = assistantMessageFromFrame(event.frame, event.chatKey, Date.now());
+      ChatStore.connect().finalizeStream(
+        event.chatKey, message.content, message.id, message.timestamp, message.seq ?? 0,
+      );
       TaskStore.connect().setPhase(event.chatKey, 'completed');
-      this.afterAssistantReply(event.chatKey, text);
+      this.afterAssistantReply(event.chatKey, message.content);
       return;
     }
     if (event.type === WsEvents.BRIDGE_MESSAGE) {
-      const text: string = event.frame.content ?? '';
-      const message: ChatMessage = {
-        id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
-        connectionId: event.connectionId, sessionKey: event.sessionKey,
-      };
+      const message: ChatMessage = assistantMessageFromFrame(event.frame, event.chatKey, Date.now());
       ChatStore.connect().append(event.chatKey, message);
       TaskStore.connect().setPhase(event.chatKey, 'completed');
-      this.afterAssistantReply(event.chatKey, text);
+      this.afterAssistantReply(event.chatKey, message.content);
     }
   }
 

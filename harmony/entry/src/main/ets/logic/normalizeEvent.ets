@@ -30,8 +30,10 @@ export interface WsFrame {
   clientMsgId?: string;
   /** message-ack: the id the server assigned */
   id?: string;
-  /** message-ack: server sequence number */
+  /** message-ack / bridge:message / bridge:stream-done: server sequence number */
   seq?: number;
+  /** bridge:message / bridge:stream-done: the server-assigned message id */
+  msgId?: string;
   /** resident:unread */
   unreadCount?: number;
   /** bridge:connected */

@@ -44,9 +44,9 @@ export class ChatStore {
     this.streaming.set(chatKey, this.streamingOf(chatKey) + delta);
   }
 
-  finalizeStream(chatKey: string, fullText: string, id: string, at: number): void {
+  finalizeStream(chatKey: string, fullText: string, id: string, at: number, seq: number): void {
     this.streaming.delete(chatKey);
-    this.append(chatKey, { id: id, role: 'assistant', content: fullText, timestamp: at });
+    this.append(chatKey, { id: id, role: 'assistant', content: fullText, timestamp: at, seq: seq });
   }
 
   /** message-ack arrived: swap the local id for the server's and record its seq. */

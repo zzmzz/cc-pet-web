@@ -111,6 +111,18 @@ export class SessionStore {
         nextUnread.set(key, session.unreadCount ?? 0);
       }
     }
+    // Drop unread counts for chatKeys that no longer appear in the incoming
+    // session list, so a removed session's count doesn't linger in
+    // totalUnread() forever.
+    const staleKeys: string[] = [];
+    nextUnread.forEach((_count: number, key: string) => {
+      if (!nextSessions.has(key)) {
+        staleKeys.push(key);
+      }
+    });
+    for (const key of staleKeys) {
+      nextUnread.delete(key);
+    }
     this.sessions = nextSessions;
     this.residentKeys = nextResidents;
     this.unread = nextUnread;
