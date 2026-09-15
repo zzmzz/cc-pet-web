@@ -1,6 +1,7 @@
 import { promptAction } from '@kit.ArkUI';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
-import { RestClient } from '../gateway/RestClient';
+import { RestClient, UnauthorizedError } from '../gateway/RestClient';
 import { bridgeConnectUrl } from '../model/Endpoints';
 import { SlashCommandSpec } from '../model/Protocol';
 import { isSlashInput, matchCommands, mergeCommands } from '../logic/slashCommands';
@@ -8,6 +9,9 @@ import { AuthStore } from '../store/AuthStore';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
 import { SlashCommandMenu } from './SlashCommandMenu';
+
+const DOMAIN = 0x0000;
+const TAG = 'MessageInput';
 
 /**
  * No attachment upload in this first release (spec §2). The send button
@@ -21,6 +25,28 @@ export struct MessageInput {
   @Require @Param chatKey: string = '';
   @Local private text: string = '';
   @Local private session: SessionStore = SessionStore.connect();
+
+  /**
+   * `MessageInput` is a single, persistently-mounted instance
+   * (`ChatWindow.ets` passes `chatKey: this.session.currentChatKey`, no
+   * `.id()` keying, no recreation on chat switch) — so without this, typing
+   * `/clear` in chat A, then switching to chat B *before* tapping, leaves
+   * the palette open over B's transcript with `this.chatKey` already
+   * updated to B. Tapping it then silently clears/reconnects the *wrong*
+   * chat (fix round, Important-2) — `/clear` doing that is data loss, not a
+   * cosmetic glitch. `@Monitor('chatKey')` is the side-effect tool for this
+   * (not a `build()` dependency), fired once per real chat switch.
+   *
+   * Deliberate trade-off: this clears `text` unconditionally, so an unsent
+   * draft does not survive a chat switch. That is the safe default — each
+   * chat gets its own blank input rather than accidentally executing/
+   * sending stale text against a different chat. Per-chat draft persistence
+   * would be nicer but is out of scope for this fix.
+   */
+  @Monitor('chatKey')
+  onChatKeyChanged(_monitor: IMonitor): void {
+    this.text = '';
+  }
 
   private send(): void {
     const trimmed: string = this.text.trim();
@@ -77,11 +103,19 @@ export struct MessageInput {
   }
 
   /**
-   * `/connect` and `/disconnect` only ever request the bridge state change —
-   * the real state (`ConnectionStore.bridgeConnected`) is driven solely by
-   * `bridge:connected`/`bridge:error` events via `ConnectionGateway.dispatch`
-   * (see that file), never by this call's own success/failure. So this is
-   * fire-and-forget, same posture as `MarkdownView.openLink`/`copyCode`.
+   * `/connect` and `/disconnect` only ever *request* the bridge state
+   * change — the real state (`ConnectionStore.bridgeConnected`) is still
+   * driven solely by `bridge:connected`/`bridge:error` events via
+   * `ConnectionGateway.dispatch` (see that file), never by this call's own
+   * success. That only holds, though, if the request actually reaches the
+   * server and the server attempts the dial — if the request never arrives
+   * (network down), is rejected outright (401, expired token), or 500s, no
+   * WS event ever follows, so the user would tap a command and see nothing,
+   * forever, with no explanation (fix round, Important-1). So failure here
+   * is surfaced with a toast, same `promptAction.showToast` pattern as
+   * `/settings` above and `LoginGate.verify()`, and logged via `hilog`, same
+   * posture as every other `RestClient` caller in this codebase
+   * (`LoginGate.ets`, `PetImageCache.ets`) — none of them swallow silently.
    */
   private toggleBridge(connect: boolean): void {
     const bridgeId: string = this.chatKey.split('::')[0] ?? '';
@@ -98,9 +132,16 @@ export struct MessageInput {
     // field off the body (`/api/bridges/:id/connect`/`disconnect` only use
     // `req.params.id`), so an empty JSON object satisfies the parser without
     // implying any payload the server actually consumes.
-    client.postJson(bridgeConnectUrl(bridgeId, connect), '{}').catch(() => {
-      // Best-effort; see doc above for why no UI feedback is wired to this
-      // specific promise.
+    client.postJson(bridgeConnectUrl(bridgeId, connect), '{}').catch((err: Error) => {
+      const action: string = connect ? '连接' : '断开';
+      if (err instanceof UnauthorizedError) {
+        hilog.error(DOMAIN, TAG, 'toggleBridge(%{public}s) unauthorized: bridgeId=%{public}s', String(connect), bridgeId);
+        promptAction.showToast({ message: `${action}请求失败：登录已过期` });
+        return;
+      }
+      hilog.error(DOMAIN, TAG, 'toggleBridge(%{public}s) failed: bridgeId=%{public}s message=%{public}s',
+        String(connect), bridgeId, err.message);
+      promptAction.showToast({ message: `${action}请求失败，请检查网络` });
     });
   }
 
