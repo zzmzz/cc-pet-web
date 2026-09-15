@@ -66,11 +66,11 @@ export class NotificationGateway {
    * chat screen.
    */
   async notifyReply(chatKey: string, title: string, body: string): Promise<void> {
-    if (!notificationManager.isNotificationEnabledSync()) {
-      return;
-    }
     const notificationId: number = this.notificationIdOf(chatKey);
     try {
+      if (!notificationManager.isNotificationEnabledSync()) {
+        return;
+      }
       const agent: WantAgent = await wantAgent.getWantAgent({
         wants: [{ bundleName: BUNDLE_NAME, abilityName: ENTRY_ABILITY_NAME }],
         actionType: wantAgent.OperationType.START_ABILITY,

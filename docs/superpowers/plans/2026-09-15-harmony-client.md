@@ -2936,7 +2936,7 @@ git commit -m "feat(harmony): add derived pet avatar with per-token image cache"
 - Modify: `harmony/entry/src/main/module.json5`
 
 **Interfaces:**
-- Consumes: `@kit.NotificationKit`
+- Consumes: `@kit.NotificationKit`, `@kit.AbilityKit`, `@kit.BasicServicesKit`
 - Produces: `interface Notifier { notifyReply(chatKey: string, title: string, body: string): Promise<void> }`；`NotificationGateway.instance` 实现该接口。
 
 接口化是刻意的：将来换 Push Kit 只替换实现，`ConnectionGateway` 不动。
