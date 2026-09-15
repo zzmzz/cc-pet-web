@@ -26,6 +26,20 @@
 - `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
 - 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
 - 工作分支：`harmony-client`。
+- **真机构建与安装（已验证可用）**：
+
+  ```bash
+  export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
+  export PATH="/Applications/DevEco-Studio.app/Contents/tools/node/bin:/Applications/DevEco-Studio.app/Contents/tools/ohpm/bin:$PATH"
+  cd /Users/StevenZhu/code/cc-pet-web/harmony
+  node /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js assembleHap -p module=entry@default -p product=default
+  export PATH="/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains:$PATH"
+  hdc install -r entry/build/default/outputs/default/entry-default-signed.hap
+  hdc shell aa start -a EntryAbility -b com.ccpet.client
+  ```
+
+  **构建 HAP 时绝对不要加 `--no-daemon`。** 签名密码在 `build-profile.json5` 里是 DevEco 加密存储的，只有 hvigor 的 daemon 进程能解密；加了 `--no-daemon` 会报 `Init keystore failed ... please input the correct plaintext password`，产物退化为 `entry-default-unsigned.hap`，装不上真机。跑单测则不受影响（单测不签名），可以加。
+- `build-profile.json5` 的 `products[0]` 必须有 `"signingConfig": "default"` 引用，否则即使有 daemon 也只产出 unsigned 包。DevEco 自动生成签名时只写 `signingConfigs` 数组，不会补这个引用。
 
 ---
 
