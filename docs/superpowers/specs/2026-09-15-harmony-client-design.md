@@ -79,7 +79,7 @@ harmony/entry/src/main/ets/
 
 首版消费的 WS 事件：`bridge:manifest`、`bridge:connected`、`bridge:error`、`bridge:message`、`bridge:stream-delta`、`bridge:stream-done`、`bridge:typing-start`、`bridge:typing-stop`、`bridge:skills-updated`、`resident:unread`、`message-ack`；发送 `send-message`。
 
-首版调用的 REST：`/api/auth/verify`、`/api/sessions`、`/api/history/:chatKey`、`/api/pet-images/:state`、`/api/files/:fileId`、`/api/bridges/:id/connect`、`/api/bridges/:id/disconnect`。
+首版调用的 REST：`POST /api/auth/verify`（**token 放在请求体，不是 Authorization 头**——该路由注册在鉴权守卫之前，是唯一按载荷验证的端点；响应 `{valid, name, bridgeIds}`）、、`/api/sessions`、`/api/history/:chatKey`、`/api/pet-images/:state`、`/api/files/:fileId`、`/api/bridges/:id/connect`、`/api/bridges/:id/disconnect`。
 
 **防协议漂移**：`packages/server/tests/harmony-protocol-alignment.test.ts` 读取 `harmony/.../model/Protocol.ets`，双向比对 `WS_EVENTS` 的事件名集合，不一致则 `pnpm test` 失败。
 
@@ -182,7 +182,7 @@ EXPANDED 下聊天内容宽度封顶 1240vp，两侧留白——否则窗口拉�
 
 ```
 Index
-├─ LoginGate      无 token 时全屏；/api/auth/verify 验证后存入首选项
+├─ LoginGate      无 token 时全屏；POST /api/auth/verify 验证后存入首选项
 ├─ 顶栏           PetMini + 会话名（点击唤起半模态）+ 连接状态徽标 + 设置
 ├─ MessageList    LazyForEach 懒加载，历史向上分页
 └─ MessageInput   多行输入、发送（首版无附件上传）

@@ -2021,6 +2021,10 @@ export class AuthStore {
 import { AuthStore } from '../store/AuthStore';
 import { RestClient, UnauthorizedError } from '../gateway/RestClient';
 
+interface VerifyRequest {
+  token: string;
+}
+
 @ComponentV2
 export struct LoginGate {
   @Local serverUrl: string = '';
@@ -2033,7 +2037,11 @@ export struct LoginGate {
     this.error = '';
     try {
       const client: RestClient = new RestClient(this.serverUrl.trim(), this.token.trim());
-      await client.getJson('/api/auth/verify');
+      // POST with the token in the BODY — not GET with a Bearer header.
+      // This endpoint is registered before the auth guard, so it is the one
+      // route that authenticates by payload rather than by header.
+      const payload: VerifyRequest = { token: this.token.trim() };
+      await client.postJson('/api/auth/verify', JSON.stringify(payload));
       await AuthStore.instance.save(this.serverUrl.trim(), this.token.trim());
     } catch (err) {
       this.error = err instanceof UnauthorizedError ? 'Token 无效' : '无法连接服务器';
