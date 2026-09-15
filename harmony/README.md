@@ -19,6 +19,17 @@ export PATH="/Applications/DevEco-Studio.app/Contents/tools/node/bin:/Applicatio
 HVIGORW="node /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js"
 ```
 
+`$HVIGORW` holds a two-word command (`node <path>`). In zsh (the default shell on macOS, and
+this repo's verified shell), unquoted variable expansion does **not** word-split like bash
+does, so a bare `$HVIGORW test ...` fails with `command not found: node <path>`. Invoke it
+through `eval` instead, which re-parses the reconstructed line correctly in both bash and zsh:
+
+```bash
+eval "$HVIGORW test -p module=entry@default -p product=default --no-daemon"
+```
+
+All commands below use this `eval "$HVIGORW ..."` form.
+
 ### One-time: `@ohos` scope registry for hvigor's own tool provisioning
 
 `hvigorw` resolves the `@ohos/hvigor` / `@ohos/hvigor-ohos-plugin` versions declared in
@@ -34,6 +45,12 @@ to `~/.npmrc` (append — do not replace your existing default `registry=` line 
 entries). Without this, `hvigorw` fails with `ERR_PNPM_FETCH_404` while installing its own
 `@ohos/hvigor-ohos-plugin` tool dependency.
 
+`harmony/hvigor/hvigor-config.json5` also pins `"@ohos/hvigor": "6.26.4"` explicitly,
+alongside `@ohos/hvigor-ohos-plugin`. This isn't redundant: without it, `hvigorw`'s pnpm-based
+tool provisioning reports a missing peer dependency and the `entry` module's task list comes
+back truncated (no `UnitTestArkTS`/`assembleHap`/etc.) — pinning both lets pnpm link straight
+to the copy already bundled inside DevEco Studio.
+
 ## Setup
 
 ```bash
@@ -43,19 +60,55 @@ ohpm install --all
 
 Expected: exit code 0, `oh_modules/` created at both `harmony/` and `harmony/entry/`.
 
-Then copy the signing template (see "Signing" below) so `build-profile.json5` exists locally
-(it's gitignored):
+`harmony/build-profile.json5` is gitignored (it's machine-local) and must exist before running
+any hvigor command. **Running the unit tests needs no signing at all** — create it with an
+empty `signingConfigs` array:
 
 ```bash
-cp build-profile.example.json5 build-profile.json5
+cat > build-profile.json5 <<'EOF'
+{
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry"
+    }
+  ]
+}
+EOF
 ```
+
+This is exactly what the "本地单测" command below was verified against. **Installing on a real
+device is a separate path that does need signing** — see "Signing" below; do not copy
+`build-profile.example.json5` for the unit-test path, its `signingConfigs` entry points at
+placeholder certificate paths that don't exist on your machine.
 
 ## 命令
 
 - 本地单测：
   ```bash
   cd harmony
-  node /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js test -p module=entry@default -p product=default --no-daemon
+  eval "$HVIGORW test -p module=entry@default -p product=default --no-daemon"
   ```
   Verified output ends with `BUILD SUCCESSFUL`, and
   `entry/.test/default/intermediates/test/coverage_data/test_result.txt` contains:
@@ -71,21 +124,26 @@ cp build-profile.example.json5 build-profile.json5
 - 构建 HAP（需先配置签名，见下）：
   ```bash
   cd harmony
-  node /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js assembleHap -p module=entry@default -p product=default --no-daemon
+  eval "$HVIGORW assembleHap -p module=entry@default -p product=default --no-daemon"
   ```
 
 ## Signing
 
-`harmony/build-profile.json5` is gitignored because it's machine-local (it embeds absolute
-paths to a certificate/profile/keystore tied to one Huawei developer account). This repo
-ships `harmony/build-profile.example.json5` as a template with `"<fill-me>"` placeholders.
+The `build-profile.json5` you created above (with `signingConfigs: []`) is enough to run unit
+tests, but `assembleHap`/installing on a real device needs real signing material tied to a
+Huawei developer account. `harmony/build-profile.example.json5` is a template for that case,
+with `"<fill-me>"` placeholders — it is **not** what you should copy for the unit-test path
+above.
 
-To generate a real one:
+To generate a real signing config:
 
 1. Open `harmony/` in DevEco Studio and log in with a Huawei developer account.
 2. Go to **File → Project Structure → Signing Configs**, enable "Automatically generate
    signature" for the `default` product.
-3. DevEco writes a real `signingConfigs` block into the project's `build-profile.json5`.
+3. DevEco writes a real `signingConfigs` block into the project's `build-profile.json5` (you
+   can use `build-profile.example.json5` as a reference for the shape, replacing the
+   `"<fill-me>"` placeholders with the values DevEco generated, including `"signingConfig":
+   "default"` on the product entry).
 4. Keep that file locally (it's gitignored) — do not commit it, since it contains
    machine/account-specific paths and secrets.
 
