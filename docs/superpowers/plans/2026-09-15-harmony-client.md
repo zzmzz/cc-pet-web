@@ -16,6 +16,7 @@
 - bundleName：`com.ccpet.client`。`deviceTypes`: `["phone", "tablet", "2in1"]`。
 - **服务端零改动。** 不修改 `packages/server` 与 `packages/web` 的任何运行时代码；唯一允许新增的 Node 侧文件是 Task 2 的协议对齐测试。
 - **依赖规则（违反即不合入）**：Gateway 不引用任何 ArkUI 组件；Store 不发起网络请求；Components 不直接调用 Gateway 的网络方法，只读 Store 并调用 Store 暴露的意图方法。
+- **ArkTS 严格模式禁止对 interface 做索引访问**（`arkts-no-props-by-index`），也不接受 `Record<string, Object>` 承接对象字面量。所有动态形状的数据必须声明为显式可选字段的 interface，用属性访问读取。已在本工程实测确认：`JSON.parse(text) as T`、`obj.field`、`field ?? ''`、`field === undefined` 均合法。
 - ArkTS 严格类型：不使用 `any`，所有变量、参数、返回值显式标注类型，对象字面量必须有对应 `interface`（参照 `Tailscale-OHOS/entry/src/main/ets/services/NetworkSettingsGateway.ets` 的风格）。
 - 鉴权：REST 用 `Authorization: Bearer <token>`，WS 用 `/ws?token=<token>` query。
 - 重连退避：`min(30000, 1000 × 2ⁿ)` 毫秒。
@@ -577,7 +578,11 @@ git commit -m "feat(harmony): add reconnect backoff with capped exponential dela
 
 ### Task 4: WS 事件归一化（纯函数 TDD）
 
-web 端在 12 个 case 里各解一遍 `connectionId / sessionKey`，这里一次解完。
+web 端在十几个 case 里各解一遍 `connectionId / sessionKey`，这里一次解完。
+
+**ArkTS 约束（本任务的关键）**：严格模式禁止对 interface 做索引访问（`arkts-no-props-by-index`），也不接受 `Record<string, Object>` 承接对象字面量。因此 payload **必须是显式声明字段的 interface，用属性访问读取**。这一点已用探针在本工程内实测确认：`JSON.parse(text) as SomeInterface` 合法、`obj.field` 合法、`field ?? ''` 与 `field === undefined` 合法；`obj['field']` 不合法。
+
+这个限制其实是好事：payload 的字段从此是显式声明的，服务端加字段时鸿蒙端不会静默读到 `undefined`。
 
 **Files:**
 - Create: `harmony/entry/src/main/ets/logic/normalizeEvent.ets`
@@ -585,10 +590,11 @@ web 端在 12 个 case 里各解一遍 `connectionId / sessionKey`，这里一�
 - Modify: `harmony/entry/src/test/List.test.ets`
 
 **Interfaces:**
-- Consumes: `WsEvents` from `model/Protocol`
+- Consumes: 无
 - Produces:
-  - `interface RawWsEnvelope { type: string; payload: Record<string, Object> }`
-  - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; payload: Record<string, Object> }`
+  - `interface WsPayload` —— 首版全部事件的 payload 字段并集，全部可选
+  - `interface RawWsEnvelope { type: string; payload: WsPayload }`
+  - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; payload: WsPayload }`
   - `normalizeEvent(raw: RawWsEnvelope): NormalizedEvent`
   - `chatKeyOf(connectionId: string, sessionKey: string): string`
 
@@ -627,7 +633,26 @@ export default function normalizeEventTest() {
         payload: { connectionId: 'c1', sessionKey: 's1', delta: 'abc' },
       };
       const out: NormalizedEvent = normalizeEvent(raw);
-      expect(out.payload['delta'] as string).assertEqual('abc');
+      expect(out.payload.delta).assertEqual('abc');
+    });
+
+    it('carries ack fields through untouched', 0, () => {
+      const raw: RawWsEnvelope = {
+        type: 'message-ack',
+        payload: { connectionId: 'c1', sessionKey: 's1', clientMsgId: 'local-1', id: 'srv-9', seq: 42 },
+      };
+      const out: NormalizedEvent = normalizeEvent(raw);
+      expect(out.payload.clientMsgId).assertEqual('local-1');
+      expect(out.payload.id).assertEqual('srv-9');
+      expect(out.payload.seq).assertEqual(42);
+    });
+
+    it('parses a real json frame off the wire', 0, () => {
+      const raw: RawWsEnvelope =
+        JSON.parse('{"type":"resident:unread","payload":{"connectionId":"c1","sessionKey":"s1","unreadCount":3}}') as RawWsEnvelope;
+      const out: NormalizedEvent = normalizeEvent(raw);
+      expect(out.chatKey).assertEqual('c1::s1');
+      expect(out.payload.unreadCount).assertEqual(3);
     });
   });
 
@@ -644,17 +669,46 @@ export default function normalizeEventTest() {
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: Task 1 记录的单测命令
-Expected: FAIL，找不到模块
+Run: `harmony/README.md` 记录的单测命令
+Expected: FAIL，找不到模块 `../main/ets/logic/normalizeEvent`
 
 - [ ] **Step 3: 最小实现**
 
 `harmony/entry/src/main/ets/logic/normalizeEvent.ets`：
 
 ```typescript
+/**
+ * Union of every payload field the first release consumes.
+ *
+ * ArkTS strict mode forbids indexed access on interfaces
+ * (arkts-no-props-by-index), so payload fields must be declared, not read
+ * dynamically. That is a feature here: when the server adds a field, this
+ * interface is the one place that has to acknowledge it.
+ */
+export interface WsPayload {
+  connectionId?: string;
+  sessionKey?: string;
+  /** bridge:message */
+  content?: string;
+  /** bridge:stream-delta */
+  delta?: string;
+  /** bridge:stream-done */
+  fullText?: string;
+  /** message-ack: the id this client generated */
+  clientMsgId?: string;
+  /** message-ack: the id the server assigned */
+  id?: string;
+  /** message-ack: server sequence number */
+  seq?: number;
+  /** resident:unread */
+  unreadCount?: number;
+  /** bridge:connected */
+  connected?: boolean;
+}
+
 export interface RawWsEnvelope {
   type: string;
-  payload: Record<string, Object>;
+  payload: WsPayload;
 }
 
 export interface NormalizedEvent {
@@ -662,7 +716,7 @@ export interface NormalizedEvent {
   connectionId: string;
   sessionKey: string;
   chatKey: string;
-  payload: Record<string, Object>;
+  payload: WsPayload;
 }
 
 /** Chat key format mirrors the server: `${connectionId}::${sessionKey}`. */
@@ -673,15 +727,10 @@ export function chatKeyOf(connectionId: string, sessionKey: string): string {
   return `${connectionId}::${sessionKey}`;
 }
 
-function readString(payload: Record<string, Object>, key: string): string {
-  const value: Object | undefined = payload[key];
-  return typeof value === 'string' ? value as string : '';
-}
-
 /** Parses ids once so downstream stores never re-derive them. */
 export function normalizeEvent(raw: RawWsEnvelope): NormalizedEvent {
-  const connectionId: string = readString(raw.payload, 'connectionId');
-  const sessionKey: string = readString(raw.payload, 'sessionKey');
+  const connectionId: string = raw.payload.connectionId ?? '';
+  const sessionKey: string = raw.payload.sessionKey ?? '';
   return {
     type: raw.type,
     connectionId: connectionId,
@@ -694,7 +743,7 @@ export function normalizeEvent(raw: RawWsEnvelope): NormalizedEvent {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: Task 1 记录的单测命令
+Run: `harmony/README.md` 记录的单测命令
 Expected: 全部 PASS
 
 - [ ] **Step 5: 提交**
@@ -1994,7 +2043,7 @@ git commit -m "feat(harmony): add rest client, token storage and login gate"
   - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`
   - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
   - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
-  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: Record<string, Object>): void`、`applySessions(sessions: Session[]): void`、`applySkills(payload: Record<string, Object>): void`
+  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: WsPayload): void`、`applySessions(sessions: Session[]): void`、`applySkills(payload: WsPayload): void`
   - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
   - `NotificationGateway.instance`：`notifyReply(title: string, body: string): Promise<void>`
 
@@ -2107,7 +2156,7 @@ export class NotificationGateway {
 import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
-import { normalizeEvent, RawWsEnvelope, NormalizedEvent } from '../logic/normalizeEvent';
+import { normalizeEvent, RawWsEnvelope, NormalizedEvent, WsPayload } from '../logic/normalizeEvent';
 import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
@@ -2340,27 +2389,16 @@ export class ConnectionGateway {
 
   private dispatch(event: NormalizedEvent): void {
     if (event.type === WsEvents.MESSAGE_ACK) {
-      const idValue: Object | undefined = event.payload['clientMsgId'];
-      const srvValue: Object | undefined = event.payload['id'];
-      const seqValue: Object | undefined = event.payload['seq'];
-      const clientMsgId: string = typeof idValue === 'string' ? idValue as string : '';
+      const clientMsgId: string = event.payload.clientMsgId ?? '';
       if (clientMsgId.length === 0) {
         return;
       }
       this.outbox.markSent(clientMsgId);
-      ChatStore.instance.applyAck(
-        clientMsgId,
-        typeof srvValue === 'string' ? srvValue as string : clientMsgId,
-        typeof seqValue === 'number' ? seqValue as number : 0,
-      );
+      ChatStore.instance.applyAck(clientMsgId, event.payload.id ?? clientMsgId, event.payload.seq ?? 0);
       return;
     }
     if (event.type === WsEvents.RESIDENT_UNREAD) {
-      const countValue: Object | undefined = event.payload['unreadCount'];
-      SessionStore.instance.setUnread(
-        event.chatKey,
-        typeof countValue === 'number' ? countValue as number : 0,
-      );
+      SessionStore.instance.setUnread(event.chatKey, event.payload.unreadCount ?? 0);
       return;
     }
     if (event.type === WsEvents.BRIDGE_CONNECTED) {
@@ -2389,22 +2427,19 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DELTA) {
-      const delta: Object | undefined = event.payload['delta'];
-      ChatStore.instance.appendDelta(event.chatKey, typeof delta === 'string' ? delta as string : '');
+      ChatStore.instance.appendDelta(event.chatKey, event.payload.delta ?? '');
       TaskStore.instance.setPhase(event.chatKey, 'working');
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
-      const full: Object | undefined = event.payload['fullText'];
-      const text: string = typeof full === 'string' ? full as string : '';
+      const text: string = event.payload.fullText ?? '';
       ChatStore.instance.finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
       TaskStore.instance.setPhase(event.chatKey, 'completed');
       this.afterAssistantReply(event.chatKey, text);
       return;
     }
     if (event.type === WsEvents.BRIDGE_MESSAGE) {
-      const content: Object | undefined = event.payload['content'];
-      const text: string = typeof content === 'string' ? content as string : '';
+      const text: string = event.payload.content ?? '';
       const message: ChatMessage = {
         id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
         connectionId: event.connectionId, sessionKey: event.sessionKey,
