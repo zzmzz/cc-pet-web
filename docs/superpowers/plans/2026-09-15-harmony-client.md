@@ -56,6 +56,7 @@
 | `harmony/entry/src/main/ets/pages/Index.ets` | 页面装配 |
 | `harmony/entry/src/test/*.test.ets` | hypium 本地单测 |
 | `harmony/scripts/*.sh` | 构建与真机探针（bash） |
+| `harmony/README.md` | 环境变量、实际可用的单测/构建命令、签名配置步骤 |
 
 **Node 侧（唯一新增）**
 
@@ -65,67 +66,201 @@
 
 ---
 
-### Task 1: 工程骨架、签名与单测基础设施
+### Task 1: 工程骨架与单测基础设施（命令行建工程）
 
-打通「能装到真机」和「能跑单测」这两条命脉。后续所有任务都依赖本任务产出的命令。
+打通「能构建」和「能跑单测」这两条命脉。后续所有任务都依赖本任务产出的命令。
+
+**不用 DevEco GUI。** DevEco 自带的命令行工具链已验证可独立工作：node v24.14.1、ohpm 26.0.0.630、hvigor 6.26.4。工程骨架就是一组配置文件，`/Users/StevenZhu/code/Tailscale-OHOS` 是同 SDK 版本（API 26 / HarmonyOS）下的可用样本，照它的结构写即可。
+
+**签名不在本任务范围**：它需要华为开发者账号登录，由人工在 DevEco 中补。本任务交付一个「能跑单测、结构正确、打开即可用」的工程，并把签名位置留成模板。
 
 **Files:**
-- Create: `harmony/`（DevEco Studio 生成的 Empty Ability 工程）
-- Create: `harmony/build-profile.example.json5`
+- Create: `harmony/AppScope/app.json5`、`harmony/AppScope/resources/base/element/string.json`、`harmony/AppScope/resources/base/media/app_icon.png`
+- Create: `harmony/hvigorfile.ts`、`harmony/oh-package.json5`、`harmony/hvigor/hvigor-config.json5`
+- Create: `harmony/build-profile.json5`、`harmony/build-profile.example.json5`
+- Create: `harmony/entry/hvigorfile.ts`、`harmony/entry/oh-package.json5`、`harmony/entry/build-profile.json5`
+- Create: `harmony/entry/src/main/module.json5`
+- Create: `harmony/entry/src/main/ets/entryability/EntryAbility.ets`、`harmony/entry/src/main/ets/pages/Index.ets`
+- Create: `harmony/entry/src/main/resources/`（base/element/string.json、base/element/color.json、base/media/、base/profile/main_pages.json、dark/element/、zh_CN/element/）
+- Create: `harmony/entry/src/test/LocalUnit.test.ets`、`harmony/entry/src/test/List.test.ets`
 - Create: `harmony/README.md`
-- Create: `harmony/entry/src/test/LocalUnit.test.ets`
-- Create: `harmony/entry/src/test/List.test.ets`
-- Modify: `.gitignore`
+- Modify: `.gitignore`（仓库根）
 
 **Interfaces:**
 - Consumes: 无
-- Produces: 可复用的构建命令与单测命令，记录在 `harmony/README.md`；后续任务一律引用此处命令。
+- Produces: 可复用的单测命令，记录在 `harmony/README.md`；后续任务一律引用此处命令。`Protocol.ets` 已由 Task 2 创建在 `harmony/entry/src/main/ets/model/`，不要覆盖它。
 
-- [ ] **Step 1: 用 DevEco Studio 新建工程**
+- [ ] **Step 1: 环境变量**
 
-在 DevEco Studio 中 `File → New → Create Project → Empty Ability`，填入：
+所有 hvigor / ohpm 命令都需要：
 
-- Project name: `ccpet`
-- Bundle name: `com.ccpet.client`
-- Save location: `/Users/StevenZhu/code/cc-pet-web/harmony`
-- Compile SDK: `26`，Model: `Stage`
+```bash
+export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
+export PATH="/Applications/DevEco-Studio.app/Contents/tools/node/bin:/Applications/DevEco-Studio.app/Contents/tools/ohpm/bin:$PATH"
+HVIGORW="node /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw.js"
+```
 
-不要手工拼工程骨架——hvigor 版本与模板文件必须由 IDE 生成，手写极易出现版本不匹配。
+- [ ] **Step 2: 写工程级配置**
 
-- [ ] **Step 2: 对齐 SDK 与设备类型**
-
-`harmony/build-profile.json5` 的 `products[0]` 改为：
+`harmony/AppScope/app.json5`：
 
 ```json5
 {
-  "name": "default",
-  "signingConfig": "default",
-  "compatibleSdkVersion": "26.0.0",
-  "targetSdkVersion": "26.0.0",
-  "runtimeOS": "HarmonyOS"
+  "app": {
+    "bundleName": "com.ccpet.client",
+    "vendor": "cc-pet",
+    "versionCode": 1000000,
+    "versionName": "0.1.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
 }
 ```
 
-`harmony/entry/src/main/module.json5` 的 `deviceTypes` 改为 `["phone", "tablet", "2in1"]`。
+`harmony/AppScope/resources/base/element/string.json` 提供 `app_name`，值为 `cc-pet`。
+`harmony/AppScope/resources/base/media/app_icon.png`：从 `packages/web/src/assets/pet/idle.png` 复制（用产品自己的宠物形象，不要挪用 Tailscale 的图标）。
 
-- [ ] **Step 3: 配置签名并安装到真机**
+`harmony/hvigorfile.ts`：
 
-DevEco Studio `File → Project Structure → Signing Configs`，勾选 `Automatically generate signature`（需已登录华为开发者账号）。**这一步必须在写任何业务代码前跑通**——bundleName 与 Tailscale-OHOS 不同，证书无法复用，卡在这里会阻塞全部真机验证。
+```typescript
+import { appTasks } from '@ohos/hvigor-ohos-plugin';
 
-连上真机点运行，确认空白应用能启动。
-
-- [ ] **Step 4: 保护签名材料**
-
-`harmony/build-profile.json5` 内含证书路径与密钥口令。把生成的配置复制一份为 `harmony/build-profile.example.json5`，将其中 `material` 各字段值替换为 `"<fill-me>"`，然后在仓库根 `.gitignore` 追加：
-
-```
-/harmony/build-profile.json5
-/harmony/oh_modules/
-/harmony/.hvigor/
-/harmony/entry/build/
+export default {
+  system: appTasks,
+  plugins: []
+}
 ```
 
-- [ ] **Step 5: 写一个必然通过的 sanity 单测**
+`harmony/hvigor/hvigor-config.json5`：
+
+```json5
+{
+  "modelVersion": "5.0.0",
+  "dependencies": {
+    "@ohos/hvigor-ohos-plugin": "6.26.4"
+  },
+  "execution": {},
+  "logging": {},
+  "debugging": {},
+  "nodeOptions": {}
+}
+```
+
+`harmony/oh-package.json5`：
+
+```json5
+{
+  "modelVersion": "5.0.0",
+  "name": "cc-pet-harmony",
+  "version": "0.1.0",
+  "description": "Native HarmonyOS client for cc-pet",
+  "main": "",
+  "author": "cc-pet",
+  "license": "MIT",
+  "dependencies": {}
+}
+```
+
+`harmony/build-profile.json5`（**不含签名**，签名由人工补）：
+
+```json5
+{
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry"
+    }
+  ]
+}
+```
+
+`harmony/build-profile.example.json5`：同上，但 `signingConfigs` 填一个 `material` 各字段为 `"<fill-me>"` 的 `default` 条目，并在文件顶部注释说明由 DevEco 的 `Project Structure → Signing Configs` 自动生成后替换。
+
+- [ ] **Step 3: 写模块级配置**
+
+`harmony/entry/hvigorfile.ts` 用 `hapTasks`（结构同工程级，把 `appTasks` 换成 `hapTasks`）。
+
+`harmony/entry/oh-package.json5` 需要声明 hypium 测试依赖：
+
+```json5
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "cc-pet HarmonyOS entry module",
+  "main": "",
+  "author": "cc-pet",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.21"
+  }
+}
+```
+
+若 `ohpm install` 报该版本不存在，改用 ohpm 仓库中可用的最新 1.0.x，并在报告中写明你实际用的版本。
+
+`harmony/entry/build-profile.json5`：
+
+```json5
+{
+  "apiType": "stageMode",
+  "buildOption": {},
+  "buildOptionSet": [
+    {
+      "name": "release",
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": { "enable": false }
+        }
+      }
+    }
+  ],
+  "targets": [
+    { "name": "default", "runtimeOS": "HarmonyOS" }
+  ]
+}
+```
+
+`harmony/entry/src/main/module.json5`：`name: "entry"`、`type: "entry"`、`mainElement: "EntryAbility"`、`deviceTypes: ["phone", "tablet", "2in1"]`、`pages: "$profile:main_pages"`，一个 `EntryAbility`（`srcEntry: "./ets/entryability/EntryAbility.ets"`，含 `entity.system.home` / `ohos.want.action.home` skill）。**本任务不声明任何权限**——网络权限由 Task 10 加，通知权限由 Task 14 加。
+
+- [ ] **Step 4: 写最小可运行的 Ability 与页面**
+
+`EntryAbility.ets` 继承 `UIAbility`，在 `onWindowStageCreate` 里 `windowStage.loadContent('pages/Index')`。`pages/Index.ets` 用 `@Entry @Component struct Index`，显示一行文本即可（Task 10 会重写它）。
+
+`resources/base/profile/main_pages.json`：
+
+```json
+{
+  "src": [
+    "pages/Index"
+  ]
+}
+```
+
+`resources/base/element/string.json` 提供 `module_desc`、`EntryAbility_desc`、`EntryAbility_label`；`color.json` 提供 `start_window_background`。`dark/element/` 与 `zh_CN/element/` 各放一份同名 `string.json` / `color.json`，为后续双语与深色做好目录（值先与 base 一致，中文资源填中文）。
+
+- [ ] **Step 5: 写 sanity 单测**
 
 `harmony/entry/src/test/LocalUnit.test.ets`：
 
@@ -151,27 +286,58 @@ export default function testsuite() {
 }
 ```
 
-- [ ] **Step 6: 跑通单测并记录命令**
+- [ ] **Step 6: 安装依赖**
 
-在 DevEco Studio 中右键 `entry/src/test` 运行本地单测，确认 `hypium_is_wired` 通过。
+```bash
+cd /Users/StevenZhu/code/cc-pet-web/harmony
+ohpm install --all
+```
 
-然后从 IDE 的 Run 窗口里复制它实际执行的 hvigor 命令，写进 `harmony/README.md`：
+Expected: `oh_modules/` 生成，退出码 0。
+
+- [ ] **Step 7: 跑通单测并记录实际命令**
+
+用 `$HVIGORW` 跑 `entry` 模块的本地单测。先列出可用任务（`$HVIGORW --help` 或 `$HVIGORW tasks`）找到测试任务名，再执行。候选形式：
+
+```bash
+$HVIGORW test -p module=entry@default -p product=default --no-daemon
+```
+
+参数组合随 hvigor 版本而变——**以实际跑通的为准**，不要照抄本行。必须看到 `hypium_is_wired` 通过。
+
+把实际可用的命令写进 `harmony/README.md`：
 
 ```markdown
 ## 命令
 
-- 本地单测：`<从 DevEco Run 窗口复制的实际命令>`
-- 构建 HAP：`<同上>`
+- 本地单测：`<实际跑通的命令>`
+- 构建 HAP：`<实际命令，需先配置签名>`
 ```
 
-**后续所有任务引用这两条命令。**不要凭记忆写 hvigor 参数——不同 DevEco 版本的 `--mode` / `-p` 参数组合不一致，以 IDE 实际执行的为准。
+README 还要写明：环境变量（Step 1 那三行）、签名配置步骤（指向 `build-profile.example.json5`，说明需在 DevEco 中登录华为账号自动生成）、以及「服务端零改动」这一约束。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 8: 忽略构建产物**
+
+在仓库根 `.gitignore` 追加：
+
+```
+/harmony/build-profile.json5
+/harmony/oh_modules/
+/harmony/entry/oh_modules/
+/harmony/.hvigor/
+/harmony/.idea/
+/harmony/entry/build/
+/harmony/entry/.preview/
+```
+
+注意 `harmony/build-profile.json5` 被忽略后，克隆者需从 example 复制——README 里要写清这一步。
+
+- [ ] **Step 9: 提交**
 
 ```bash
 cd /Users/StevenZhu/code/cc-pet-web
 git add harmony .gitignore
-git commit -m "chore(harmony): scaffold ArkTS project with signing and hypium"
+git commit -m "chore(harmony): scaffold ArkTS project with hypium local tests"
 ```
 
 ---
