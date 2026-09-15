@@ -5,6 +5,7 @@ import derivePetStateTest from './DerivePetState.test';
 import parseMarkdownBlockTest from './ParseMarkdownBlock.test';
 import parseInlineTest from './ParseInline.test';
 import slashCommandsTest from './SlashCommands.test';
+import outboxTest from './Outbox.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -14,4 +15,5 @@ export default function testsuite() {
   parseMarkdownBlockTest();
   parseInlineTest();
   slashCommandsTest();
+  outboxTest();
 }
