@@ -3,6 +3,7 @@ import backoffTest from './Backoff.test';
 import normalizeEventTest from './NormalizeEvent.test';
 import derivePetStateTest from './DerivePetState.test';
 import parseMarkdownBlockTest from './ParseMarkdownBlock.test';
+import parseInlineTest from './ParseInline.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -10,4 +11,5 @@ export default function testsuite() {
   normalizeEventTest();
   derivePetStateTest();
   parseMarkdownBlockTest();
+  parseInlineTest();
 }
