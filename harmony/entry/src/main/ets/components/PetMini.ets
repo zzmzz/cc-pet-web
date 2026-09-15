@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { derivePetState, PetInputs } from '../logic/derivePetState';
+import { derivePetState, HAPPY_WINDOW_MS, PetInputs } from '../logic/derivePetState';
 import { PetState } from '../model/Protocol';
 import { AuthStore } from '../store/AuthStore';
 import { ConnectionStore } from '../store/ConnectionStore';
@@ -7,14 +7,11 @@ import { SessionStore } from '../store/SessionStore';
 import { TaskStore } from '../store/TaskStore';
 import { PetImageCache } from '../gateway/PetImageCache';
 
-/** How often `tick` bumps, purely to notice the "happy" window (see
- * `derivePetState`'s `msSinceConnected <= 3000ms`) expiring on its own —
- * nothing in the stores *changes* at that moment, `Date.now()` just moves
- * past the threshold, so no store `@Trace` write exists to react to. Same
- * idea as `MessageList`'s own poll-driven `tick` for its ack-timeout check.
- */
-const TICK_MS: number = 300;
 const FADE_MS: number = 200;
+/** Slack added on top of the exact `HAPPY_WINDOW_MS` remainder before the
+ * happy-window-expiry recheck fires (see `scheduleHappyExpiryIfNeeded`), so
+ * `Date.now()` has unambiguously crossed the threshold by the time it runs. */
+const HAPPY_EXPIRY_SLACK_MS: number = 50;
 
 function builtinImageFor(state: PetState): Resource {
   if (state === 'thinking') {
@@ -39,6 +36,17 @@ function builtinImageFor(state: PetState): Resource {
  * a specific event type — `displayedState`/`imageSrc`/`petOpacity` only ever
  * get written from that one comparison, as a cache of the derivation's own
  * output for rendering/animation purposes.
+ *
+ * No poll. `TaskStore.phaseOf(...)`/`SessionStore.totalUnread()` read
+ * `@Trace private Map` fields through each store's own public method —
+ * exactly how `MessageList` depends on `ChatStore`'s private `@Trace
+ * messages` Map via `chat.messagesOf(...)`, with no `@Monitor` anywhere.
+ * ArkUI V2 collects render dependencies automatically from whatever
+ * `@Trace` state a component reads during `build()`; `private` on the
+ * backing field is irrelevant since the component never touches the field
+ * itself, only the store's public accessor. `@Monitor` (see `Index.ets`)
+ * is the right tool for *side effects* (starting the gateway, bootstrapping
+ * a session) — not for render triggers, which don't need it at all.
  */
 @ComponentV2
 export struct PetMini {
@@ -47,50 +55,44 @@ export struct PetMini {
   @Local private session: SessionStore = SessionStore.connect();
   @Local private auth: AuthStore = AuthStore.connect();
 
-  @Local private tick: number = 0;
   @Local private imageSrc: ResourceStr = $r('app.media.pet_idle');
   @Local private petOpacity: number = 1;
 
   /** Not `@Trace` — bookkeeping for change-detection only, never rendered directly. */
   private displayedState: PetState = 'idle';
-  private tickTimer: number = -1;
   private fadeTimer: number = -1;
   /** Guards against a slow `PetImageCache.uriFor()` from an earlier state
    * landing after a newer state has already taken over. */
   private requestSeq: number = 0;
+  /** Non-`-1` while a deferred `applyDerivedState()` commit (see
+   * `trackDerivedState`) is pending — at most one is ever scheduled. */
+  private commitTimer: number = -1;
+  /** One-shot recheck for the clock-driven "happy" window closing on its
+   * own (see `scheduleHappyExpiryIfNeeded`). */
+  private happyExpiryTimer: number = -1;
+  /** `connection.connectedAtMs` value the pending `happyExpiryTimer`
+   * targets, so re-entering `build()` during the crossfade's own animation
+   * frames doesn't rearm it repeatedly. `-1` means "none pending". */
+  private happyExpiryFor: number = -1;
 
   aboutToAppear(): void {
     PetImageCache.instance.init(getContext(this) as common.UIAbilityContext);
-    this.tickTimer = setInterval(() => {
-      this.tick += 1;
-    }, TICK_MS);
     this.applyDerivedState();
   }
 
   aboutToDisappear(): void {
-    if (this.tickTimer !== -1) {
-      clearInterval(this.tickTimer);
-      this.tickTimer = -1;
-    }
     if (this.fadeTimer !== -1) {
       clearTimeout(this.fadeTimer);
       this.fadeTimer = -1;
     }
-  }
-
-  /**
-   * Fires on every tick (see `TICK_MS` above) and on every change to the
-   * three store fields that don't need a poll to be noticed promptly
-   * (`bridgeConnected`/`connectedAtMs`/`currentChatKey`). `task.phaseOf(...)`
-   * and `session.totalUnread()` changes are picked up by the next tick
-   * instead of a dedicated Monitor path — both are backed by private `Map`
-   * fields on their respective stores, and reaching into another module's
-   * private field by name from a Monitor path string felt like the wrong
-   * kind of coupling for a sub-300ms latency difference nobody will notice.
-   */
-  @Monitor('tick', 'connection.bridgeConnected', 'connection.connectedAtMs', 'session.currentChatKey')
-  onInputsChanged(_monitor: IMonitor): void {
-    this.applyDerivedState();
+    if (this.commitTimer !== -1) {
+      clearTimeout(this.commitTimer);
+      this.commitTimer = -1;
+    }
+    if (this.happyExpiryTimer !== -1) {
+      clearTimeout(this.happyExpiryTimer);
+      this.happyExpiryTimer = -1;
+    }
   }
 
   private currentInputs(): PetInputs {
@@ -100,6 +102,64 @@ export struct PetMini {
       bridgeConnected: this.connection.bridgeConnected,
       msSinceConnected: Date.now() - this.connection.connectedAtMs,
     };
+  }
+
+  /**
+   * Called every `build()` (see `imageArg` below). Reading the four store
+   * inputs via `currentInputs()` is what registers this component as a V2
+   * render-dependency observer of `TaskStore.phases`/`SessionStore.unread`/
+   * `ConnectionStore.bridgeConnected`/`ConnectionStore.connectedAtMs` — see
+   * the class doc. That read is pure; it mutates nothing.
+   *
+   * What's deliberately *not* done synchronously here is committing a
+   * detected change: mutating `@Local`/`@Trace` state (`displayedState`,
+   * `imageSrc`, `petOpacity`) while a render is in progress is the one
+   * thing every other component in this codebase (`MessageList`, `Index`)
+   * takes care to avoid — mutations always happen from a callback (timer,
+   * event handler, Promise) outside the render call stack. So a detected
+   * change is committed via a single deferred `setTimeout(..., 0)`
+   * (`commitTimer`, deduped so at most one is ever pending) rather than
+   * applied inline — a one-shot callback per change, not a poll.
+   */
+  private trackDerivedState(): void {
+    const inputs: PetInputs = this.currentInputs();
+    this.scheduleHappyExpiryIfNeeded(inputs.msSinceConnected);
+    const next: PetState = derivePetState(inputs);
+    if (next === this.displayedState || this.commitTimer !== -1) {
+      return;
+    }
+    this.commitTimer = setTimeout(() => {
+      this.commitTimer = -1;
+      this.applyDerivedState();
+    }, 0);
+  }
+
+  /**
+   * The one `derivePetState` input that can flip purely from the clock:
+   * `msSinceConnected <= HAPPY_WINDOW_MS` (the "happy" window) can expire
+   * with no store `@Trace` write to react to — `Date.now()` just moves past
+   * the threshold. Arms a single one-shot `setTimeout` per connection event
+   * (deduped by `happyExpiryFor` against `connection.connectedAtMs`) that
+   * fires once, right after the window closes, and forces a fresh
+   * `applyDerivedState()` check. Not a repeating poll: at most one timer is
+   * ever alive, and it disarms itself after firing.
+   */
+  private scheduleHappyExpiryIfNeeded(msSinceConnected: number): void {
+    if (msSinceConnected > HAPPY_WINDOW_MS) {
+      return;
+    }
+    if (this.happyExpiryTimer !== -1 && this.happyExpiryFor === this.connection.connectedAtMs) {
+      return;
+    }
+    if (this.happyExpiryTimer !== -1) {
+      clearTimeout(this.happyExpiryTimer);
+    }
+    this.happyExpiryFor = this.connection.connectedAtMs;
+    const remaining: number = Math.max(0, HAPPY_WINDOW_MS - msSinceConnected) + HAPPY_EXPIRY_SLACK_MS;
+    this.happyExpiryTimer = setTimeout(() => {
+      this.happyExpiryTimer = -1;
+      this.applyDerivedState();
+    }, remaining);
   }
 
   private applyDerivedState(): void {
@@ -149,8 +209,18 @@ export struct PetMini {
       });
   }
 
+  /** Expression form of `trackDerivedState()` so it runs as part of
+   * evaluating `build()`'s root node's argument, not as a bare statement
+   * before it (ArkTS's `build()` wants a single UI expression — see
+   * `MessageList`'s note on the same constraint). Reading `this.imageSrc`
+   * here is also itself a render-dependency read, same as before. */
+  private imageArg(): ResourceStr {
+    this.trackDerivedState();
+    return this.imageSrc;
+  }
+
   build() {
-    Image(this.imageSrc)
+    Image(this.imageArg())
       .width(22)
       .height(22)
       .borderRadius(11)
