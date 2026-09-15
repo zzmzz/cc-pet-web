@@ -1,7 +1,9 @@
 import { SlashCommandSpec, SlashCommandCategory } from '../model/Protocol';
 
 export const BUILTIN_COMMANDS: SlashCommandSpec[] = [
-  { command: '/clear', description: '清空聊天记录', category: 'builtin', type: 'local' },
+  // Description, not behaviour: `/clear` only drops the local view (see
+  // `MessageInput.runLocal`), and the server still has every message.
+  { command: '/clear', description: '清空本地视图（重连后恢复）', category: 'builtin', type: 'local' },
   { command: '/settings', description: '打开设置面板', category: 'builtin', type: 'local' },
   { command: '/connect', description: '连接 cc-connect Bridge', category: 'builtin', type: 'local' },
   { command: '/disconnect', description: '断开 cc-connect Bridge', category: 'builtin', type: 'local' },

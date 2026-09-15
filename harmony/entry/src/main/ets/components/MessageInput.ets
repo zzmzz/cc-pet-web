@@ -5,6 +5,7 @@ import { RestClient, UnauthorizedError } from '../gateway/RestClient';
 import { bridgeConnectUrl } from '../model/Endpoints';
 import { SlashCommandSpec } from '../model/Protocol';
 import { isSlashInput, matchCommands, mergeCommands } from '../logic/slashCommands';
+import { splitChatKey } from '../logic/normalizeEvent';
 import { AuthStore } from '../store/AuthStore';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
@@ -87,7 +88,19 @@ export struct MessageInput {
   private runLocal(spec: SlashCommandSpec): void {
     this.text = '';
     if (spec.command === '/clear') {
+      // Local view only, and the toast says so. This clears `ChatStore` for
+      // this chat and nothing else: the server keeps every message, and
+      // because clearing resets `ChatStore.maxSeqOf(chatKey)` to 0, the very
+      // next `bridge:manifest` backfill takes the cold-start path and pulls
+      // the whole transcript straight back. The command used to read as
+      // destructive ("清空聊天记录") while doing none of that. A real delete
+      // would need either a server change (out of scope — this branch's
+      // defining guarantee is zero server changes) or new persisted local
+      // state to remember the cut point across reconnects, so the honest
+      // move is to describe what actually happens rather than to imply a
+      // deletion that never occurs.
       ChatStore.connect().clear(this.chatKey);
+      promptAction.showToast({ message: '已清空本地视图，重新连接后会重新拉取历史' });
     } else if (spec.command === '/settings') {
       // No settings screen exists yet in this codebase — degrading
       // honestly rather than faking a screen: tell the user plainly that
@@ -118,7 +131,7 @@ export struct MessageInput {
    * (`LoginGate.ets`, `PetImageCache.ets`) — none of them swallow silently.
    */
   private toggleBridge(connect: boolean): void {
-    const bridgeId: string = this.chatKey.split('::')[0] ?? '';
+    const bridgeId: string = splitChatKey(this.chatKey).connectionId;
     if (bridgeId.length === 0) {
       return;
     }
