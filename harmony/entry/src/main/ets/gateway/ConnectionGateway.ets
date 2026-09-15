@@ -378,6 +378,7 @@ export class ConnectionGateway {
     // is a no-op for them by design (see SessionStore).
     SessionStore.connect().incrementUnread(chatKey);
     NotificationGateway.instance.notifyReply(
+      chatKey,
       SessionStore.connect().labelOf(chatKey),
       text.length > 80 ? `${text.slice(0, 80)}…` : text,
     );

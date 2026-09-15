@@ -1,4 +1,6 @@
+import { common } from '@kit.AbilityKit';
 import { SessionStore } from '../store/SessionStore';
+import { NotificationGateway } from '../gateway/NotificationGateway';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { PetMini } from './PetMini';
@@ -12,6 +14,16 @@ import { PetMini } from './PetMini';
 @ComponentV2
 export struct ChatWindow {
   @Local private session: SessionStore = SessionStore.connect();
+
+  /**
+   * First entry into the chat screen (Task 14 brief) — ask once whether
+   * notifications may be shown. `NotificationGateway.requestPermission` is
+   * itself idempotent and swallows a decline, so this fire-and-forget call
+   * never blocks rendering and never throws into the component tree.
+   */
+  aboutToAppear(): void {
+    NotificationGateway.instance.requestPermission(getContext(this) as common.UIAbilityContext);
+  }
 
   build() {
     Column() {

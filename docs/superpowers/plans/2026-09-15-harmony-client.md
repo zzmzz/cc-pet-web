@@ -2370,7 +2370,7 @@ git commit -m "feat(harmony): guard REST endpoint methods against the server rou
   - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number, seq: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
   - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`bridges: BridgeInfo[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(frame: WsFrame): void`、`applySessions(sessions: Session[]): void`、`applySkills(frame: WsFrame): void`
   - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
-  - `NotificationGateway.instance`：`notifyReply(title: string, body: string): Promise<void>`
+  - `NotificationGateway.instance`：`notifyReply(chatKey: string, title: string, body: string): Promise<void>`（Task 14 把原始占位签名 `notifyReply(title, body)` 加宽为带 `chatKey` 的三参版本——发布通知时要把 `chatKey` 哈希成通知 `id`，让同一会话的重复通知互相覆盖而不是堆叠；`title`/`body` 本身无法提供这个稳定的按会话 id，因为两个会话可能共享同一个 label。这是继 Task 12 收窄 `outboxEntriesOf` 之后本文档记录的第二次契约变更）
 
 这份清单是 Task 12–17 的唯一契约来源——后续任务只许调用此处列出的方法。需要新方法时，先回到本任务补齐 store 再用。
 
@@ -2937,9 +2937,11 @@ git commit -m "feat(harmony): add derived pet avatar with per-token image cache"
 
 **Interfaces:**
 - Consumes: `@kit.NotificationKit`
-- Produces: `interface Notifier { notifyReply(title: string, body: string): Promise<void> }`；`NotificationGateway.instance` 实现该接口。
+- Produces: `interface Notifier { notifyReply(chatKey: string, title: string, body: string): Promise<void> }`；`NotificationGateway.instance` 实现该接口。
 
 接口化是刻意的：将来换 Push Kit 只替换实现，`ConnectionGateway` 不动。
+
+**实测契约变更**：签名比 Task 11 占位版多了一个前置 `chatKey` 参数。通知 `id` 要按 chatKey 哈希（本任务要求，见下），同一会话的重复通知才能互相覆盖而不是堆叠；`title`/`body` 单独提供不了这个稳定的按会话 id。`ConnectionGateway.afterAssistantReply` 的调用点已同步改为 `notifyReply(chatKey, title, body)`。
 
 - [ ] **Step 1: 声明通知权限并申请**
 
