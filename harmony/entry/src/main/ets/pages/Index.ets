@@ -6,16 +6,14 @@ import { common } from '@kit.AbilityKit';
 @ComponentV2
 struct Index {
   @Local ready: boolean = false;
-  // Holding the singleton via @Local is what lets ArkUI V2 track this
-  // component as an observer of AuthStore's @Trace fields — reading
-  // AuthStore.instance.* directly in build() does not register a
-  // dependency, so mutations elsewhere (e.g. LoginGate.verify()) would
-  // never re-render this page live. See docs/superpowers/plans/
-  // 2026-09-15-harmony-client.md for the full writeup.
-  @Local auth: AuthStore = AuthStore.instance;
+  // `AuthStore.connect()` (AppStorageV2-backed) is required here, not a
+  // bare static singleton — see AuthStore.ets for why. Holding the result
+  // via @Local is what lets ArkUI V2 track this component as an observer
+  // of AuthStore's @Trace fields.
+  @Local auth: AuthStore = AuthStore.connect();
 
   async aboutToAppear(): Promise<void> {
-    await AuthStore.instance.init(getContext(this) as common.UIAbilityContext);
+    await this.auth.init(getContext(this) as common.UIAbilityContext);
     this.ready = true;
   }
 

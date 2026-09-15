@@ -1,8 +1,30 @@
 import { http } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+
+const DOMAIN = 0x0000;
+const TAG = 'RestClient';
 
 export class UnauthorizedError extends Error {
   constructor() {
     super('unauthorized');
+  }
+}
+
+/**
+ * Thrown when `request.request()` itself fails — before any HTTP response was
+ * received (synchronous parameter rejection, DNS/connect failure, TLS error,
+ * timeout, etc). `code` is the ArkTS/NetStack `BusinessError.code`, NOT an
+ * HTTP status code. See @ohos.net.http.d.ts for the code table (e.g. 401 =
+ * "Parameter error", 2300006 = "Failed to resolve the host name", 2300007 =
+ * "Failed to connect to the server").
+ */
+export class NetworkError extends Error {
+  code: number;
+
+  constructor(code: number, message: string) {
+    super(message);
+    this.code = code;
   }
 }
 
@@ -19,22 +41,32 @@ export class RestClient {
   private async request(path: string, method: http.RequestMethod, body: string): Promise<string> {
     const request: http.HttpRequest = http.createHttp();
     try {
-      const response: http.HttpResponse = await request.request(`${this.baseUrl}${path}`, {
-        method: method,
-        header: {
-          'Authorization': `Bearer ${this.token}`,
-          'Content-Type': 'application/json',
-        },
-        extraData: body.length > 0 ? body : undefined,
-        expectDataType: http.HttpDataType.STRING,
-        connectTimeout: 10000,
-        readTimeout: 30000,
-      });
+      const url: string = `${this.baseUrl}${path}`;
+      let response: http.HttpResponse;
+      try {
+        response = await request.request(url, {
+          method: method,
+          header: {
+            'Authorization': `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+          extraData: body.length > 0 ? body : undefined,
+          expectDataType: http.HttpDataType.STRING,
+          connectTimeout: 10000,
+          readTimeout: 30000,
+        });
+      } catch (err) {
+        const businessError: BusinessError = err as BusinessError;
+        hilog.error(DOMAIN, TAG, 'request.request() rejected before any network attempt: url=%{public}s code=%{public}d message=%{public}s',
+          url, businessError.code, businessError.message);
+        throw new NetworkError(businessError.code, businessError.message);
+      }
       if (response.responseCode === 401) {
         throw new UnauthorizedError();
       }
       if (response.responseCode < 200 || response.responseCode >= 300) {
-        throw new Error(`http ${response.responseCode}`);
+        hilog.error(DOMAIN, TAG, 'unexpected http status: url=%{public}s status=%{public}d', url, response.responseCode);
+        throw new NetworkError(response.responseCode, `http ${response.responseCode}`);
       }
       return response.result as string;
     } finally {

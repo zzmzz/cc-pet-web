@@ -26,19 +26,44 @@
 - `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
 - 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
 - **REST 路径不得硬编码**：Task 10B 之后，所有 gateway 从 `model/Endpoints.ets` 取端点与 URL 构造函数。服务端改了方法或路径，`pnpm test` 会红。
-- **组件访问 store 必须用 `@Local` 持有引用**，不要在 `build()` 里直接写 `SomeStore.instance.field`。ArkUI V2 的依赖收集基于组件持有的可观察对象，静态访问不建立依赖，表现为数据变了但界面不刷新——Task 10 真机实测踩到，当时用恒真条件 `this.tick >= 0` 绕过，那是症状不是解法。正确写法：
+- **Store 单例必须通过 `AppStorageV2.connect()` 获取，禁止 `static readonly instance = new XxxStore()` 裸单例。** 这条规则替换了本文档更早版本里的「`@Local` 持有 `static readonly instance` 即可」的说法——那个说法**已被真机 + 模拟器实测证伪**：`@Local auth: AuthStore = AuthStore.instance` 编译通过、跑得起来，`save()` 也确实同步把 `authorized` 置为 `true` 并落盘，但同一个 `Index` 组件的 `build()` 就是不会因此重新渲染；用 `@Monitor('auth.authorized')` 挂了一个探针，登录成功后探针**从未触发**，实锤了这个持有方式根本没有把 `Index` 注册成 `AuthStore` 的 V2 观察者。这是本任务（reactivity-fix）第二次返工才发现的，前两次「修复」都是在真机上被打断验证、没跑完整个登录时序就报了完成。
+
+  **正确写法**——store 类内部提供 `static connect()`，用 `AppStorageV2`（`@kit.ArkUI`）按 key 惰性创建/取回共享实例；所有消费方（包括发起 mutation 的组件）都必须经由 `connect()` 拿引用，不能有任何地方保留一份裸的 `static instance`：
 
   ```typescript
+  // store/AuthStore.ets
+  import { AppStorageV2 } from '@kit.ArkUI';
+
+  @ObservedV2
+  export class AuthStore {
+    static connect(): AuthStore {
+      const instance = AppStorageV2.connect(AuthStore, 'AuthStore', (): AuthStore => new AuthStore());
+      if (instance === undefined) {
+        throw new Error('AuthStore.connect(): AppStorageV2.connect returned undefined');
+      }
+      return instance;
+    }
+    @Trace authorized: boolean = false;
+    // ...
+  }
+
+  // pages/Index.ets
   @ComponentV2
   struct SomePage {
-    @Local auth: AuthStore = AuthStore.instance;   // 持有引用，V2 才能追踪
+    @Local auth: AuthStore = AuthStore.connect();   // 惰性 connect，V2 才能追踪
     build() {
-      if (this.auth.authorized) { /* ... */ }      // 通过 this.auth 访问
+      if (this.auth.authorized) { /* ... */ }       // 通过 this.auth 访问
     }
   }
+
+  // components/LoginGate.ets — mutation 也要走 connect()，不能各写各的静态引用
+  await AuthStore.connect().save(url, token);
   ```
 
   同理，组件间传递 store 用 `@Param`，不要各自去取静态实例。
+
+  详细复现证据、两次失败的修复尝试记录、以及排查过程见
+  `.superpowers/sdd/2026-09-15-harmony-client/reactivity-fix-report.md`。
 - 工作分支：`harmony-client`。
 - **真机构建与安装（已验证可用）**：
 

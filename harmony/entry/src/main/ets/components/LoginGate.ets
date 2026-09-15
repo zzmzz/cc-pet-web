@@ -23,7 +23,7 @@ export struct LoginGate {
       // route that authenticates by payload rather than by header.
       const payload: VerifyRequest = { token: this.token.trim() };
       await client.postJson(Endpoints.AUTH_VERIFY.path, JSON.stringify(payload));
-      await AuthStore.instance.save(this.serverUrl.trim(), this.token.trim());
+      await AuthStore.connect().save(this.serverUrl.trim(), this.token.trim());
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         this.error = 'Token 无效';
