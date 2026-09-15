@@ -109,7 +109,7 @@ export default function outboxTest() {
       box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
       box.markTransmitted(['id-a'], 1000);
       box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
-      box.reviveAuto();
+      box.reviveAuto(99999999);
       expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
       expect(box.takeSendable(99999999).length).assertEqual(1);
     });
@@ -119,7 +119,16 @@ export default function outboxTest() {
       box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
       box.markTransmitted(['id-a'], 1000);
       box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
-      box.reviveAuto();
+      box.reviveAuto(99999999);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
+    });
+
+    it('does not revive a failed entry when retransmitting', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.markTransmitted(['id-a'], 99999999);
       expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
     });
 

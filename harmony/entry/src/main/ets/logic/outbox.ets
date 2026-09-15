@@ -52,13 +52,19 @@ export class Outbox {
     this.entries = kept;
   }
 
+  /**
+   * Restart the ack budget for entries just written to the socket.
+   *
+   * Only entries still waiting for an ack are touched. A failed entry must not
+   * be revived here — that decision belongs to reviveAuto() or to the user's
+   * explicit resend(). Writing status unconditionally would reopen the very
+   * hole those two methods exist to close.
+   */
   markTransmitted(ids: string[], now: number): void {
+    const wanted: Set<string> = new Set<string>(ids);
     for (const entry of this.entries) {
-      for (const id of ids) {
-        if (entry.clientMsgId === id) {
-          entry.transmittedAt = now;
-          entry.status = 'pending';
-        }
+      if (entry.status === 'pending' && wanted.has(entry.clientMsgId)) {
+        entry.transmittedAt = now;
       }
     }
   }
@@ -104,10 +110,14 @@ export class Outbox {
    * they get to decide again rather than having a two-minute-old message fire
    * on its own after the network returns.
    */
-  reviveAuto(): void {
+  reviveAuto(now: number): void {
     for (const entry of this.entries) {
       if (entry.status === 'failed' && entry.policy === 'auto') {
         entry.status = 'pending';
+        // Reset createdAt too, matching the web store: a revived entry is a
+        // fresh send attempt, and anything rendering "sent N ago" should agree
+        // across the two clients.
+        entry.createdAt = now;
         entry.transmittedAt = 0;
       }
     }
