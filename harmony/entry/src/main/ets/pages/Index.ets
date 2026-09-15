@@ -1,6 +1,12 @@
+import { promptAction } from '@kit.ArkUI';
 import { AuthStore } from '../store/AuthStore';
 import { LoginGate } from '../components/LoginGate';
 import { ChatWindow } from '../components/ChatWindow';
+import { ConnectionBadge } from '../components/ConnectionBadge';
+import { PetMini } from '../components/PetMini';
+import { SessionSidebar } from '../components/SessionSidebar';
+import { SessionSheet } from '../components/SessionSheet';
+import { ResponsiveLayout } from '../components/ResponsiveLayout';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
 import { SessionStore } from '../store/SessionStore';
 import { chatKeyOf } from '../logic/normalizeEvent';
@@ -23,6 +29,15 @@ struct Index {
   // `SessionStore`'s `@Trace bridges` field.
   @Local session: SessionStore = SessionStore.connect();
   private gatewayStarted: boolean = false;
+
+  /** Live window width in vp, from `onAreaChange` on the root container
+   * below. Drives every breakpoint decision (`ResponsiveLayout.*`) — kept
+   * as plain window width, not a device-type check, so a foldable
+   * unfolding mid-session or a resized PC window re-renders exactly like
+   * an ordinary width change. */
+  @Local windowWidth: number = 0;
+  /** Two-way bound to the COMPACT band's `.bindSheet()` below. */
+  @Local sessionSheetVisible: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     await this.auth.init(getContext(this) as common.UIAbilityContext);
@@ -62,19 +77,19 @@ struct Index {
    */
   @Monitor('session.bridges')
   onBridgesChanged(_monitor: IMonitor): void {
-    this.maybeBootstrapSession();
+    this.defaultToFirstBridgeIfNoneSelected();
   }
 
   /**
-   * Task 16 owns real session selection (SessionSidebar/SessionSheet over
-   * SessionStore's session list). Until that lands, default to the first
-   * manifest-advertised bridge's "default" session as soon as one is known,
-   * so the chat window has something to show — otherwise `currentChatKey`
-   * stays '' forever (nothing else in the app sets it yet) and the chat
-   * looks permanently empty. A no-op once `currentChatKey` is already set,
-   * so calling this more than once (see both call sites below) is safe.
+   * First-load default: as soon as the manifest lists at least one bridge
+   * and nothing is selected yet, open that bridge's 'default' session so
+   * the chat surface isn't blank on first launch. This is a genuine
+   * product default, not a debug stand-in — `SessionSidebar`/`SessionSheet`
+   * (Task 16) are the real, always-available way to switch away from it
+   * afterwards. A no-op once `currentChatKey` is already set, so calling
+   * this more than once (see both call sites below) is safe.
    */
-  private maybeBootstrapSession(): void {
+  private defaultToFirstBridgeIfNoneSelected(): void {
     if (this.session.currentChatKey.length > 0) {
       return;
     }
@@ -100,7 +115,38 @@ struct Index {
     // component's own construction), so this checks synchronously,
     // immediately after kicking off the connection, instead of relying on
     // the Monitor alone to catch a change that may already have happened.
-    this.maybeBootstrapSession();
+    this.defaultToFirstBridgeIfNoneSelected();
+  }
+
+  private onAreaChanged(newArea: Area): void {
+    this.windowWidth = Math.max(0, Number(newArea.width));
+  }
+
+  private openSettings(): void {
+    // No settings screen exists yet — same honest-degradation toast
+    // `MessageInput`'s `/settings` local command already uses.
+    promptAction.showToast({ message: '设置面板尚未实现' });
+  }
+
+  /**
+   * Same "fall back to the bridge's advertised name" upgrade
+   * `SessionSidebar`/`SessionSheet` apply to each row — `labelOf` itself
+   * only knows a server-assigned `Session.label`, and returns the raw
+   * chatKey when no such record exists yet (see SessionStore.ets), which
+   * reads as a raw `bridgeId::sessionKey` string in the top bar otherwise.
+   */
+  private currentSessionLabel(): string {
+    const key: string = this.session.currentChatKey;
+    const label: string = this.session.labelOf(key);
+    if (label !== key) {
+      return label;
+    }
+    for (const bridge of this.session.bridges) {
+      if (chatKeyOf(bridge.id, DEFAULT_SESSION_KEY) === key) {
+        return bridge.name;
+      }
+    }
+    return label;
   }
 
   build() {
@@ -109,11 +155,94 @@ struct Index {
         Text('加载中…')
       } else if (!this.auth.authorized) {
         LoginGate()
+      } else if (ResponsiveLayout.usesSideSessions(this.windowWidth)) {
+        this.SideSessionShell()
       } else {
-        ChatWindow()
+        this.CompactShell()
       }
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_oldValue: Area, newValue: Area) => { this.onAreaChanged(newValue); })
+  }
+
+  /** MEDIUM/EXPANDED: persistent left `SessionSidebar` + chat. EXPANDED
+   * additionally caps chat content at `ResponsiveLayout.contentMaxWidth`
+   * (a no-op below that band) with `pageMargin` side breathing room, so a
+   * wide window doesn't stretch bubbles to unreadable line lengths. */
+  @Builder
+  SideSessionShell() {
+    Row({ space: 0 }) {
+      SessionSidebar()
+      Column({ space: 0 }) {
+        this.TopBar(false)
+        ChatWindow()
+          .layoutWeight(1)
+          .constraintSize({ maxWidth: ResponsiveLayout.contentMaxWidth(this.windowWidth) })
+      }
+      .layoutWeight(1)
+      .height('100%')
+      .padding({ left: ResponsiveLayout.pageMargin(this.windowWidth), right: ResponsiveLayout.pageMargin(this.windowWidth) })
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** COMPACT: top bar + chat, session switcher lives behind a thumb-reachable
+   * bottom sheet opened from the top bar's "会话" button. */
+  @Builder
+  CompactShell() {
+    Column({ space: 0 }) {
+      this.TopBar(true)
+      ChatWindow().layoutWeight(1).width('100%')
+    }
+    .width('100%')
+    .height('100%')
+    .bindSheet($$this.sessionSheetVisible, this.SessionSheetContent(), {
+      height: '50%',
+      dragBar: true,
+      showClose: true,
+      onDisappear: () => { this.sessionSheetVisible = false; }
+    })
+  }
+
+  @Builder
+  SessionSheetContent() {
+    SessionSheet({ onSelect: () => { this.sessionSheetVisible = false; } })
+  }
+
+  /** Shared top bar across all three bands: pet mascot, current session
+   * label, connection status, settings. `showSwitcher` adds a "会话" button
+   * that opens the bottom sheet — only needed in COMPACT, where the
+   * session list isn't otherwise visible. */
+  @Builder
+  TopBar(showSwitcher: boolean) {
+    Row({ space: 8 }) {
+      PetMini()
+      Text(this.currentSessionLabel())
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      ConnectionBadge()
+      if (showSwitcher) {
+        Button('会话')
+          .fontSize(13)
+          .height(28)
+          .backgroundColor(Color.Transparent)
+          .fontColor('#0A59F7')
+          .border({ width: 1, color: '#0A59F7' })
+          .onClick(() => { this.sessionSheetVisible = true; })
+      }
+      Button('设置')
+        .fontSize(13)
+        .height(28)
+        .backgroundColor(Color.Transparent)
+        .fontColor('#5A5F66')
+        .onClick(() => { this.openSettings(); })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 8, bottom: 8 })
   }
 }

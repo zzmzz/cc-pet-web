@@ -7,6 +7,7 @@ import parseInlineTest from './ParseInline.test';
 import slashCommandsTest from './SlashCommands.test';
 import outboxTest from './Outbox.test';
 import assistantMessageFromFrameTest from './AssistantMessageFromFrame.test';
+import responsiveLayoutTest from './ResponsiveLayout.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -18,4 +19,5 @@ export default function testsuite() {
   slashCommandsTest();
   outboxTest();
   assistantMessageFromFrameTest();
+  responsiveLayoutTest();
 }

@@ -3,13 +3,19 @@ import { SessionStore } from '../store/SessionStore';
 import { NotificationGateway } from '../gateway/NotificationGateway';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
-import { PetMini } from './PetMini';
 
 /**
  * The chat surface: message list over an input bar. Reads
  * `SessionStore.currentChatKey` itself (rather than taking it as a
- * `@Param`) so `Index` and Task 16's breakpoint layouts can drop this in
- * without each having to thread the active chat key through.
+ * `@Param`) so `Index` and the breakpoint layouts in `Index.ets` can drop
+ * this in without each having to thread the active chat key through.
+ *
+ * No header here (past a certain point this used to render its own
+ * PetMini + title row) — Task 16's three-band layout put a single shared
+ * top bar (PetMini + session label + ConnectionBadge + settings) in
+ * `Index.ets` instead, present above this component in every band, so the
+ * pet mascot appears exactly once regardless of whether the session
+ * switcher is a sidebar or a bottom sheet.
  */
 @ComponentV2
 export struct ChatWindow {
@@ -27,12 +33,6 @@ export struct ChatWindow {
 
   build() {
     Column() {
-      Row() {
-        PetMini()
-        Text('cc-pet').fontSize(16).fontWeight(FontWeight.Medium).margin({ left: 8 })
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       MessageList({ chatKey: this.session.currentChatKey })
         .layoutWeight(1)
         .width('100%')
