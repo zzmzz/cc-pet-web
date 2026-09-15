@@ -126,7 +126,21 @@ if ! wait_until 8 1 notification_visible; then
        " -- dumped shade layout at $LAYOUT"
 fi
 
+# The TITLE, not just the body. `ConnectionGateway.afterAssistantReply`
+# passes `SessionStore.labelOf(chatKey)` as the notification title, and
+# `labelOf` returned the raw chatKey whenever it had neither a `/api/sessions`
+# record nor a manifest bridge name to work with -- which was always, because
+# `/api/sessions` was never called. What a lock screen actually rendered was
+# the literal string below next to the reply text. Asserting its ABSENCE is
+# the check that would have caught that.
+RAW_CHAT_KEY="probe-bridge::default"
+if ui_contains "$LAYOUT" "$RAW_CHAT_KEY"; then
+  fail "the notification title is the raw chatKey '$RAW_CHAT_KEY' -- SessionStore.labelOf has no" \
+       " session record and no bridge-name fallback to name this chat with"
+fi
+
 # Leave the device in a neutral state (shade closed) for whatever runs next.
 hdc_ shell uitest uiInput keyEvent Back >/dev/null 2>&1 || true
 
-pass "backgrounded app received a reply and a real system notification containing '$EXPECTED_REPLY' appeared"
+pass "backgrounded app received a reply and a real system notification containing '$EXPECTED_REPLY'" \
+     " appeared, titled with a real session name rather than the raw chatKey"

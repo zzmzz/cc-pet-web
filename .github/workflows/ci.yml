@@ -33,6 +33,19 @@ jobs:
       - name: E2E regression (server + web integration)
         run: pnpm test:e2e
 
+      # The HarmonyOS client's protocol drift guard. It is named in the
+      # design doc (§5 and the §10 risk table) as the hard protection
+      # against this project's largest risk -- the web client moved 115
+      # commits in two months and added two WS events in that window -- and
+      # it has already caught one real drift. It only ever ran under
+      # `pnpm test`, which CI does not run: CI runs `pnpm test:e2e`, an
+      # explicit file list this test is not on. Until this step existed the
+      # guard was enforced by a convention in a design doc, not by anything
+      # that can fail a PR. Named explicitly rather than folded into
+      # test:e2e so a future edit to that script cannot silently drop it.
+      - name: Harmony protocol drift guard
+        run: pnpm --filter @cc-pet/server exec vitest run tests/harmony-protocol-alignment.test.ts
+
       - name: Build web
         run: pnpm --filter @cc-pet/web build
 
