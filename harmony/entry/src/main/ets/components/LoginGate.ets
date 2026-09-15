@@ -1,5 +1,6 @@
 import { AuthStore } from '../store/AuthStore';
-import { RestClient, UnauthorizedError } from '../gateway/RestClient';
+import { RestClient, UnauthorizedError, NetworkError } from '../gateway/RestClient';
+import { Endpoints } from '../model/Endpoints';
 
 interface VerifyRequest {
   token: string;
@@ -21,10 +22,16 @@ export struct LoginGate {
       // This endpoint is registered before the auth guard, so it is the one
       // route that authenticates by payload rather than by header.
       const payload: VerifyRequest = { token: this.token.trim() };
-      await client.postJson('/api/auth/verify', JSON.stringify(payload));
+      await client.postJson(Endpoints.AUTH_VERIFY.path, JSON.stringify(payload));
       await AuthStore.instance.save(this.serverUrl.trim(), this.token.trim());
     } catch (err) {
-      this.error = err instanceof UnauthorizedError ? 'Token 无效' : '无法连接服务器';
+      if (err instanceof UnauthorizedError) {
+        this.error = 'Token 无效';
+      } else if (err instanceof NetworkError) {
+        this.error = `无法连接服务器（错误码 ${err.code}）`;
+      } else {
+        this.error = '无法连接服务器';
+      }
     } finally {
       this.busy = false;
     }
