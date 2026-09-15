@@ -150,9 +150,77 @@ To generate a real signing config:
 Until this is done, `assembleHap` will fail (there is no valid signing config), but
 `ohpm install` and the local unit test command above both work without signing.
 
+Alternatively, `harmony/scripts/build.sh` wraps the `assembleHap` invocation above (same
+env vars, same command) and fails loudly with a clear message if `build-profile.json5` is
+missing or the resulting `.hap` doesn't appear where expected.
+
+## Device probes
+
+`harmony/scripts/device-*.sh` are operational checks you can run against a live emulator
+(or a real device, see below) to confirm the app still actually works end to end, not just
+that it compiles and unit-tests pass. Each one prints an explicit `PASS: [...]` or
+`FAIL: [...]` line and exits non-zero on failure — never rely on the exit code alone, and
+never assume silence means success.
+
+```bash
+export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
+cd harmony
+bash scripts/device-login-probe.sh
+bash scripts/device-chat-probe.sh
+bash scripts/device-reconnect-probe.sh
+bash scripts/device-notification-probe.sh
+```
+
+- `device-login-probe.sh` — launches the app and asserts it reaches either the login gate or
+  a logged-in chat screen; if it's at the login gate, drives a real login through it.
+- `device-chat-probe.sh` — sends a message through the real `MessageInput` UI and asserts
+  both it and a genuine assistant reply show up in the transcript.
+- `device-reconnect-probe.sh` — kills the server out from under a connected app, asserts the
+  connection badge leaves `已连接`, brings the server back, and asserts it recovers.
+- `device-notification-probe.sh` — backgrounds the app, waits for a delayed reply, and
+  asserts a real system notification appears in the notification shade.
+
+All four target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
+this project has been verified against the emulator since Task 10, not a physical phone, and
+these probes follow that same convention. Set `CCPET_DEVICE_TARGET` to point at a real device
+instead if you need to, but nothing here assumes one is attached, and by default nothing
+touches one.
+
+The chat/reconnect/notification probes clear the target's app data (`bm clean -n
+com.ccpet.client -d`) and log in fresh against a **throwaway local server + bridge fixture
+each probe starts and tears down itself** (a real, unmodified `packages/server` process on a
+scratch port, plus a minimal external-bridge stand-in that answers with a canned
+`reply_stream`) — never the operator's real server address or a real token. The login probe
+only drives a login if it finds the app already sitting at the login gate; if the app is
+already logged in (its own data, its own server), it only observes that and does not touch it.
+
+Two environment quirks these probes work around, discovered while building them:
+
+- **`hdc rport` (the reverse port forward letting the emulator reach a local server) has been
+  observed to silently die mid-session** (see the Task 17 report). The probes verify the
+  tunnel is actually registered before depending on it and re-establish it rather than hanging
+  on a dead one.
+- **The emulator can idle into a locked/screen-off state between runs**, and `aa start` alone
+  does not dismiss a lock screen. The probes detect this (no app UI visible after launch) and
+  wake + swipe past it before doing anything else.
+
+Screenshots, if you need one for debugging a probe by hand, come from `snapshot_display`
+(`hdc shell snapshot_display`), not `snapshot`.
+
+**Honesty note on responsive breakpoints:** only the COMPACT breakpoint has ever been
+observed on a device/emulator. The MEDIUM and EXPANDED breakpoints are implemented and
+unit-tested but have never been exercised on-device — the wider-format emulator instances
+(a foldable and a tablet) would not come up as `hdc` targets during this project (process
+alive, never reachable; see the Task 16 report for what was ruled out). None of these probes
+claim otherwise, and neither should anything you add here.
+
 ## Constraints
 
-- **Zero server changes.** This client only consumes the existing WebSocket bridge protocol
-  already used by `packages/web`; no server-side code in this repo is modified to support it.
+- **服务端零改动 (zero server changes).** This client only consumes the existing WebSocket
+  bridge protocol already used by `packages/web`; no code under `packages/` in this repo is
+  modified to support it, at any point in this project — not even for test fixtures. The
+  probes above start a real, unmodified `packages/server` process against a scratch data
+  directory for exactly this reason, rather than special-casing anything inside `packages/`
+  for HarmonyOS.
 - Task 1 (this scaffold) declares no `requestPermissions` in `entry/src/main/module.json5`.
   Network permission is added by Task 10, notification permission by Task 14.
