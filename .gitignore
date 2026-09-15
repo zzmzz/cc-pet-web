@@ -21,3 +21,13 @@ packages/web/test-results/
 
 # SDD plan scratch (ledger, briefs, reports, review packages)
 .superpowers/
+
+# HarmonyOS build artifacts / local machine config
+/harmony/build-profile.json5
+/harmony/oh_modules/
+/harmony/entry/oh_modules/
+/harmony/.hvigor/
+/harmony/.idea/
+/harmony/entry/build/
+/harmony/entry/.preview/
+/harmony/entry/.test/

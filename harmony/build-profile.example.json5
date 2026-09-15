@@ -1,0 +1,54 @@
+// This is a template for harmony/build-profile.json5, which is gitignored because it
+// is expected to hold a machine-local signing configuration.
+//
+// To generate a real one: open this project in DevEco Studio, log in with a Huawei
+// developer account, then use "Project Structure -> Signing Configs" with
+// "Automatically generate signature" enabled. DevEco will fill in a real
+// build-profile.json5 (with an actual signingConfigs entry) at the project root.
+// Copy that file's signingConfigs block into your own harmony/build-profile.json5,
+// or just copy this file to harmony/build-profile.json5 and replace the "<fill-me>"
+// placeholders below with the values DevEco generated.
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "<fill-me>",
+          "keyAlias": "<fill-me>",
+          "keyPassword": "<fill-me>",
+          "profile": "<fill-me>",
+          "signAlg": "<fill-me>",
+          "storeFile": "<fill-me>",
+          "storePassword": "<fill-me>"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry"
+    }
+  ]
+}

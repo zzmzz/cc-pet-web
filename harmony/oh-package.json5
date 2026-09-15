@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "cc-pet-harmony",
+  "version": "0.1.0",
+  "description": "Native HarmonyOS client for cc-pet",
+  "main": "",
+  "author": "cc-pet",
+  "license": "MIT",
+  "dependencies": {}
+}

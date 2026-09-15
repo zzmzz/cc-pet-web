@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "cc-pet entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "cc-pet"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "cc-pet"
+    }
+  ]
+}
