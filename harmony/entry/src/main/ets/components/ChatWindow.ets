@@ -1,6 +1,7 @@
 import { SessionStore } from '../store/SessionStore';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
+import { PetMini } from './PetMini';
 
 /**
  * The chat surface: message list over an input bar. Reads
@@ -14,6 +15,12 @@ export struct ChatWindow {
 
   build() {
     Column() {
+      Row() {
+        PetMini()
+        Text('cc-pet').fontSize(16).fontWeight(FontWeight.Medium).margin({ left: 8 })
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
       MessageList({ chatKey: this.session.currentChatKey })
         .layoutWeight(1)
         .width('100%')

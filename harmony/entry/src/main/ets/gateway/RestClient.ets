@@ -81,4 +81,47 @@ export class RestClient {
   postJson(path: string, body: string): Promise<string> {
     return this.request(path, http.RequestMethod.POST, body);
   }
+
+  /**
+   * Binary GET — for `Endpoints.PET_IMAGE` (and anything else that isn't
+   * JSON). Kept separate from `request()` above rather than generalizing it:
+   * `request()`'s `expectDataType: STRING` and its `Content-Type:
+   * application/json` header only make sense for the JSON callers, and
+   * threading a data-type parameter through just for one binary caller
+   * wasn't worth the churn to the existing (working, tested-via-Task-11/12)
+   * JSON path.
+   */
+  async getBinary(path: string): Promise<ArrayBuffer> {
+    const request: http.HttpRequest = http.createHttp();
+    try {
+      const url: string = `${this.baseUrl}${path}`;
+      let response: http.HttpResponse;
+      try {
+        response = await request.request(url, {
+          method: http.RequestMethod.GET,
+          header: {
+            'Authorization': `Bearer ${this.token}`,
+          },
+          expectDataType: http.HttpDataType.ARRAY_BUFFER,
+          connectTimeout: 10000,
+          readTimeout: 30000,
+        });
+      } catch (err) {
+        const businessError: BusinessError = err as BusinessError;
+        hilog.error(DOMAIN, TAG, 'getBinary request.request() rejected before any network attempt: url=%{public}s code=%{public}d message=%{public}s',
+          url, businessError.code, businessError.message);
+        throw new NetworkError(businessError.code, businessError.message);
+      }
+      if (response.responseCode === 401) {
+        throw new UnauthorizedError();
+      }
+      if (response.responseCode < 200 || response.responseCode >= 300) {
+        hilog.info(DOMAIN, TAG, 'getBinary non-2xx (expected for a token with no custom image): url=%{public}s status=%{public}d', url, response.responseCode);
+        throw new NetworkError(response.responseCode, `http ${response.responseCode}`);
+      }
+      return response.result as ArrayBuffer;
+    } finally {
+      request.destroy();
+    }
+  }
 }
