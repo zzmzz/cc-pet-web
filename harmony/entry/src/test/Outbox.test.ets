@@ -89,6 +89,40 @@ export default function outboxTest() {
       expect(box.takeSendable(99999999).length).assertEqual(1);
     });
 
+    it('does not offer a failed entry until something revives it', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      expect(box.takeSendable(99999999).length).assertEqual(0);
+    });
+
+    it('fails a manual entry that outlived its window', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.takeSendable(1000 + MANUAL_WINDOW_MS + 1);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
+    });
+
+    it('revives failed auto entries on reconnect', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.reviveAuto();
+      expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
+      expect(box.takeSendable(99999999).length).assertEqual(1);
+    });
+
+    it('leaves failed manual entries for the user to retry', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.reviveAuto();
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
+    });
+
     it('ignores duplicate client message ids', 0, () => {
       const box: Outbox = new Outbox();
       box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);

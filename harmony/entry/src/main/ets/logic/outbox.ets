@@ -82,12 +82,35 @@ export class Outbox {
       if (entry.policy === 'never') {
         continue;
       }
-      if (entry.policy === 'manual' && now - entry.createdAt > MANUAL_WINDOW_MS) {
-        continue;
+      // A manual entry that outlived its window fails here rather than being
+      // silently skipped: the user needs to see it went nowhere.
+      if (entry.policy === 'manual' && entry.status === 'pending'
+          && now - entry.createdAt > MANUAL_WINDOW_MS) {
+        entry.status = 'failed';
       }
-      out.push(entry);
+      // Only pending entries go on the wire. A failed entry needs an explicit
+      // decision first — reviveAuto() on reconnect, or resend() from the user.
+      if (entry.status === 'pending') {
+        out.push(entry);
+      }
     }
     return out;
+  }
+
+  /**
+   * Reconnect path: bring failed auto entries back.
+   *
+   * Manual entries are deliberately skipped. The user sent those by hand, so
+   * they get to decide again rather than having a two-minute-old message fire
+   * on its own after the network returns.
+   */
+  reviveAuto(): void {
+    for (const entry of this.entries) {
+      if (entry.status === 'failed' && entry.policy === 'auto') {
+        entry.status = 'pending';
+        entry.transmittedAt = 0;
+      }
+    }
   }
 
   resend(clientMsgId: string, now: number): void {
