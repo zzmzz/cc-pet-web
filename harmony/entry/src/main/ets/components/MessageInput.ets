@@ -23,7 +23,7 @@ export struct MessageInput {
 
   build() {
     Row({ space: 8 }) {
-      TextArea({ placeholder: '输入消息…', text: this.text })
+      TextArea({ placeholder: '输入消息…', text: $$this.text })
         .onChange((value: string) => { this.text = value; })
         .layoutWeight(1)
         .constraintSize({ minHeight: 40, maxHeight: 120 })

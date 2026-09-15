@@ -16,41 +16,48 @@ struct Index {
   // `AuthStore.connect()` (AppStorageV2-backed) is required here, not a
   // bare static singleton — see AuthStore.ets for why. Holding the result
   // via @Local is what lets ArkUI V2 track this component as an observer
-  // of AuthStore's @Trace fields.
+  // of AuthStore's @Trace fields, which in turn is what makes the
+  // `@Monitor('auth.authorized')` below able to watch it.
   @Local auth: AuthStore = AuthStore.connect();
   private session: SessionStore = SessionStore.connect();
   private gatewayStarted: boolean = false;
-  private authWatchTimer: number = -1;
   private sessionBootstrapTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
     await this.auth.init(getContext(this) as common.UIAbilityContext);
     this.ready = true;
-    // Polls rather than reacting synchronously here: this covers both
-    // "already logged in at launch" (authorized is already true) and
-    // "logs in a moment later via LoginGate" (authorized flips true off
-    // LoginGate's own state, asynchronously) with a single code path,
-    // without relying on this component's build() re-running as a place to
-    // trigger a one-time side effect.
-    this.authWatchTimer = setInterval(() => {
-      if (!this.auth.authorized) {
-        return;
-      }
-      clearInterval(this.authWatchTimer);
-      this.authWatchTimer = -1;
-      this.startGatewayOnce();
-    }, BOOTSTRAP_POLL_MS);
+    // No poll needed here (see onAuthorizedChanged below): `auth.init()`
+    // assigning `this.auth.authorized = true` above (the "already logged in
+    // at launch" case) is itself a `@Trace` write the Monitor is already
+    // registered to observe by this point, so it fires the same as a login
+    // arriving later via LoginGate.
   }
 
   aboutToDisappear(): void {
-    if (this.authWatchTimer !== -1) {
-      clearInterval(this.authWatchTimer);
-      this.authWatchTimer = -1;
-    }
     if (this.sessionBootstrapTimer !== -1) {
       clearInterval(this.sessionBootstrapTimer);
       this.sessionBootstrapTimer = -1;
     }
+  }
+
+  /**
+   * Replaces a 300ms `setInterval` poll on `auth.authorized` (fix round,
+   * Important-3). `auth` is `@Local`-held/`@Trace`-backed and already drives
+   * `build()` reactively — polling a value the framework already tracks was
+   * dead work, and cost up to 300ms of extra latency between login and the
+   * gateway actually connecting. `@Monitor` is the idiomatic ArkUI V2 tool
+   * for "run a side effect once when a tracked field changes": it fires
+   * synchronously off the same `@Trace` write, for both routes into this
+   * state (already-authorized at launch, or logging in later via
+   * LoginGate) — see `aboutToAppear` above for why no separate check is
+   * needed there anymore.
+   */
+  @Monitor('auth.authorized')
+  onAuthorizedChanged(_monitor: IMonitor): void {
+    if (!this.auth.authorized) {
+      return;
+    }
+    this.startGatewayOnce();
   }
 
   private startGatewayOnce(): void {

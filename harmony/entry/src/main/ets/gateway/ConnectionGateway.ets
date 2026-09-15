@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
-import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
+import { Outbox, OutboxStatus, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
@@ -23,6 +23,17 @@ interface OutgoingEnvelope {
   sessionKey: string;
   content: string;
   clientMsgId: string;
+}
+
+/**
+ * Minimal read-only view of one Outbox entry's send status, for
+ * `ConnectionGateway.outboxEntriesOf` — the UI only ever needs these two
+ * fields to render/retry a bubble, never the entry's `text`/`policy`/
+ * `createdAt`/`transmittedAt`.
+ */
+export interface OutboxStatusView {
+  clientMsgId: string;
+  status: OutboxStatus;
 }
 
 /**
@@ -230,15 +241,22 @@ export class ConnectionGateway {
   }
 
   /**
-   * Read-only outbox snapshot for one chat's bubbles. Added for Task 12: the
-   * Task 11 contract (see that brief's Interfaces block) didn't expose the
-   * outbox, but the send-state UI it specifies ("failed 的气泡标红...来自
+   * Per-message send-status view for one chat's bubbles. Added for Task 12:
+   * the Task 11 contract (see that brief's Interfaces block) didn't expose
+   * the outbox, but the send-state UI it specifies ("failed 的气泡标红...来自
    * Outbox，不在 ChatStore 里另存一份") has no other way to read per-message
-   * status. Purely additive — returns a snapshot, never mutates — so it does
-   * not change any behavior the Task 11 contract already relies on.
+   * status. Narrowed (Task 12 fix round) to a small read-only view carrying
+   * only `clientMsgId`/`status` — the UI never needs `text`/`policy`/
+   * `createdAt`/`transmittedAt`, and handing out live `OutboxEntry` objects
+   * leaked those fields for no reason. Returns a fresh array of fresh view
+   * objects every call; mutates nothing.
    */
-  outboxEntriesOf(chatKey: string): OutboxEntry[] {
-    return this.outbox.entriesOf(chatKey);
+  outboxEntriesOf(chatKey: string): OutboxStatusView[] {
+    const views: OutboxStatusView[] = [];
+    for (const entry of this.outbox.entriesOf(chatKey)) {
+      views.push({ clientMsgId: entry.clientMsgId, status: entry.status });
+    }
+    return views;
   }
 
   private transmit(ids: string[]): void {

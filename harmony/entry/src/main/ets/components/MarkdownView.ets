@@ -11,6 +11,10 @@ const CODE_TEXT: string = '#1F2328';
 const QUOTE_BAR_COLOR: string = '#D0D5DB';
 const TABLE_BORDER_COLOR: string = '#E1E4E8';
 const HEADING_SIZES: number[] = [24, 22, 20, 18, 16, 15];
+/** Rough per-character width estimate (px) for sizing table columns — see `columnWidth()`. */
+const TABLE_CHAR_WIDTH_PX: number = 16;
+const TABLE_CELL_PADDING_PX: number = 12;
+const TABLE_MIN_CELL_WIDTH_PX: number = 96;
 
 /**
  * Renders a block-level `MdNode[]` (from `parseMarkdown`). Does not parse
@@ -151,23 +155,58 @@ export struct MarkdownView {
 
   @Builder
   renderTable(node: MdNode) {
-    Column() {
-      ForEach(node.rows, (row: string[], r: number) => {
-        Row() {
-          ForEach(row, (cell: string, c: number) => {
-            Text(cell)
-              .fontSize(14)
-              .fontWeight(r === 0 ? FontWeight.Bold : FontWeight.Normal)
-              .padding(6)
-              .layoutWeight(1)
-              .border({ width: 1, color: TABLE_BORDER_COLOR })
-          }, (cell: string, c: number) => `${r}-${c}`);
-        }
-        .width('100%')
-      }, (row: string[], r: number) => `${r}`);
+    // Cells used to share equal layoutWeight(1) inside each Row, which only
+    // bounds width to the Row's own (bubble) width — with no escape, a table
+    // wider than the bubble (many columns, or long cell text) got
+    // crushed/clipped instead of scrolling. Wrapping in a horizontal Scroll
+    // (same pattern as the code block above) fixes the overflow, but each
+    // Row sizing its own cells to natural content width independently would
+    // break column alignment across rows (row 2's "name" column landing at a
+    // different x than row 3's). `columnWidth()` gives every cell in a given
+    // column index the same explicit width — the column's widest cell across
+    // all rows — so the table still reads as a grid while scrolling
+    // sideways as a whole.
+    Scroll() {
+      Column() {
+        ForEach(node.rows, (row: string[], r: number) => {
+          Row() {
+            ForEach(row, (cell: string, c: number) => {
+              Text(cell)
+                .fontSize(14)
+                .fontWeight(r === 0 ? FontWeight.Bold : FontWeight.Normal)
+                .padding(6)
+                .width(this.columnWidth(node.rows, c))
+                .border({ width: 1, color: TABLE_BORDER_COLOR })
+            }, (cell: string, c: number) => `${r}-${c}`);
+          }
+        }, (row: string[], r: number) => `${r}`);
+      }
+      .border({ width: 1, color: TABLE_BORDER_COLOR })
     }
+    .scrollable(ScrollDirection.Horizontal)
     .width('100%')
-    .border({ width: 1, color: TABLE_BORDER_COLOR })
+  }
+
+  /**
+   * Widest cell (rough char-count estimate, not real text measurement) in
+   * column `columnIndex` across every row of `rows` — including the header
+   * row, so a short header over a long value column still gets the value's
+   * width. Rows are short (chat-sized tables), so recomputing this per cell
+   * instead of caching a computed array is cheap and keeps this a plain
+   * expression callable from inside the @Builder body above.
+   */
+  private columnWidth(rows: string[][], columnIndex: number): number {
+    let widest: number = TABLE_MIN_CELL_WIDTH_PX;
+    for (const row of rows) {
+      if (columnIndex >= row.length) {
+        continue;
+      }
+      const estimated: number = row[columnIndex].length * TABLE_CHAR_WIDTH_PX + TABLE_CELL_PADDING_PX;
+      if (estimated > widest) {
+        widest = estimated;
+      }
+    }
+    return widest;
   }
 
   @Builder

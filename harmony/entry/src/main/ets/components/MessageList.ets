@@ -1,14 +1,15 @@
 import { ChatMessage } from '../model/Protocol';
-import { OutboxEntry, OutboxStatus } from '../logic/outbox';
+import { OutboxStatus } from '../logic/outbox';
 import { parseMarkdown } from '../logic/parseMarkdown';
 import { ChatStore } from '../store/ChatStore';
-import { ConnectionGateway } from '../gateway/ConnectionGateway';
+import { ConnectionGateway, OutboxStatusView } from '../gateway/ConnectionGateway';
 import { MarkdownView } from './MarkdownView';
 
 const USER_BUBBLE_COLOR: string = '#0A59F7';
 const FAILED_BUBBLE_COLOR: string = '#E03131';
 const ASSISTANT_BUBBLE_COLOR: string = '#F1F3F5';
 const ASSISTANT_TEXT_COLOR: string = '#1F2328';
+const SYSTEM_TEXT_COLOR: string = '#8A8F98';
 
 @ComponentV2
 export struct MessageList {
@@ -58,7 +59,7 @@ export struct MessageList {
     if (this.tick < 0) {
       return undefined; // never true — reads `tick` so V2 tracks this as a render dependency.
     }
-    const entries: OutboxEntry[] = ConnectionGateway.instance.outboxEntriesOf(this.chatKey);
+    const entries: OutboxStatusView[] = ConnectionGateway.instance.outboxEntriesOf(this.chatKey);
     for (const entry of entries) {
       if (entry.clientMsgId === clientMsgId) {
         return entry.status;
@@ -67,11 +68,22 @@ export struct MessageList {
     return undefined;
   }
 
+  /**
+   * Bubble background: role-specific, `user` additionally flips red on
+   * `failed`. Only ever called for `user`/`assistant` (see `renderMessage`,
+   * which routes `system` to `renderSystemNotice` instead, never through a
+   * colored bubble) — the `system` branch below exists only so the three
+   * `ChatRole` cases are handled explicitly rather than a binary `!== 'user'`
+   * check, per this round's fix; it never actually executes.
+   */
   private bubbleColor(msg: ChatMessage): string {
-    if (msg.role !== 'user') {
+    if (msg.role === 'user') {
+      return this.statusOf(msg.id) === 'failed' ? FAILED_BUBBLE_COLOR : USER_BUBBLE_COLOR;
+    } else if (msg.role === 'assistant') {
+      return ASSISTANT_BUBBLE_COLOR;
+    } else {
       return ASSISTANT_BUBBLE_COLOR;
     }
-    return this.statusOf(msg.id) === 'failed' ? FAILED_BUBBLE_COLOR : USER_BUBBLE_COLOR;
   }
 
   build() {
@@ -92,7 +104,7 @@ export struct MessageList {
     List({ scroller: this.scroller, space: 4 }) {
       ForEach(this.chat.messagesOf(this.chatKey), (msg: ChatMessage) => {
         ListItem() {
-          this.renderBubble(msg)
+          this.renderMessage(msg)
         }
       }, (msg: ChatMessage) => msg.id)
       if (this.chat.streamingOf(this.chatKey).length > 0) {
@@ -105,13 +117,47 @@ export struct MessageList {
     .height('100%')
   }
 
+  /**
+   * Explicit three-way dispatch on `ChatRole` (`'user' | 'assistant' |
+   * 'system'`, see `model/Protocol.ets`). Previously this branched binary on
+   * `role === 'user'` / else, which silently routed `system` into the
+   * assistant's light-gray bubble with white text — invisible. Nothing
+   * constructs a `system` message yet, but it's handled properly here rather
+   * than left as a latent bug.
+   */
+  @Builder
+  renderMessage(msg: ChatMessage) {
+    if (msg.role === 'user') {
+      this.renderBubble(msg)
+    } else if (msg.role === 'assistant') {
+      this.renderBubble(msg)
+    } else {
+      this.renderSystemNotice(msg)
+    }
+  }
+
+  /** Centered, muted, smaller text — no colored bubble — the usual convention for system notices. */
+  @Builder
+  renderSystemNotice(msg: ChatMessage) {
+    Row() {
+      Text(msg.content)
+        .fontSize(12)
+        .fontColor(SYSTEM_TEXT_COLOR)
+        .textAlign(TextAlign.Center)
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+    .padding({ left: 24, right: 24, top: 4, bottom: 4 })
+  }
+
+  /** Only ever called for `user`/`assistant` (see `renderMessage`). */
   @Builder
   renderBubble(msg: ChatMessage) {
     Row() {
       Column({ space: 4 }) {
         if (msg.role === 'assistant') {
           MarkdownView({ nodes: parseMarkdown(msg.content) })
-        } else {
+        } else if (msg.role === 'user') {
           Text(msg.content).fontColor(Color.White)
         }
         if (msg.role === 'user' && this.statusOf(msg.id) === 'failed') {
