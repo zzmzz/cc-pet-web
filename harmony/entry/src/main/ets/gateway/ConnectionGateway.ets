@@ -1,5 +1,6 @@
 import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
@@ -9,11 +10,17 @@ import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
 import { TaskStore } from '../store/TaskStore';
 import { ConnectionStore, ConnectionPhase } from '../store/ConnectionStore';
+import { AuthStore } from '../store/AuthStore';
 import { NotificationGateway } from './NotificationGateway';
+import { HistoryApi } from './HistoryApi';
+import { UnauthorizedError } from './RestClient';
 
 // ConnectionPhase itself lives in store/ConnectionStore.ets — the field it
 // types belongs to that store, and Store must not import from Gateway
 // (dependency direction is Gateway -> Store, per Global Constraints).
+
+const DOMAIN = 0x0000;
+const TAG = 'ConnectionGateway';
 
 const ACK_SWEEP_MS: number = 5000;
 
@@ -55,6 +62,15 @@ export class ConnectionGateway {
   private outbox: Outbox = new Outbox();
   private stopped: boolean = true;
   private foreground: boolean = true;
+  /**
+   * True when the last history-backfill attempt failed for a reason other
+   * than 401 (a 401 logs the user out instead, see `backfillHistory`).
+   * Plain field, not `@Trace` — this class isn't a Store (see class doc)
+   * — so `MessageList`'s `ErrorBanner` reads it through the same
+   * tick-gated polling trick it already uses for outbox status
+   * (`outboxEntriesOf`/`statusOf`), not a new poll.
+   */
+  private historyError: boolean = false;
 
   start(baseUrl: string, token: string): void {
     this.baseUrl = baseUrl;
@@ -131,6 +147,8 @@ export class ConnectionGateway {
       ConnectionStore.connect().setPhase('connected');
       ConnectionStore.connect().markConnectedAt(Date.now());
       this.flushOutbox();
+      // History backfill itself is triggered from the `bridge:manifest`
+      // dispatch below, not here — see that branch's doc for why.
     });
 
     socket.on('message', (err: Error | undefined, data: string | ArrayBuffer) => {
@@ -299,6 +317,84 @@ export class ConnectionGateway {
   }
 
   /**
+   * Whether `MessageList`'s `ErrorBanner` should be showing for the
+   * current chat — see the `historyError` field doc.
+   */
+  historyErrorFlag(): boolean {
+    return this.historyError;
+  }
+
+  /** `ErrorBanner`'s "重试" button — Task 17 degradation-table row 5. */
+  retryHistory(chatKey: string): void {
+    this.backfillHistory(chatKey);
+  }
+
+  /**
+   * Incremental history backfill (Task 17 Step 1) — runs after every
+   * successful connection's `bridge:manifest` (see the dispatch handler
+   * above for why there, not directly in `open()`), not just the first
+   * connect, so a long-disconnected client's transcript catches up on
+   * reconnect too.
+   *
+   * `ChatStore.maxSeqOf(chatKey)` is read *before* the async `fetch` call
+   * (not just inside `HistoryApi.fetch`, which re-derives the same value
+   * to build the request URL) so this method knows, once the response
+   * comes back, whether to `replaceAll` (no local history — cursor was 0)
+   * or append only the gap (cursor > 0). Both reads happen synchronously
+   * before the network `await`, so they can't disagree — see
+   * `HistoryApi`'s class doc.
+   *
+   * Failure handling is exactly the Step 2 + Step 4 contract: a
+   * `UnauthorizedError` from `RestClient` (thrown by any REST call,
+   * `HistoryApi.fetch` included) clears the token and stops this gateway —
+   * no silent retry, a dead token never succeeds on retry. Any other
+   * failure (network blip, server 5xx) sets `historyError` instead, which
+   * `MessageList` surfaces as a top banner with a manual retry
+   * (`retryHistory` above) — it must not interrupt the current
+   * conversation, so nothing here blocks sending/receiving on this path.
+   */
+  private backfillHistory(chatKey: string): void {
+    if (chatKey.length === 0) {
+      // No session selected yet — nothing to backfill. Can still happen
+      // here (not just at the very first `open()`): a manifest with zero
+      // bridges, or one that arrives before the user has ever picked a
+      // session and the deferred default-pick (see the caller) hasn't run
+      // yet either.
+      return;
+    }
+    const cursor: number = ChatStore.connect().maxSeqOf(chatKey);
+    const historyApi: HistoryApi = new HistoryApi(this.baseUrl, this.token);
+    historyApi.fetch(chatKey).then((messages: ChatMessage[]) => {
+      if (cursor === 0) {
+        ChatStore.connect().replaceAll(chatKey, messages);
+      } else {
+        for (const message of messages) {
+          ChatStore.connect().append(chatKey, message);
+        }
+      }
+      this.historyError = false;
+    }).catch((err: Error) => {
+      if (err instanceof UnauthorizedError) {
+        hilog.warn(DOMAIN, TAG, 'history backfill got 401, logging out (no retry)');
+        // Fire-and-forget, same pattern as ChatWindow's
+        // NotificationGateway.requestPermission call: `clear()`'s
+        // synchronous prefix (before its first internal `await`) already
+        // flips `AuthStore.authorized`, which is what Index's
+        // `@Monitor('auth.authorized')` reacts to — nothing here needs to
+        // wait for the preferences flush to finish.
+        AuthStore.connect().clear();
+        // Stop outright, not just log out: without this, a dead token
+        // would keep bouncing through backoffDelayMs() forever in the
+        // background after the UI has already fallen back to LoginGate.
+        this.stop();
+        return;
+      }
+      hilog.error(DOMAIN, TAG, 'history backfill failed: %{public}s', err.message);
+      this.historyError = true;
+    });
+  }
+
+  /**
    * Notification predicate: is the user not looking at this chat right now?
    * Deliberately separate from unread counting — resident sessions take their
    * unread from the server, but "should I buzz" is always a local question.
@@ -332,6 +428,31 @@ export class ConnectionGateway {
     }
     if (event.type === WsEvents.BRIDGE_MANIFEST) {
       SessionStore.connect().applyManifest(event.frame);
+      // Task 17 Step 1's backfill trigger lives here, not in socket.on('open')
+      // above: the server (see `hub.onClientConnected` in
+      // `packages/server/src/index.ts`) sends `bridge:manifest` on *every*
+      // successful connection — first connect and every reconnect alike —
+      // so this fires exactly once per connection too, with one guarantee
+      // `open()` alone can't give: `SessionStore.currentChatKey` is only
+      // ever non-empty starting from a bridge list, and `applyManifest`
+      // just supplied that list. On a cold start (no session ever picked),
+      // `currentChatKey` was still `''` at `open()` time — Index.ets's
+      // `@Monitor('session.bridges')` (which runs its own default-session
+      // pick) fires synchronously off the `@Trace` write `applyManifest`
+      // just made, so by the next line `currentChatKey` already reflects
+      // that pick if one just happened, and is otherwise already whatever
+      // the user had selected before this reconnect.
+      // `setTimeout(..., 0)`, not a direct call: `applyManifest` above is a
+      // synchronous `@Trace` write, but Index.ets's own
+      // `@Monitor('session.bridges')` (which does the actual default-session
+      // pick into `currentChatKey` on a cold start) does not run inside that
+      // same call stack — confirmed on-device (see Task 17 report) reading
+      // `currentChatKey` synchronously right here still saw `''` even though
+      // `bridges` had already updated. Deferring one macrotask is enough for
+      // ArkUI's reactive update pass to run first; this is a single one-shot
+      // callback, not a poll (`ConnectionGateway`'s only sanctioned repeating
+      // timer is the ack sweep).
+      setTimeout(() => { this.backfillHistory(SessionStore.connect().currentChatKey); }, 0);
       return;
     }
     if (event.type === WsEvents.BRIDGE_SKILLS_UPDATED) {

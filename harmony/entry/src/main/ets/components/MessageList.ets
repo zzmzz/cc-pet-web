@@ -4,6 +4,9 @@ import { parseMarkdown } from '../logic/parseMarkdown';
 import { ChatStore } from '../store/ChatStore';
 import { ConnectionGateway, OutboxStatusView } from '../gateway/ConnectionGateway';
 import { MarkdownView } from './MarkdownView';
+import { ErrorBanner } from './ErrorBanner';
+
+const HISTORY_ERROR_TEXT: string = '历史记录加载失败';
 
 const USER_BUBBLE_COLOR: string = '#0A59F7';
 const FAILED_BUBBLE_COLOR: string = '#E03131';
@@ -69,6 +72,21 @@ export struct MessageList {
   }
 
   /**
+   * Task 17 degradation-table row 5: history-backfill failure → a top
+   * banner, manual retry, must not block the current conversation. Reads
+   * `ConnectionGateway.instance.historyErrorFlag()` gated on `tick` — same
+   * reason/trick as `statusOf` above: that flag lives on the Gateway, not
+   * a `@Trace`'d Store field, so nothing else forces a re-render when it
+   * flips.
+   */
+  private showHistoryError(): boolean {
+    if (this.tick < 0) {
+      return false; // never true — reads `tick` so V2 tracks this as a render dependency.
+    }
+    return ConnectionGateway.instance.historyErrorFlag();
+  }
+
+  /**
    * Bubble background: role-specific, `user` additionally flips red on
    * `failed`. Only ever called for `user`/`assistant` (see `renderMessage`,
    * which routes `system` to `renderSystemNotice` instead, never through a
@@ -101,17 +119,27 @@ export struct MessageList {
     // are nowhere near the scale LazyForEach's lazy instantiation exists
     // for, so the deviation from the brief's literal "LazyForEach" costs
     // nothing in practice here.
-    List({ scroller: this.scroller, space: 4 }) {
-      ForEach(this.chat.messagesOf(this.chatKey), (msg: ChatMessage) => {
-        ListItem() {
-          this.renderMessage(msg)
-        }
-      }, (msg: ChatMessage) => msg.id)
-      if (this.chat.streamingOf(this.chatKey).length > 0) {
-        ListItem() {
-          this.renderStreamingBubble()
+    Column({ space: 0 }) {
+      if (this.showHistoryError()) {
+        ErrorBanner({
+          text: HISTORY_ERROR_TEXT,
+          onRetry: (): void => { ConnectionGateway.instance.retryHistory(this.chatKey); },
+        })
+      }
+      List({ scroller: this.scroller, space: 4 }) {
+        ForEach(this.chat.messagesOf(this.chatKey), (msg: ChatMessage) => {
+          ListItem() {
+            this.renderMessage(msg)
+          }
+        }, (msg: ChatMessage) => msg.id)
+        if (this.chat.streamingOf(this.chatKey).length > 0) {
+          ListItem() {
+            this.renderStreamingBubble()
+          }
         }
       }
+      .width('100%')
+      .layoutWeight(1)
     }
     .width('100%')
     .height('100%')
