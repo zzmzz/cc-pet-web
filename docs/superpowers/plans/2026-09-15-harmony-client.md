@@ -16,7 +16,7 @@
 - bundleName：`com.ccpet.client`。`deviceTypes`: `["phone", "tablet", "2in1"]`。
 - **服务端零改动。** 不修改 `packages/server` 与 `packages/web` 的任何运行时代码；唯一允许新增的 Node 侧文件是 Task 2 的协议对齐测试。
 - **依赖规则（违反即不合入）**：Gateway 不引用任何 ArkUI 组件；Store 不发起网络请求；Components 不直接调用 Gateway 的网络方法，只读 Store 并调用 Store 暴露的意图方法。
-- **ArkTS 严格模式禁止对 interface 做索引访问**（`arkts-no-props-by-index`），也不接受 `Record<string, Object>` 承接对象字面量。所有动态形状的数据必须声明为显式可选字段的 interface，用属性访问读取。已在本工程实测确认：`JSON.parse(text) as T`、`obj.field`、`field ?? ''`、`field === undefined` 均合法。
+- **ArkTS 严格模式禁止对 interface 做索引访问**（`arkts-no-props-by-index`），也不接受 `Record<string, Object>` 承接对象字面量。所有动态形状的数据必须声明为显式可选字段的 interface，用属性访问读取。同样地，**索引访问类型**（`SomeInterface['field']`）也被拒绝（`arkts-no-aliases-by-index`）——直接引用具名类型。已在本工程实测确认：`JSON.parse(text) as T`、`obj.field`、`field ?? ''`、`field === undefined` 均合法。
 - ArkTS 严格类型：不使用 `any`，所有变量、参数、返回值显式标注类型，对象字面量必须有对应 `interface`（参照 `Tailscale-OHOS/entry/src/main/ets/services/NetworkSettingsGateway.ets` 的风格）。
 - 鉴权：REST 用 `Authorization: Bearer <token>`，WS 用 `/ws?token=<token>` query。
 - 重连退避：`min(30000, 1000 × 2ⁿ)` 毫秒。
@@ -778,10 +778,13 @@ git commit -m "feat(harmony): normalize ws events once before fan-out"
 ```typescript
 import { describe, it, expect } from '@ohos/hypium';
 import { derivePetState, PetInputs } from '../main/ets/logic/derivePetState';
+import { TaskPhase } from '../main/ets/model/Protocol';
 
 function inputs(phase: string, unread: boolean, connected: boolean, since: number): PetInputs {
   return {
-    taskPhase: phase as PetInputs['taskPhase'],
+    // NOT PetInputs['taskPhase'] — ArkTS rejects indexed access types
+    // (arkts-no-aliases-by-index), the type-level sibling of the property rule.
+    taskPhase: phase as TaskPhase,
     hasUnread: unread,
     bridgeConnected: connected,
     msSinceConnected: since,
