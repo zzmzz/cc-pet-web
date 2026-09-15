@@ -137,6 +137,14 @@ export struct MessageInput {
       if (err instanceof UnauthorizedError) {
         hilog.error(DOMAIN, TAG, 'toggleBridge(%{public}s) unauthorized: bridgeId=%{public}s', String(connect), bridgeId);
         promptAction.showToast({ message: `${action}请求失败：登录已过期` });
+        // Fix round, Important-5: this 401 previously only toasted and left
+        // the app sitting on a dead token — every other 401 path in this
+        // codebase (ConnectionGateway.backfillHistory, LoginGate.verify)
+        // clears the token and stops the gateway so the user actually lands
+        // back on LoginGate instead of staying on a session that can never
+        // succeed again. Same two calls, same order, for consistency.
+        AuthStore.connect().clear();
+        ConnectionGateway.instance.stop();
         return;
       }
       hilog.error(DOMAIN, TAG, 'toggleBridge(%{public}s) failed: bridgeId=%{public}s message=%{public}s',

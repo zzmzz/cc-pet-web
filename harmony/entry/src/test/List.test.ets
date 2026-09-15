@@ -9,6 +9,7 @@ import outboxTest from './Outbox.test';
 import assistantMessageFromFrameTest from './AssistantMessageFromFrame.test';
 import responsiveLayoutTest from './ResponsiveLayout.test';
 import sessionRowTest from './SessionRow.test';
+import mergeHistoryTest from './MergeHistory.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -22,4 +23,5 @@ export default function testsuite() {
   assistantMessageFromFrameTest();
   responsiveLayoutTest();
   sessionRowTest();
+  mergeHistoryTest();
 }

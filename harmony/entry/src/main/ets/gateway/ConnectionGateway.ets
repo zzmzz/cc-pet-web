@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
+import { mergeHistoryMessages } from '../logic/mergeHistory';
 import { Outbox, OutboxStatus, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
@@ -71,6 +72,17 @@ export class ConnectionGateway {
    * (`outboxEntriesOf`/`statusOf`), not a new poll.
    */
   private historyError: boolean = false;
+  /**
+   * Task 17 fix round, Important-3: `retryHistory` (the `ErrorBanner`'s
+   * manual retry) and the reconnect-scheduled call from the
+   * `bridge:manifest` dispatch branch can both target the same `chatKey`
+   * concurrently — each would otherwise snapshot its own cursor and apply
+   * its own result independently, and whichever resolves later could stomp
+   * the other (including leaving `historyError` on a stale value). A plain
+   * `Set`, not `@Trace` — nothing renders off it directly, only
+   * `backfillHistory` reads/writes it.
+   */
+  private backfillInFlight: Set<string> = new Set<string>();
 
   start(baseUrl: string, token: string): void {
     this.baseUrl = baseUrl;
@@ -336,13 +348,29 @@ export class ConnectionGateway {
    * connect, so a long-disconnected client's transcript catches up on
    * reconnect too.
    *
-   * `ChatStore.maxSeqOf(chatKey)` is read *before* the async `fetch` call
-   * (not just inside `HistoryApi.fetch`, which re-derives the same value
-   * to build the request URL) so this method knows, once the response
-   * comes back, whether to `replaceAll` (no local history — cursor was 0)
-   * or append only the gap (cursor > 0). Both reads happen synchronously
-   * before the network `await`, so they can't disagree — see
-   * `HistoryApi`'s class doc.
+   * `ChatStore.maxSeqOf(chatKey)` is read once, *before* the async `fetch`
+   * call, and passed straight into `HistoryApi.fetch(chatKey, cursor)`
+   * (Task 17 fix round, Minor) — `fetch` no longer independently re-derives
+   * the same value, so the branch decision here and the request URL it
+   * builds can never desync even if an `await` is ever introduced between
+   * them.
+   *
+   * There is no `cursor === 0` branch anymore (Task 17 fix round,
+   * Important-1/Important-2): both the cold-start case and the incremental
+   * case now go through the same `mergeHistoryMessages(current, messages)`
+   * call, reading `current` fresh from `ChatStore` *after* the fetch
+   * resolves rather than reusing the pre-fetch snapshot. That fresh read is
+   * what lets a message the user sent — or one the live socket delivered —
+   * while this fetch was in flight survive instead of being wiped by a bare
+   * `replaceAll`, and lets `mergeHistoryMessages`'s id-based dedup collapse
+   * a message that arrived by both paths into one. See that function's doc
+   * for the full merge/ordering rationale.
+   *
+   * `backfillInFlight` guards against two concurrent runs for the same
+   * `chatKey` (Task 17 fix round, Important-3) — `retryHistory`'s manual tap
+   * and a reconnect-triggered call can otherwise race; a re-entrant call
+   * here is a plain no-op rather than a second in-flight fetch that could
+   * apply its result after (or instead of) the first.
    *
    * Failure handling is exactly the Step 2 + Step 4 contract: a
    * `UnauthorizedError` from `RestClient` (thrown by any REST call,
@@ -362,16 +390,16 @@ export class ConnectionGateway {
       // yet either.
       return;
     }
+    if (this.backfillInFlight.has(chatKey)) {
+      hilog.info(DOMAIN, TAG, 'history backfill already in flight for %{public}s, skipping', chatKey);
+      return;
+    }
+    this.backfillInFlight.add(chatKey);
     const cursor: number = ChatStore.connect().maxSeqOf(chatKey);
     const historyApi: HistoryApi = new HistoryApi(this.baseUrl, this.token);
-    historyApi.fetch(chatKey).then((messages: ChatMessage[]) => {
-      if (cursor === 0) {
-        ChatStore.connect().replaceAll(chatKey, messages);
-      } else {
-        for (const message of messages) {
-          ChatStore.connect().append(chatKey, message);
-        }
-      }
+    historyApi.fetch(chatKey, cursor).then((messages: ChatMessage[]) => {
+      const current: ChatMessage[] = ChatStore.connect().messagesOf(chatKey);
+      ChatStore.connect().replaceAll(chatKey, mergeHistoryMessages(current, messages));
       this.historyError = false;
     }).catch((err: Error) => {
       if (err instanceof UnauthorizedError) {
@@ -391,6 +419,8 @@ export class ConnectionGateway {
       }
       hilog.error(DOMAIN, TAG, 'history backfill failed: %{public}s', err.message);
       this.historyError = true;
+    }).finally(() => {
+      this.backfillInFlight.delete(chatKey);
     });
   }
 
