@@ -23,6 +23,46 @@ export const CC_CONNECT_COMMANDS: SlashCommandSpec[] = [
 
 const CATEGORY_ORDER: SlashCommandCategory[] = ['builtin', 'session', 'agent', 'skill'];
 
+/**
+ * Strictly a LEADING slash — no `trimStart()`. That is deliberate (planned
+ * behaviour, Task 8: `isSlashInput(' /mo') === false`), and it is also the
+ * single most expensive line in this file to misread.
+ *
+ * ---------------------------------------------------------------------------
+ * "The slash palette never renders on the emulator" — it does. Read this
+ * before you change anything here or in SlashCommandMenu/MessageInput.
+ * ---------------------------------------------------------------------------
+ * `uitest uiInput inputText <x> <y> <text>` — the command behind
+ * `ui_type_at` in `harmony/scripts/lib/common.sh`, which every existing
+ * device probe types with — PREPENDS A SPACE to the text it injects.
+ * Measured on the emulator, dumped TextArea `text` attribute before -> after,
+ * starting from a genuinely empty field:
+ *
+ *     ''  --inputText "abc"-->  ' abc'
+ *     ''  --inputText "/cl"-->  ' /cl'
+ *
+ * So a probe that "types /cl" through `ui_type_at` actually hands this
+ * function `' /cl'`, which correctly returns false, and the palette
+ * correctly stays closed. That — not an ArkUI V2 reactivity failure, not
+ * `$$this.text`, not the `Scroll`-vs-`List` shape — is the whole of the bug
+ * report that claimed slash commands were dead in this release. Proven
+ * causally on-device: with `' /cl'` in the field and zero palette rows,
+ * deleting ONLY the leading space (MOVE_HOME then FORWARD_DEL, nothing else
+ * touched) made `/clear` appear immediately.
+ *
+ * Type through `uitest uiInput text <text>` (IME commit into the focused
+ * field) or `uitest uiInput keyEvent <code>` instead; both inject the exact
+ * string. `harmony/scripts/device-slash-palette-probe.sh` does this and
+ * asserts the palette opens, narrows and closes.
+ *
+ * Known, accepted divergence from the reference client: `packages/web`'s
+ * `useSlashMenu` does `input.trimStart().startsWith("/")`, i.e. it tolerates
+ * leading whitespace. This one does not, per the plan. Left as-is on purpose
+ * — changing it would paper over the probing mistake above and would silently
+ * rewrite a pinned, planned assertion. If a real user is ever observed
+ * wanting `' /clear'` to open the palette, that is a product decision to take
+ * deliberately, not a bug to sneak in while chasing a phantom.
+ */
 export function isSlashInput(input: string): boolean {
   return input.startsWith('/');
 }

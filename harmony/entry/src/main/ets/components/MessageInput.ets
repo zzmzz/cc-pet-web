@@ -63,6 +63,17 @@ export struct MessageInput {
    * is what makes this method's callers inside `build()` register as V2
    * render-dependency reads — same pattern as `SlashCommandMenu` itself, see
    * that file's class doc.
+   *
+   * This path's V2 reactivity has been confirmed on-device, so do not "fix"
+   * it again: `$$this.text` DOES schedule a re-render. Evidence — a layout
+   * dump before and after typing one character shows the 发送 `Button`'s
+   * `enabled` attribute flip `false` -> `true`, and that attribute can only
+   * come from `.enabled(this.text.trim().length > 0)` below being
+   * re-evaluated. Four rounds of ArkUI V2 reactivity fixes have now been
+   * spent on this codebase; the fifth candidate turned out to be a probing
+   * artifact, not a framework problem. See the field note above
+   * `isSlashInput` in `logic/slashCommands.ets` before suspecting reactivity
+   * here at all.
    */
   private slashMatches(): SlashCommandSpec[] {
     if (!isSlashInput(this.text)) {
@@ -180,6 +191,16 @@ export struct MessageInput {
     // shrink rather than overlaying on top of it. Either way the palette
     // sits above the input box and therefore above the keyboard, which is
     // the actual requirement.
+    //
+    // Corollary, and a trap that already cost one false bug report: because
+    // this Column is bottom-anchored (its sibling `MessageList` in
+    // `ChatWindow` carries `layoutWeight(1)` and absorbs the change), the
+    // palette grows UPWARD and the input row does not move. The 发送 button
+    // sits at the SAME y with the palette open and closed — measured on the
+    // emulator, `[990,1483][1214,1623]` in both states. "发送 didn't move, so
+    // nothing was inserted above it" is therefore not a signal about anything;
+    // assert on the palette's own nodes instead (see
+    // `harmony/scripts/device-slash-palette-probe.sh`).
     Column() {
       if (this.slashMatches().length > 0) {
         SlashCommandMenu({ input: this.text, onPick: (spec: SlashCommandSpec) => { this.pick(spec); } })

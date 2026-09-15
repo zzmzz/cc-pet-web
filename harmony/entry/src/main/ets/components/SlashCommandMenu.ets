@@ -69,6 +69,18 @@ export struct SlashCommandMenu {
    * (`Column({ space: 10 }) { ForEach(...) }`, no `List` involved) — this
    * command list is at most a few dozen rows, nowhere near where `List`'s
    * lazy-instantiation would matter.
+   *
+   * The `Scroll` + `Column` shape is now confirmed to render on-device, not
+   * merely believed to: with `/` in the input, a layout dump shows this
+   * `Scroll` at `[0,531][1256,1441]` (910px == MENU_MAX_HEIGHT 260vp at this
+   * emulator's 3.5 density, i.e. the cap is doing its job) holding the
+   * `本地命令` header plus `/clear /connect /disconnect /settings`, then the
+   * `会话` header plus `/current /history /list /new` clipped at the cap and
+   * scrollable. Narrowing to `/cl` collapses it to the single `/clear` row at
+   * `[0,1227][1256,1441]`. So the `List`-measures-to-zero problem described
+   * above really is fixed — a later report of "the palette never renders" was
+   * a probing artifact, not a regression here (see the field note above
+   * `isSlashInput` in `logic/slashCommands.ets`).
    */
   build() {
     Scroll() {

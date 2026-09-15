@@ -16,6 +16,21 @@ export default function slashCommandsTest() {
       expect(isSlashInput('hello /mo')).assertEqual(false);
       expect(isSlashInput('')).assertEqual(false);
     });
+
+    /**
+     * Regression anchor for a bug report that claimed the slash palette never
+     * renders on the emulator. It does; the probe driving it was typing
+     * through `uitest uiInput inputText`, which prepends a space, so the
+     * component was being handed the string below rather than '/cl'. Both
+     * assertions here are the CORRECT behaviour — this test exists so the
+     * next person who sees an empty palette recognises the shape of the input
+     * instead of reaching for a reactivity fix. Full field note lives above
+     * `isSlashInput` in logic/slashCommands.ets.
+     */
+    it('stays closed for the space-prefixed string uitest inputText produces', 0, () => {
+      expect(isSlashInput(' /cl')).assertEqual(false);
+      expect(matchCommands(mergeCommands([]), ' /cl').length).assertEqual(0);
+    });
   });
 
   describe('mergeCommands', () => {
