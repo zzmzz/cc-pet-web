@@ -1,0 +1,2382 @@
+# cc-pet 鸿蒙原生客户端 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 为 cc-pet 构建一个 HarmonyOS NEXT 原生 ArkTS 客户端，覆盖登录、会话、消息收发与流式渲染、markdown、宠物状态、断线重连、本地通知与 slash command。
+
+**Architecture:** 三层单向依赖——Gateway（唯一碰网络）→ Store（状态）→ Components（只读 Store）。所有可测逻辑抽进 `logic/` 的纯函数，UI 层只做渲染。服务端零改动，复用现有 `/ws` 与 `/api/*`。
+
+**Tech Stack:** ArkTS / ArkUI（HarmonyOS API 26）、`@kit.NetworkKit`（WebSocket + 网络状态）、`@kit.NotificationKit`、`@ohos/hypium`（单测）、hvigor（构建）。协议对齐测试跑在 Node 侧 vitest。
+
+**Spec:** `docs/superpowers/specs/2026-09-15-harmony-client-design.md`
+
+## Global Constraints
+
+- 目标平台 HarmonyOS NEXT，`compatibleSdkVersion` / `targetSdkVersion` 均为 `26.0.0`，`runtimeOS: "HarmonyOS"`。
+- bundleName：`com.ccpet.client`。`deviceTypes`: `["phone", "tablet", "2in1"]`。
+- **服务端零改动。** 不修改 `packages/server` 与 `packages/web` 的任何运行时代码；唯一允许新增的 Node 侧文件是 Task 2 的协议对齐测试。
+- **依赖规则（违反即不合入）**：Gateway 不引用任何 ArkUI 组件；Store 不发起网络请求；Components 不直接调用 Gateway 的网络方法，只读 Store 并调用 Store 暴露的意图方法。
+- ArkTS 严格类型：不使用 `any`，所有变量、参数、返回值显式标注类型，对象字面量必须有对应 `interface`（参照 `Tailscale-OHOS/entry/src/main/ets/services/NetworkSettingsGateway.ets` 的风格）。
+- 鉴权：REST 用 `Authorization: Bearer <token>`，WS 用 `/ws?token=<token>` query。
+- 重连退避：`min(30000, 1000 × 2ⁿ)` 毫秒。
+- EXPANDED 断点下聊天内容最大宽度 1240vp；断点阈值 600 / 840 vp。
+- `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
+- 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
+- 工作分支：`harmony-client`。
+
+---
+
+## File Structure
+
+**鸿蒙工程（全部新建于 `harmony/`）**
+
+| 文件 | 职责 |
+|---|---|
+| `harmony/AppScope/app.json5` | bundleName、应用名与图标 |
+| `harmony/build-profile.json5` | 签名与产物配置（gitignore） |
+| `harmony/build-profile.example.json5` | 供他人填写的签名模板 |
+| `harmony/entry/src/main/module.json5` | 模块、Ability、权限声明 |
+| `harmony/entry/src/main/ets/entryability/EntryAbility.ets` | 生命周期 → `gateway.setForeground()` |
+| `harmony/entry/src/main/ets/model/Protocol.ets` | WS 事件名与消息类型，对齐 `packages/shared` |
+| `harmony/entry/src/main/ets/model/Markdown.ets` | `MdNode` 类型定义 |
+| `harmony/entry/src/main/ets/logic/backoff.ets` | 重连退避计算 |
+| `harmony/entry/src/main/ets/logic/normalizeEvent.ets` | WS 事件归一化 |
+| `harmony/entry/src/main/ets/logic/derivePetState.ets` | 宠物状态派生 |
+| `harmony/entry/src/main/ets/logic/parseMarkdown.ets` | markdown → `MdNode[]` |
+| `harmony/entry/src/main/ets/logic/slashCommands.ets` | 命令合并 / 匹配 / 排序 |
+| `harmony/entry/src/main/ets/logic/sendQueue.ets` | 离线发送队列 |
+| `harmony/entry/src/main/ets/gateway/RestClient.ets` | Bearer 封装 + 401 统一处理 |
+| `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets` | WS 单例、状态机、事件分发 |
+| `harmony/entry/src/main/ets/gateway/NotificationGateway.ets` | 本地通知（接口化） |
+| `harmony/entry/src/main/ets/gateway/PetImageCache.ets` | 宠物图拉取与沙箱缓存 |
+| `harmony/entry/src/main/ets/store/*.ets` | `ConnectionStore` `SessionStore` `ChatStore` `TaskStore` |
+| `harmony/entry/src/main/ets/components/*.ets` | UI 组件 |
+| `harmony/entry/src/main/ets/pages/Index.ets` | 页面装配 |
+| `harmony/entry/src/test/*.test.ets` | hypium 本地单测 |
+| `harmony/scripts/*.sh` | 构建与真机探针（bash） |
+
+**Node 侧（唯一新增）**
+
+| 文件 | 职责 |
+|---|---|
+| `packages/server/tests/harmony-protocol-alignment.test.ts` | 比对 `Protocol.ets` 与 `packages/shared`，漂移即失败 |
+
+---
+
+### Task 1: 工程骨架、签名与单测基础设施
+
+打通「能装到真机」和「能跑单测」这两条命脉。后续所有任务都依赖本任务产出的命令。
+
+**Files:**
+- Create: `harmony/`（DevEco Studio 生成的 Empty Ability 工程）
+- Create: `harmony/build-profile.example.json5`
+- Create: `harmony/README.md`
+- Create: `harmony/entry/src/test/LocalUnit.test.ets`
+- Create: `harmony/entry/src/test/List.test.ets`
+- Modify: `.gitignore`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: 可复用的构建命令与单测命令，记录在 `harmony/README.md`；后续任务一律引用此处命令。
+
+- [ ] **Step 1: 用 DevEco Studio 新建工程**
+
+在 DevEco Studio 中 `File → New → Create Project → Empty Ability`，填入：
+
+- Project name: `ccpet`
+- Bundle name: `com.ccpet.client`
+- Save location: `/Users/StevenZhu/code/cc-pet-web/harmony`
+- Compile SDK: `26`，Model: `Stage`
+
+不要手工拼工程骨架——hvigor 版本与模板文件必须由 IDE 生成，手写极易出现版本不匹配。
+
+- [ ] **Step 2: 对齐 SDK 与设备类型**
+
+`harmony/build-profile.json5` 的 `products[0]` 改为：
+
+```json5
+{
+  "name": "default",
+  "signingConfig": "default",
+  "compatibleSdkVersion": "26.0.0",
+  "targetSdkVersion": "26.0.0",
+  "runtimeOS": "HarmonyOS"
+}
+```
+
+`harmony/entry/src/main/module.json5` 的 `deviceTypes` 改为 `["phone", "tablet", "2in1"]`。
+
+- [ ] **Step 3: 配置签名并安装到真机**
+
+DevEco Studio `File → Project Structure → Signing Configs`，勾选 `Automatically generate signature`（需已登录华为开发者账号）。**这一步必须在写任何业务代码前跑通**——bundleName 与 Tailscale-OHOS 不同，证书无法复用，卡在这里会阻塞全部真机验证。
+
+连上真机点运行，确认空白应用能启动。
+
+- [ ] **Step 4: 保护签名材料**
+
+`harmony/build-profile.json5` 内含证书路径与密钥口令。把生成的配置复制一份为 `harmony/build-profile.example.json5`，将其中 `material` 各字段值替换为 `"<fill-me>"`，然后在仓库根 `.gitignore` 追加：
+
+```
+/harmony/build-profile.json5
+/harmony/oh_modules/
+/harmony/.hvigor/
+/harmony/entry/build/
+```
+
+- [ ] **Step 5: 写一个必然通过的 sanity 单测**
+
+`harmony/entry/src/test/LocalUnit.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+
+export default function localUnitTest() {
+  describe('localUnitTest', () => {
+    it('hypium_is_wired', 0, () => {
+      expect(1 + 1).assertEqual(2);
+    });
+  });
+}
+```
+
+`harmony/entry/src/test/List.test.ets`：
+
+```typescript
+import localUnitTest from './LocalUnit.test';
+
+export default function testsuite() {
+  localUnitTest();
+}
+```
+
+- [ ] **Step 6: 跑通单测并记录命令**
+
+在 DevEco Studio 中右键 `entry/src/test` 运行本地单测，确认 `hypium_is_wired` 通过。
+
+然后从 IDE 的 Run 窗口里复制它实际执行的 hvigor 命令，写进 `harmony/README.md`：
+
+```markdown
+## 命令
+
+- 本地单测：`<从 DevEco Run 窗口复制的实际命令>`
+- 构建 HAP：`<同上>`
+```
+
+**后续所有任务引用这两条命令。**不要凭记忆写 hvigor 参数——不同 DevEco 版本的 `--mode` / `-p` 参数组合不一致，以 IDE 实际执行的为准。
+
+- [ ] **Step 7: 提交**
+
+```bash
+cd /Users/StevenZhu/code/cc-pet-web
+git add harmony .gitignore
+git commit -m "chore(harmony): scaffold ArkTS project with signing and hypium"
+```
+
+---
+
+### Task 2: 协议类型与漂移守卫
+
+这是选择「同仓」而非独立仓库的全部意义。先建守卫，后面所有协议相关任务都在它的保护下进行。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/model/Protocol.ets`
+- Create: `packages/server/tests/harmony-protocol-alignment.test.ts`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `WS_EVENTS`（含全部 17 个事件名的常量对象）、`ChatMessage`、`Session`、`TaskPhase`、`PetState`、`SlashCommandSpec` 等 ArkTS 类型，供后续所有任务 import。
+
+- [ ] **Step 1: 写 Protocol.ets**
+
+`harmony/entry/src/main/ets/model/Protocol.ets`，事件名必须与 `packages/shared/src/constants/events.ts` 逐字一致：
+
+```typescript
+export class WsEvents {
+  static readonly BRIDGE_MANIFEST: string = 'bridge:manifest';
+  static readonly BRIDGE_CONNECTED: string = 'bridge:connected';
+  static readonly BRIDGE_ERROR: string = 'bridge:error';
+  static readonly BRIDGE_MESSAGE: string = 'bridge:message';
+  static readonly BRIDGE_STREAM_DELTA: string = 'bridge:stream-delta';
+  static readonly BRIDGE_STREAM_DONE: string = 'bridge:stream-done';
+  static readonly BRIDGE_BUTTONS: string = 'bridge:buttons';
+  static readonly BRIDGE_TYPING_START: string = 'bridge:typing-start';
+  static readonly BRIDGE_TYPING_STOP: string = 'bridge:typing-stop';
+  static readonly BRIDGE_FILE_RECEIVED: string = 'bridge:file-received';
+  static readonly BRIDGE_SKILLS_UPDATED: string = 'bridge:skills-updated';
+  static readonly BRIDGE_PREVIEW_START: string = 'bridge:preview-start';
+  static readonly BRIDGE_PREVIEW_UPDATE: string = 'bridge:preview-update';
+  static readonly BRIDGE_PREVIEW_DELETE: string = 'bridge:preview-delete';
+  static readonly BRIDGE_CARD: string = 'bridge:card';
+  static readonly BRIDGE_AUDIO: string = 'bridge:audio';
+  static readonly SEND_MESSAGE: string = 'send-message';
+  static readonly SEND_BUTTON: string = 'send-button';
+  static readonly SEND_FILE: string = 'send-file';
+}
+
+export type ChatRole = 'user' | 'assistant' | 'system';
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  timestamp: number;
+  connectionId?: string;
+  sessionKey?: string;
+}
+
+export interface Session {
+  key: string;
+  connectionId: string;
+  label?: string;
+  createdAt: number;
+  lastActiveAt: number;
+}
+
+export type TaskPhase =
+  | 'idle' | 'thinking' | 'working' | 'awaiting_confirmation'
+  | 'completed' | 'failed' | 'stalled';
+
+export type PetState = 'idle' | 'thinking' | 'talking' | 'happy' | 'error';
+
+export type SlashCommandType = 'local' | 'send';
+export type SlashCommandCategory = 'builtin' | 'session' | 'agent' | 'skill';
+
+export interface SlashCommandSpec {
+  command: string;
+  description: string;
+  category: SlashCommandCategory;
+  type: SlashCommandType;
+}
+```
+
+- [ ] **Step 2: 写漂移守卫测试**
+
+`packages/server/tests/harmony-protocol-alignment.test.ts`：
+
+```typescript
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+import { WS_EVENTS } from "@cc-pet/shared";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const protocolPath = resolve(here, "../../../harmony/entry/src/main/ets/model/Protocol.ets");
+
+describe("harmony protocol alignment", () => {
+  it("declares every WS event the shared package defines", () => {
+    const source = readFileSync(protocolPath, "utf8");
+    const declared = new Set(
+      Array.from(source.matchAll(/static readonly [A-Z_]+: string = '([^']+)'/g)).map((m) => m[1]),
+    );
+    const expected = Object.values(WS_EVENTS);
+    const missing = expected.filter((name) => !declared.has(name));
+    expect(missing).toEqual([]);
+  });
+
+  it("declares no WS event the shared package does not define", () => {
+    const source = readFileSync(protocolPath, "utf8");
+    const declared = Array.from(
+      source.matchAll(/static readonly [A-Z_]+: string = '([^']+)'/g),
+    ).map((m) => m[1]);
+    const expected = new Set<string>(Object.values(WS_EVENTS));
+    const extra = declared.filter((name) => !expected.has(name));
+    expect(extra).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 3: 跑测试，确认通过**
+
+```bash
+cd /Users/StevenZhu/code/cc-pet-web
+pnpm --filter @cc-pet/server exec vitest run tests/harmony-protocol-alignment.test.ts
+```
+
+Expected: 2 passed
+
+- [ ] **Step 4: 验证守卫真的会响**
+
+临时把 `Protocol.ets` 里 `BRIDGE_CARD` 的值改成 `'bridge:card-x'`，重跑上面的命令。
+
+Expected: 两个用例都 FAIL——一个报缺 `bridge:card`，一个报多出 `bridge:card-x`。
+
+确认后改回。**守卫没验证过会响，就等于没有守卫。**
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/model/Protocol.ets packages/server/tests/harmony-protocol-alignment.test.ts
+git commit -m "feat(harmony): add protocol types with shared-package drift guard"
+```
+
+---
+
+### Task 3: 重连退避（纯函数 TDD）
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/logic/backoff.ets`
+- Create: `harmony/entry/src/test/Backoff.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `backoffDelayMs(attempt: number): number` —— attempt 从 0 起算，返回毫秒。
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/Backoff.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { backoffDelayMs } from '../main/ets/logic/backoff';
+
+export default function backoffTest() {
+  describe('backoffDelayMs', () => {
+    it('starts at one second', 0, () => {
+      expect(backoffDelayMs(0)).assertEqual(1000);
+    });
+    it('doubles each attempt', 0, () => {
+      expect(backoffDelayMs(1)).assertEqual(2000);
+      expect(backoffDelayMs(2)).assertEqual(4000);
+      expect(backoffDelayMs(4)).assertEqual(16000);
+    });
+    it('caps at thirty seconds', 0, () => {
+      expect(backoffDelayMs(5)).assertEqual(30000);
+      expect(backoffDelayMs(99)).assertEqual(30000);
+    });
+    it('treats negative attempts as the first attempt', 0, () => {
+      expect(backoffDelayMs(-3)).assertEqual(1000);
+    });
+  });
+}
+```
+
+在 `List.test.ets` 中注册：
+
+```typescript
+import localUnitTest from './LocalUnit.test';
+import backoffTest from './Backoff.test';
+
+export default function testsuite() {
+  localUnitTest();
+  backoffTest();
+}
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，报找不到模块 `../main/ets/logic/backoff`
+
+- [ ] **Step 3: 最小实现**
+
+`harmony/entry/src/main/ets/logic/backoff.ets`：
+
+```typescript
+const INITIAL_DELAY_MS: number = 1000;
+const MAX_DELAY_MS: number = 30000;
+
+/** Exponential backoff matching the web client: min(30s, 1s * 2^attempt). */
+export function backoffDelayMs(attempt: number): number {
+  const safeAttempt: number = attempt < 0 ? 0 : attempt;
+  const delay: number = INITIAL_DELAY_MS * Math.pow(2, safeAttempt);
+  return delay > MAX_DELAY_MS ? MAX_DELAY_MS : delay;
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/logic/backoff.ets harmony/entry/src/test
+git commit -m "feat(harmony): add reconnect backoff with capped exponential delay"
+```
+
+---
+
+### Task 4: WS 事件归一化（纯函数 TDD）
+
+web 端在 12 个 case 里各解一遍 `connectionId / sessionKey`，这里一次解完。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/logic/normalizeEvent.ets`
+- Create: `harmony/entry/src/test/NormalizeEvent.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: `WsEvents` from `model/Protocol`
+- Produces:
+  - `interface RawWsEnvelope { type: string; payload: Record<string, Object> }`
+  - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; payload: Record<string, Object> }`
+  - `normalizeEvent(raw: RawWsEnvelope): NormalizedEvent`
+  - `chatKeyOf(connectionId: string, sessionKey: string): string`
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/NormalizeEvent.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { normalizeEvent, chatKeyOf, RawWsEnvelope, NormalizedEvent } from '../main/ets/logic/normalizeEvent';
+
+export default function normalizeEventTest() {
+  describe('normalizeEvent', () => {
+    it('builds the chat key from connection and session', 0, () => {
+      const raw: RawWsEnvelope = {
+        type: 'bridge:message',
+        payload: { connectionId: 'c1', sessionKey: 's1', content: 'hi' },
+      };
+      const out: NormalizedEvent = normalizeEvent(raw);
+      expect(out.connectionId).assertEqual('c1');
+      expect(out.sessionKey).assertEqual('s1');
+      expect(out.chatKey).assertEqual('c1::s1');
+    });
+
+    it('falls back to empty strings when ids are absent', 0, () => {
+      const raw: RawWsEnvelope = { type: 'bridge:manifest', payload: {} };
+      const out: NormalizedEvent = normalizeEvent(raw);
+      expect(out.connectionId).assertEqual('');
+      expect(out.sessionKey).assertEqual('');
+      expect(out.chatKey).assertEqual('');
+    });
+
+    it('keeps the payload intact for consumers', 0, () => {
+      const raw: RawWsEnvelope = {
+        type: 'bridge:stream-delta',
+        payload: { connectionId: 'c1', sessionKey: 's1', delta: 'abc' },
+      };
+      const out: NormalizedEvent = normalizeEvent(raw);
+      expect(out.payload['delta'] as string).assertEqual('abc');
+    });
+  });
+
+  describe('chatKeyOf', () => {
+    it('returns empty when either part is missing', 0, () => {
+      expect(chatKeyOf('', 's1')).assertEqual('');
+      expect(chatKeyOf('c1', '')).assertEqual('');
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加 `import normalizeEventTest from './NormalizeEvent.test';` 与 `normalizeEventTest();`。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 最小实现**
+
+`harmony/entry/src/main/ets/logic/normalizeEvent.ets`：
+
+```typescript
+export interface RawWsEnvelope {
+  type: string;
+  payload: Record<string, Object>;
+}
+
+export interface NormalizedEvent {
+  type: string;
+  connectionId: string;
+  sessionKey: string;
+  chatKey: string;
+  payload: Record<string, Object>;
+}
+
+/** Chat key format mirrors the server: `${connectionId}::${sessionKey}`. */
+export function chatKeyOf(connectionId: string, sessionKey: string): string {
+  if (connectionId.length === 0 || sessionKey.length === 0) {
+    return '';
+  }
+  return `${connectionId}::${sessionKey}`;
+}
+
+function readString(payload: Record<string, Object>, key: string): string {
+  const value: Object | undefined = payload[key];
+  return typeof value === 'string' ? value as string : '';
+}
+
+/** Parses ids once so downstream stores never re-derive them. */
+export function normalizeEvent(raw: RawWsEnvelope): NormalizedEvent {
+  const connectionId: string = readString(raw.payload, 'connectionId');
+  const sessionKey: string = readString(raw.payload, 'sessionKey');
+  return {
+    type: raw.type,
+    connectionId: connectionId,
+    sessionKey: sessionKey,
+    chatKey: chatKeyOf(connectionId, sessionKey),
+    payload: raw.payload,
+  };
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/logic/normalizeEvent.ets harmony/entry/src/test
+git commit -m "feat(harmony): normalize ws events once before fan-out"
+```
+
+---
+
+### Task 5: 宠物状态派生（纯函数 TDD）
+
+替换 web 端 12 处命令式 `setPetState` 与 `shouldForceThinking` 补丁。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/logic/derivePetState.ets`
+- Create: `harmony/entry/src/test/DerivePetState.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: `PetState`, `TaskPhase` from `model/Protocol`
+- Produces:
+  - `interface PetInputs { taskPhase: TaskPhase; hasUnread: boolean; bridgeConnected: boolean; msSinceConnected: number }`
+  - `derivePetState(inputs: PetInputs): PetState`
+  - `HAPPY_WINDOW_MS: number`（值 3000）
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/DerivePetState.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { derivePetState, PetInputs } from '../main/ets/logic/derivePetState';
+
+function inputs(phase: string, unread: boolean, connected: boolean, since: number): PetInputs {
+  return {
+    taskPhase: phase as PetInputs['taskPhase'],
+    hasUnread: unread,
+    bridgeConnected: connected,
+    msSinceConnected: since,
+  };
+}
+
+export default function derivePetStateTest() {
+  describe('derivePetState', () => {
+    it('shows error when the bridge is down', 0, () => {
+      expect(derivePetState(inputs('idle', false, false, 99999))).assertEqual('error');
+    });
+
+    it('error outranks a fresh connection', 0, () => {
+      expect(derivePetState(inputs('idle', false, false, 10))).assertEqual('error');
+    });
+
+    it('is happy right after connecting', 0, () => {
+      expect(derivePetState(inputs('idle', false, true, 500))).assertEqual('happy');
+    });
+
+    it('stops being happy after the window closes', 0, () => {
+      expect(derivePetState(inputs('idle', false, true, 3001))).assertEqual('idle');
+    });
+
+    it('thinks while a task is working', 0, () => {
+      expect(derivePetState(inputs('working', false, true, 99999))).assertEqual('thinking');
+      expect(derivePetState(inputs('thinking', false, true, 99999))).assertEqual('thinking');
+    });
+
+    it('working outranks the happy window', 0, () => {
+      expect(derivePetState(inputs('working', false, true, 100))).assertEqual('thinking');
+    });
+
+    it('talks when unread messages are waiting', 0, () => {
+      expect(derivePetState(inputs('completed', true, true, 99999))).assertEqual('talking');
+    });
+
+    it('falls back to idle', 0, () => {
+      expect(derivePetState(inputs('completed', false, true, 99999))).assertEqual('idle');
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 最小实现**
+
+`harmony/entry/src/main/ets/logic/derivePetState.ets`：
+
+```typescript
+import { PetState, TaskPhase } from '../model/Protocol';
+
+export const HAPPY_WINDOW_MS: number = 3000;
+
+export interface PetInputs {
+  taskPhase: TaskPhase;
+  hasUnread: boolean;
+  bridgeConnected: boolean;
+  msSinceConnected: number;
+}
+
+/**
+ * Pet state is derived, never set imperatively. Priority is fixed and total:
+ * error > working > fresh-connection > unread > idle.
+ */
+export function derivePetState(inputs: PetInputs): PetState {
+  if (!inputs.bridgeConnected) {
+    return 'error';
+  }
+  if (inputs.taskPhase === 'working' || inputs.taskPhase === 'thinking') {
+    return 'thinking';
+  }
+  if (inputs.msSinceConnected <= HAPPY_WINDOW_MS) {
+    return 'happy';
+  }
+  if (inputs.hasUnread) {
+    return 'talking';
+  }
+  return 'idle';
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/logic/derivePetState.ets harmony/entry/src/test
+git commit -m "feat(harmony): derive pet state from task phase and connection"
+```
+
+---
+
+### Task 6: markdown 块级解析（纯函数 TDD）
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/model/Markdown.ets`
+- Create: `harmony/entry/src/main/ets/logic/parseMarkdown.ets`
+- Create: `harmony/entry/src/test/ParseMarkdownBlock.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `type MdNodeKind = 'heading' | 'paragraph' | 'list' | 'code' | 'quote' | 'table'`
+  - `interface MdNode { kind: MdNodeKind; text: string; level: number; ordered: boolean; items: string[]; language: string; rows: string[][] }`
+  - `parseMarkdown(src: string): MdNode[]`
+
+所有字段均非可选：ArkTS 下统一形状比可选字段更省事，未用到的字段填零值。
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/ParseMarkdownBlock.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { parseMarkdown } from '../main/ets/logic/parseMarkdown';
+import { MdNode } from '../main/ets/model/Markdown';
+
+export default function parseMarkdownBlockTest() {
+  describe('parseMarkdown blocks', () => {
+    it('parses headings with level', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('### Title');
+      expect(nodes.length).assertEqual(1);
+      expect(nodes[0].kind).assertEqual('heading');
+      expect(nodes[0].level).assertEqual(3);
+      expect(nodes[0].text).assertEqual('Title');
+    });
+
+    it('parses a fenced code block with language', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('```ts\nconst a = 1;\n```');
+      expect(nodes.length).assertEqual(1);
+      expect(nodes[0].kind).assertEqual('code');
+      expect(nodes[0].language).assertEqual('ts');
+      expect(nodes[0].text).assertEqual('const a = 1;');
+    });
+
+    it('keeps markdown syntax literal inside code blocks', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('```\n# not a heading\n```');
+      expect(nodes[0].kind).assertEqual('code');
+      expect(nodes[0].text).assertEqual('# not a heading');
+    });
+
+    it('parses unordered and ordered lists', 0, () => {
+      const un: MdNode[] = parseMarkdown('- a\n- b');
+      expect(un[0].kind).assertEqual('list');
+      expect(un[0].ordered).assertEqual(false);
+      expect(un[0].items.length).assertEqual(2);
+      expect(un[0].items[1]).assertEqual('b');
+
+      const or: MdNode[] = parseMarkdown('1. first\n2. second');
+      expect(or[0].ordered).assertEqual(true);
+      expect(or[0].items[0]).assertEqual('first');
+    });
+
+    it('parses block quotes', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('> quoted');
+      expect(nodes[0].kind).assertEqual('quote');
+      expect(nodes[0].text).assertEqual('quoted');
+    });
+
+    it('parses a gfm table', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('| a | b |\n| --- | --- |\n| 1 | 2 |');
+      expect(nodes[0].kind).assertEqual('table');
+      expect(nodes[0].rows.length).assertEqual(2);
+      expect(nodes[0].rows[0][1]).assertEqual('b');
+      expect(nodes[0].rows[1][0]).assertEqual('1');
+    });
+
+    it('groups consecutive lines into one paragraph', 0, () => {
+      const nodes: MdNode[] = parseMarkdown('line one\nline two\n\nsecond para');
+      expect(nodes.length).assertEqual(2);
+      expect(nodes[0].kind).assertEqual('paragraph');
+      expect(nodes[0].text).assertEqual('line one line two');
+      expect(nodes[1].text).assertEqual('second para');
+    });
+
+    it('returns nothing for empty input', 0, () => {
+      expect(parseMarkdown('').length).assertEqual(0);
+      expect(parseMarkdown('   \n  ').length).assertEqual(0);
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 定义 MdNode**
+
+`harmony/entry/src/main/ets/model/Markdown.ets`：
+
+```typescript
+export type MdNodeKind = 'heading' | 'paragraph' | 'list' | 'code' | 'quote' | 'table';
+
+export interface MdNode {
+  kind: MdNodeKind;
+  text: string;
+  level: number;
+  ordered: boolean;
+  items: string[];
+  language: string;
+  rows: string[][];
+}
+
+export function emptyNode(kind: MdNodeKind): MdNode {
+  return { kind: kind, text: '', level: 0, ordered: false, items: [], language: '', rows: [] };
+}
+```
+
+- [ ] **Step 4: 实现块级解析**
+
+`harmony/entry/src/main/ets/logic/parseMarkdown.ets`：
+
+```typescript
+import { MdNode, emptyNode } from '../model/Markdown';
+
+function isTableDivider(line: string): boolean {
+  return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line.trim());
+}
+
+function splitRow(line: string): string[] {
+  const trimmed: string = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  for (const cell of trimmed.split('|')) {
+    cells.push(cell.trim());
+  }
+  return cells;
+}
+
+/**
+ * Block-level markdown parser for the controlled subset the chat needs.
+ * Pure: no ArkUI imports, so it stays unit-testable.
+ */
+export function parseMarkdown(src: string): MdNode[] {
+  const lines: string[] = src.split('\n');
+  const nodes: MdNode[] = [];
+  let paragraph: string[] = [];
+
+  const flushParagraph = (): void => {
+    if (paragraph.length > 0) {
+      const node: MdNode = emptyNode('paragraph');
+      node.text = paragraph.join(' ');
+      nodes.push(node);
+      paragraph = [];
+    }
+  };
+
+  let i: number = 0;
+  while (i < lines.length) {
+    const line: string = lines[i];
+    const trimmed: string = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      flushParagraph();
+      const node: MdNode = emptyNode('code');
+      node.language = trimmed.slice(3).trim();
+      const body: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        body.push(lines[i]);
+        i++;
+      }
+      node.text = body.join('\n');
+      nodes.push(node);
+      i++;
+      continue;
+    }
+
+    if (trimmed.length === 0) {
+      flushParagraph();
+      i++;
+      continue;
+    }
+
+    const heading: RegExpMatchArray | null = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (heading !== null) {
+      flushParagraph();
+      const node: MdNode = emptyNode('heading');
+      node.level = heading[1].length;
+      node.text = heading[2].trim();
+      nodes.push(node);
+      i++;
+      continue;
+    }
+
+    if (trimmed.startsWith('> ') || trimmed === '>') {
+      flushParagraph();
+      const node: MdNode = emptyNode('quote');
+      node.text = trimmed.replace(/^>\s?/, '');
+      nodes.push(node);
+      i++;
+      continue;
+    }
+
+    const unordered: boolean = /^[-*+]\s+/.test(trimmed);
+    const ordered: boolean = /^\d+\.\s+/.test(trimmed);
+    if (unordered || ordered) {
+      flushParagraph();
+      const node: MdNode = emptyNode('list');
+      node.ordered = ordered;
+      while (i < lines.length) {
+        const item: string = lines[i].trim();
+        const matchesSame: boolean = node.ordered ? /^\d+\.\s+/.test(item) : /^[-*+]\s+/.test(item);
+        if (!matchesSame) {
+          break;
+        }
+        node.items.push(item.replace(/^([-*+]|\d+\.)\s+/, ''));
+        i++;
+      }
+      nodes.push(node);
+      continue;
+    }
+
+    if (trimmed.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1])) {
+      flushParagraph();
+      const node: MdNode = emptyNode('table');
+      node.rows.push(splitRow(trimmed));
+      i += 2;
+      while (i < lines.length && lines[i].trim().includes('|')) {
+        node.rows.push(splitRow(lines[i]));
+        i++;
+      }
+      nodes.push(node);
+      continue;
+    }
+
+    paragraph.push(trimmed);
+    i++;
+  }
+
+  flushParagraph();
+  return nodes;
+}
+```
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/model/Markdown.ets harmony/entry/src/main/ets/logic/parseMarkdown.ets harmony/entry/src/test
+git commit -m "feat(harmony): parse block-level markdown into MdNode tree"
+```
+
+---
+
+### Task 7: markdown 行内解析（纯函数 TDD）
+
+块级节点的 `text` 还是原始串，行内样式要再拆一层，否则 `**粗体**` 会原样显示给用户。
+
+**Files:**
+- Modify: `harmony/entry/src/main/ets/model/Markdown.ets`
+- Create: `harmony/entry/src/main/ets/logic/parseInline.ets`
+- Create: `harmony/entry/src/test/ParseInline.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `type MdSpanKind = 'text' | 'bold' | 'italic' | 'code' | 'link' | 'image'`
+  - `interface MdSpan { kind: MdSpanKind; text: string; href: string }`
+  - `parseInline(src: string): MdSpan[]`
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/ParseInline.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { parseInline } from '../main/ets/logic/parseInline';
+import { MdSpan } from '../main/ets/model/Markdown';
+
+export default function parseInlineTest() {
+  describe('parseInline', () => {
+    it('returns a single text span for plain input', 0, () => {
+      const spans: MdSpan[] = parseInline('hello world');
+      expect(spans.length).assertEqual(1);
+      expect(spans[0].kind).assertEqual('text');
+      expect(spans[0].text).assertEqual('hello world');
+    });
+
+    it('splits bold segments', 0, () => {
+      const spans: MdSpan[] = parseInline('a **b** c');
+      expect(spans.length).assertEqual(3);
+      expect(spans[1].kind).assertEqual('bold');
+      expect(spans[1].text).assertEqual('b');
+    });
+
+    it('parses inline code before emphasis', 0, () => {
+      const spans: MdSpan[] = parseInline('use `a * b` here');
+      expect(spans[1].kind).assertEqual('code');
+      expect(spans[1].text).assertEqual('a * b');
+    });
+
+    it('parses links with href', 0, () => {
+      const spans: MdSpan[] = parseInline('see [docs](https://x.dev)');
+      expect(spans[1].kind).assertEqual('link');
+      expect(spans[1].text).assertEqual('docs');
+      expect(spans[1].href).assertEqual('https://x.dev');
+    });
+
+    it('parses images distinctly from links', 0, () => {
+      const spans: MdSpan[] = parseInline('![alt](https://x.dev/a.png)');
+      expect(spans[0].kind).assertEqual('image');
+      expect(spans[0].href).assertEqual('https://x.dev/a.png');
+      expect(spans[0].text).assertEqual('alt');
+    });
+
+    it('parses italic', 0, () => {
+      const spans: MdSpan[] = parseInline('a *b* c');
+      expect(spans[1].kind).assertEqual('italic');
+      expect(spans[1].text).assertEqual('b');
+    });
+
+    it('leaves unmatched markers as literal text', 0, () => {
+      const spans: MdSpan[] = parseInline('2 * 3 = 6');
+      expect(spans.length).assertEqual(1);
+      expect(spans[0].text).assertEqual('2 * 3 = 6');
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 扩展 Markdown 模型**
+
+在 `harmony/entry/src/main/ets/model/Markdown.ets` 末尾追加：
+
+```typescript
+export type MdSpanKind = 'text' | 'bold' | 'italic' | 'code' | 'link' | 'image';
+
+export interface MdSpan {
+  kind: MdSpanKind;
+  text: string;
+  href: string;
+}
+
+export function textSpan(text: string): MdSpan {
+  return { kind: 'text', text: text, href: '' };
+}
+```
+
+- [ ] **Step 4: 实现行内解析**
+
+`harmony/entry/src/main/ets/logic/parseInline.ets`：
+
+```typescript
+import { MdSpan, MdSpanKind, textSpan } from '../model/Markdown';
+
+interface InlineRule {
+  kind: MdSpanKind;
+  pattern: RegExp;
+}
+
+/**
+ * Ordered by precedence: code wins over emphasis so `a * b` stays literal,
+ * images win over links so ![x](y) is not read as a link.
+ */
+const RULES: InlineRule[] = [
+  { kind: 'code', pattern: /`([^`]+)`/ },
+  { kind: 'image', pattern: /!\[([^\]]*)\]\(([^)]+)\)/ },
+  { kind: 'link', pattern: /\[([^\]]+)\]\(([^)]+)\)/ },
+  { kind: 'bold', pattern: /\*\*([^*]+)\*\*/ },
+  { kind: 'italic', pattern: /\*([^*\s][^*]*)\*/ },
+];
+
+export function parseInline(src: string): MdSpan[] {
+  if (src.length === 0) {
+    return [];
+  }
+
+  let earliestIndex: number = -1;
+  let matched: RegExpMatchArray | null = null;
+  let matchedKind: MdSpanKind = 'text';
+
+  for (const rule of RULES) {
+    const found: RegExpMatchArray | null = src.match(rule.pattern);
+    if (found !== null && found.index !== undefined) {
+      if (earliestIndex === -1 || found.index < earliestIndex) {
+        earliestIndex = found.index;
+        matched = found;
+        matchedKind = rule.kind;
+      }
+    }
+  }
+
+  if (matched === null || earliestIndex === -1) {
+    return [textSpan(src)];
+  }
+
+  const spans: MdSpan[] = [];
+  const before: string = src.slice(0, earliestIndex);
+  if (before.length > 0) {
+    spans.push(textSpan(before));
+  }
+
+  const isLinkLike: boolean = matchedKind === 'link' || matchedKind === 'image';
+  spans.push({
+    kind: matchedKind,
+    text: matched[1],
+    href: isLinkLike ? matched[2] : '',
+  });
+
+  const after: string = src.slice(earliestIndex + matched[0].length);
+  for (const span of parseInline(after)) {
+    spans.push(span);
+  }
+  return spans;
+}
+```
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/model/Markdown.ets harmony/entry/src/main/ets/logic/parseInline.ets harmony/entry/src/test
+git commit -m "feat(harmony): parse inline markdown spans with code precedence"
+```
+
+---
+
+### Task 8: slash command 合并与匹配（纯函数 TDD）
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/logic/slashCommands.ets`
+- Create: `harmony/entry/src/test/SlashCommands.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: `SlashCommandSpec`, `SlashCommandCategory` from `model/Protocol`
+- Produces:
+  - `BUILTIN_COMMANDS: SlashCommandSpec[]`
+  - `CC_CONNECT_COMMANDS: SlashCommandSpec[]`
+  - `mergeCommands(skills: SlashCommandSpec[]): SlashCommandSpec[]`
+  - `matchCommands(all: SlashCommandSpec[], input: string): SlashCommandSpec[]`
+  - `isSlashInput(input: string): boolean`
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/SlashCommands.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import {
+  BUILTIN_COMMANDS, CC_CONNECT_COMMANDS, mergeCommands, matchCommands, isSlashInput,
+} from '../main/ets/logic/slashCommands';
+import { SlashCommandSpec } from '../main/ets/model/Protocol';
+
+function skill(command: string): SlashCommandSpec {
+  return { command: command, description: 'from skills', category: 'skill', type: 'send' };
+}
+
+export default function slashCommandsTest() {
+  describe('isSlashInput', () => {
+    it('is true only for a leading slash', 0, () => {
+      expect(isSlashInput('/mo')).assertEqual(true);
+      expect(isSlashInput(' /mo')).assertEqual(false);
+      expect(isSlashInput('hello /mo')).assertEqual(false);
+      expect(isSlashInput('')).assertEqual(false);
+    });
+  });
+
+  describe('mergeCommands', () => {
+    it('includes builtins, cc-connect commands and skills', 0, () => {
+      const merged: SlashCommandSpec[] = mergeCommands([skill('/deploy')]);
+      expect(merged.length).assertEqual(BUILTIN_COMMANDS.length + CC_CONNECT_COMMANDS.length + 1);
+    });
+
+    it('drops skills that collide with a builtin', 0, () => {
+      const merged: SlashCommandSpec[] = mergeCommands([skill('/clear')]);
+      expect(merged.length).assertEqual(BUILTIN_COMMANDS.length + CC_CONNECT_COMMANDS.length);
+    });
+  });
+
+  describe('matchCommands', () => {
+    it('filters by prefix', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([]);
+      const hits: SlashCommandSpec[] = matchCommands(all, '/cl');
+      expect(hits.length).assertEqual(1);
+      expect(hits[0].command).assertEqual('/clear');
+    });
+
+    it('returns everything for a bare slash', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([]);
+      expect(matchCommands(all, '/').length).assertEqual(all.length);
+    });
+
+    it('ignores anything after the first space', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([]);
+      expect(matchCommands(all, '/model switch x').length).assertEqual(1);
+    });
+
+    it('is case insensitive', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([]);
+      expect(matchCommands(all, '/CL')[0].command).assertEqual('/clear');
+    });
+
+    it('returns empty when nothing matches', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([]);
+      expect(matchCommands(all, '/zzz').length).assertEqual(0);
+    });
+
+    it('orders builtin before session before agent before skill', 0, () => {
+      const all: SlashCommandSpec[] = mergeCommands([skill('/aaa')]);
+      const hits: SlashCommandSpec[] = matchCommands(all, '/');
+      expect(hits[0].category).assertEqual('builtin');
+      expect(hits[hits.length - 1].category).assertEqual('skill');
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 最小实现**
+
+`harmony/entry/src/main/ets/logic/slashCommands.ets`：
+
+```typescript
+import { SlashCommandSpec, SlashCommandCategory } from '../model/Protocol';
+
+export const BUILTIN_COMMANDS: SlashCommandSpec[] = [
+  { command: '/clear', description: '清空聊天记录', category: 'builtin', type: 'local' },
+  { command: '/settings', description: '打开设置面板', category: 'builtin', type: 'local' },
+  { command: '/connect', description: '连接 cc-connect Bridge', category: 'builtin', type: 'local' },
+  { command: '/disconnect', description: '断开 cc-connect Bridge', category: 'builtin', type: 'local' },
+];
+
+export const CC_CONNECT_COMMANDS: SlashCommandSpec[] = [
+  { command: '/new', description: '开始新会话 /new [name]', category: 'session', type: 'send' },
+  { command: '/list', description: '列出所有会话', category: 'session', type: 'send' },
+  { command: '/switch', description: '切换会话 /switch <id>', category: 'session', type: 'send' },
+  { command: '/current', description: '当前会话信息', category: 'session', type: 'send' },
+  { command: '/history', description: '查看最近消息 /history [n]', category: 'session', type: 'send' },
+  { command: '/stop', description: '停止当前执行', category: 'session', type: 'send' },
+  { command: '/model', description: '查看/切换模型 /model [switch <alias>]', category: 'agent', type: 'send' },
+  { command: '/mode', description: '查看/切换权限模式 /mode [yolo|default|plan]', category: 'agent', type: 'send' },
+  { command: '/reasoning', description: '调整推理级别 /reasoning [level]', category: 'agent', type: 'send' },
+];
+
+const CATEGORY_ORDER: SlashCommandCategory[] = ['builtin', 'session', 'agent', 'skill'];
+
+export function isSlashInput(input: string): boolean {
+  return input.startsWith('/');
+}
+
+/** Builtins win on collision so a skill cannot shadow /clear. */
+export function mergeCommands(skills: SlashCommandSpec[]): SlashCommandSpec[] {
+  const merged: SlashCommandSpec[] = [];
+  const seen: Set<string> = new Set<string>();
+  const staticCommands: SlashCommandSpec[] = BUILTIN_COMMANDS.concat(CC_CONNECT_COMMANDS);
+  for (const spec of staticCommands) {
+    merged.push(spec);
+    seen.add(spec.command);
+  }
+  for (const spec of skills) {
+    if (!seen.has(spec.command)) {
+      merged.push(spec);
+      seen.add(spec.command);
+    }
+  }
+  return merged;
+}
+
+export function matchCommands(all: SlashCommandSpec[], input: string): SlashCommandSpec[] {
+  if (!isSlashInput(input)) {
+    return [];
+  }
+  const token: string = (input.split(' ')[0] ?? input).toLowerCase();
+  const hits: SlashCommandSpec[] = [];
+  for (const spec of all) {
+    if (spec.command.toLowerCase().startsWith(token)) {
+      hits.push(spec);
+    }
+  }
+  hits.sort((a: SlashCommandSpec, b: SlashCommandSpec): number => {
+    const byCategory: number = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
+    return byCategory !== 0 ? byCategory : a.command.localeCompare(b.command);
+  });
+  return hits;
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/logic/slashCommands.ets harmony/entry/src/test
+git commit -m "feat(harmony): merge and match slash commands with builtin precedence"
+```
+
+---
+
+### Task 9: 离线发送队列（纯函数 TDD）
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/logic/sendQueue.ets`
+- Create: `harmony/entry/src/test/SendQueue.test.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `interface QueuedMessage { id: string; chatKey: string; text: string; queuedAt: number }`
+  - `class SendQueue`，方法：`enqueue(msg: QueuedMessage): void`、`drain(): QueuedMessage[]`、`size(): number`、`remove(id: string): void`
+
+- [ ] **Step 1: 写失败测试**
+
+`harmony/entry/src/test/SendQueue.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { SendQueue, QueuedMessage } from '../main/ets/logic/sendQueue';
+
+function msg(id: string, at: number): QueuedMessage {
+  return { id: id, chatKey: 'c::s', text: `text-${id}`, queuedAt: at };
+}
+
+export default function sendQueueTest() {
+  describe('SendQueue', () => {
+    it('drains in enqueue order', 0, () => {
+      const q: SendQueue = new SendQueue();
+      q.enqueue(msg('a', 1));
+      q.enqueue(msg('b', 2));
+      const drained: QueuedMessage[] = q.drain();
+      expect(drained.length).assertEqual(2);
+      expect(drained[0].id).assertEqual('a');
+      expect(drained[1].id).assertEqual('b');
+    });
+
+    it('is empty after draining', 0, () => {
+      const q: SendQueue = new SendQueue();
+      q.enqueue(msg('a', 1));
+      q.drain();
+      expect(q.size()).assertEqual(0);
+    });
+
+    it('ignores duplicate ids', 0, () => {
+      const q: SendQueue = new SendQueue();
+      q.enqueue(msg('a', 1));
+      q.enqueue(msg('a', 2));
+      expect(q.size()).assertEqual(1);
+    });
+
+    it('removes a single message by id', 0, () => {
+      const q: SendQueue = new SendQueue();
+      q.enqueue(msg('a', 1));
+      q.enqueue(msg('b', 2));
+      q.remove('a');
+      expect(q.size()).assertEqual(1);
+      expect(q.drain()[0].id).assertEqual('b');
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用。
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: Task 1 记录的单测命令
+Expected: FAIL，找不到模块
+
+- [ ] **Step 3: 最小实现**
+
+`harmony/entry/src/main/ets/logic/sendQueue.ets`：
+
+```typescript
+export interface QueuedMessage {
+  id: string;
+  chatKey: string;
+  text: string;
+  queuedAt: number;
+}
+
+/** Holds messages typed while the socket is down; drained on reconnect in order. */
+export class SendQueue {
+  private items: QueuedMessage[] = [];
+
+  enqueue(msg: QueuedMessage): void {
+    for (const existing of this.items) {
+      if (existing.id === msg.id) {
+        return;
+      }
+    }
+    this.items.push(msg);
+  }
+
+  remove(id: string): void {
+    const kept: QueuedMessage[] = [];
+    for (const item of this.items) {
+      if (item.id !== id) {
+        kept.push(item);
+      }
+    }
+    this.items = kept;
+  }
+
+  drain(): QueuedMessage[] {
+    const out: QueuedMessage[] = this.items;
+    this.items = [];
+    return out;
+  }
+
+  size(): number {
+    return this.items.length;
+  }
+}
+```
+
+- [ ] **Step 4: 跑测试确认通过**
+
+Run: Task 1 记录的单测命令
+Expected: 全部 PASS
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/logic/sendQueue.ets harmony/entry/src/test
+git commit -m "feat(harmony): queue outgoing messages while offline"
+```
+
+---
+
+### Task 10: RestClient、token 存储与登录页
+
+第一个能在真机上看见的东西：输入 token 能登录进去。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/gateway/RestClient.ets`
+- Create: `harmony/entry/src/main/ets/store/AuthStore.ets`
+- Create: `harmony/entry/src/main/ets/components/LoginGate.ets`
+- Modify: `harmony/entry/src/main/ets/pages/Index.ets`
+- Modify: `harmony/entry/src/main/module.json5`
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - `class RestClient`，构造参数 `(baseUrl: string, token: string)`，方法 `getJson(path: string): Promise<string>`、`postJson(path: string, body: string): Promise<string>`；401 时抛出 `UnauthorizedError`
+  - `class UnauthorizedError extends Error`
+  - `AuthStore`：`@ObservedV2` 单例，属性 `token: string`、`baseUrl: string`、`authorized: boolean`，方法 `load(): Promise<void>`、`save(baseUrl: string, token: string): Promise<void>`、`clear(): Promise<void>`
+
+- [ ] **Step 1: 声明网络权限**
+
+在 `harmony/entry/src/main/module.json5` 的 `module` 下追加：
+
+```json5
+"requestPermissions": [
+  { "name": "ohos.permission.INTERNET" },
+  { "name": "ohos.permission.GET_NETWORK_INFO" }
+]
+```
+
+- [ ] **Step 2: 实现 RestClient**
+
+`harmony/entry/src/main/ets/gateway/RestClient.ets`：
+
+```typescript
+import { http } from '@kit.NetworkKit';
+
+export class UnauthorizedError extends Error {
+  constructor() {
+    super('unauthorized');
+  }
+}
+
+/** Only layer that talks HTTP. UI never imports this directly. */
+export class RestClient {
+  private baseUrl: string;
+  private token: string;
+
+  constructor(baseUrl: string, token: string) {
+    this.baseUrl = baseUrl;
+    this.token = token;
+  }
+
+  private async request(path: string, method: http.RequestMethod, body: string): Promise<string> {
+    const request: http.HttpRequest = http.createHttp();
+    try {
+      const response: http.HttpResponse = await request.request(`${this.baseUrl}${path}`, {
+        method: method,
+        header: {
+          'Authorization': `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+        },
+        extraData: body.length > 0 ? body : undefined,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 10000,
+        readTimeout: 30000,
+      });
+      if (response.responseCode === 401) {
+        throw new UnauthorizedError();
+      }
+      if (response.responseCode < 200 || response.responseCode >= 300) {
+        throw new Error(`http ${response.responseCode}`);
+      }
+      return response.result as string;
+    } finally {
+      request.destroy();
+    }
+  }
+
+  getJson(path: string): Promise<string> {
+    return this.request(path, http.RequestMethod.GET, '');
+  }
+
+  postJson(path: string, body: string): Promise<string> {
+    return this.request(path, http.RequestMethod.POST, body);
+  }
+}
+```
+
+- [ ] **Step 3: 实现 AuthStore**
+
+`harmony/entry/src/main/ets/store/AuthStore.ets`，用 `@kit.ArkData` 的 preferences 持久化：
+
+```typescript
+import { preferences } from '@kit.ArkData';
+import { common } from '@kit.AbilityKit';
+
+const STORE_NAME: string = 'cc_pet_auth';
+const KEY_TOKEN: string = 'token';
+const KEY_BASE_URL: string = 'baseUrl';
+
+@ObservedV2
+export class AuthStore {
+  static readonly instance: AuthStore = new AuthStore();
+
+  @Trace token: string = '';
+  @Trace baseUrl: string = '';
+  @Trace authorized: boolean = false;
+
+  private store: preferences.Preferences | undefined = undefined;
+
+  async init(context: common.UIAbilityContext): Promise<void> {
+    this.store = await preferences.getPreferences(context, STORE_NAME);
+    this.token = await this.store.get(KEY_TOKEN, '') as string;
+    this.baseUrl = await this.store.get(KEY_BASE_URL, '') as string;
+    this.authorized = this.token.length > 0 && this.baseUrl.length > 0;
+  }
+
+  async save(baseUrl: string, token: string): Promise<void> {
+    this.baseUrl = baseUrl;
+    this.token = token;
+    this.authorized = true;
+    if (this.store !== undefined) {
+      await this.store.put(KEY_BASE_URL, baseUrl);
+      await this.store.put(KEY_TOKEN, token);
+      await this.store.flush();
+    }
+  }
+
+  async clear(): Promise<void> {
+    this.token = '';
+    this.authorized = false;
+    if (this.store !== undefined) {
+      await this.store.delete(KEY_TOKEN);
+      await this.store.flush();
+    }
+  }
+}
+```
+
+- [ ] **Step 4: 实现 LoginGate**
+
+`harmony/entry/src/main/ets/components/LoginGate.ets`：
+
+```typescript
+import { AuthStore } from '../store/AuthStore';
+import { RestClient, UnauthorizedError } from '../gateway/RestClient';
+
+@ComponentV2
+export struct LoginGate {
+  @Local serverUrl: string = '';
+  @Local token: string = '';
+  @Local error: string = '';
+  @Local busy: boolean = false;
+
+  async verify(): Promise<void> {
+    this.busy = true;
+    this.error = '';
+    try {
+      const client: RestClient = new RestClient(this.serverUrl.trim(), this.token.trim());
+      await client.getJson('/api/auth/verify');
+      await AuthStore.instance.save(this.serverUrl.trim(), this.token.trim());
+    } catch (err) {
+      this.error = err instanceof UnauthorizedError ? 'Token 无效' : '无法连接服务器';
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  build() {
+    Column({ space: 16 }) {
+      Text('cc-pet').fontSize(28).fontWeight(FontWeight.Bold)
+      TextInput({ placeholder: 'https://your-server', text: this.serverUrl })
+        .onChange((value: string) => { this.serverUrl = value; })
+        .width('100%')
+      TextInput({ placeholder: 'Token', text: this.token })
+        .type(InputType.Password)
+        .onChange((value: string) => { this.token = value; })
+        .width('100%')
+      if (this.error.length > 0) {
+        Text(this.error).fontColor(Color.Red).fontSize(13)
+      }
+      Button(this.busy ? '验证中…' : '登录')
+        .enabled(!this.busy && this.serverUrl.length > 0 && this.token.length > 0)
+        .onClick(() => { this.verify(); })
+        .width('100%')
+    }
+    .padding(24)
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+  }
+}
+```
+
+- [ ] **Step 5: 在 Index 页面装配**
+
+`harmony/entry/src/main/ets/pages/Index.ets` 改为：
+
+```typescript
+import { AuthStore } from '../store/AuthStore';
+import { LoginGate } from '../components/LoginGate';
+import { common } from '@kit.AbilityKit';
+
+@Entry
+@ComponentV2
+struct Index {
+  @Local ready: boolean = false;
+
+  async aboutToAppear(): Promise<void> {
+    await AuthStore.instance.init(getContext(this) as common.UIAbilityContext);
+    this.ready = true;
+  }
+
+  build() {
+    Column() {
+      if (!this.ready) {
+        Text('加载中…')
+      } else if (!AuthStore.instance.authorized) {
+        LoginGate()
+      } else {
+        Text(`已登录：${AuthStore.instance.baseUrl}`).fontSize(16)
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
+```
+
+- [ ] **Step 6: 真机验证**
+
+装到真机，用你的公网地址与真实 token 登录。
+
+Expected：输错 token 显示「Token 无效」；输对后界面变为「已登录：<地址>」；**杀掉应用重开仍显示已登录**（验证持久化生效）。
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/gateway/RestClient.ets harmony/entry/src/main/ets/store/AuthStore.ets harmony/entry/src/main/ets/components/LoginGate.ets harmony/entry/src/main/ets/pages/Index.ets harmony/entry/src/main/module.json5
+git commit -m "feat(harmony): add rest client, token storage and login gate"
+```
+
+---
+
+### Task 11: ConnectionGateway 与状态存储
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`
+- Create: `harmony/entry/src/main/ets/store/ChatStore.ets`
+- Create: `harmony/entry/src/main/ets/store/SessionStore.ets`
+- Create: `harmony/entry/src/main/ets/store/TaskStore.ets`
+- Create: `harmony/entry/src/main/ets/store/ConnectionStore.ets`
+- Modify: `harmony/entry/src/main/ets/entryability/EntryAbility.ets`
+
+**Interfaces:**
+- Consumes: `backoffDelayMs`、`normalizeEvent`、`SendQueue`、`WsEvents`、`AuthStore`
+- Produces:
+  - `type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff'`
+  - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): void`
+  - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
+  - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`clear(chatKey: string): void`
+  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`incrementUnreadOnce(chatKey: string): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: Record<string, Object>): void`、`applySkills(payload: Record<string, Object>): void`
+  - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
+
+这份清单是 Task 12–17 的唯一契约来源——后续任务只许调用此处列出的方法。需要新方法时，先回到本任务补齐 store 再用。
+
+- [ ] **Step 1: 写 stores**
+
+四个 store 均为 `@ObservedV2` 单例，只存状态、不发网络请求。`ChatStore`：
+
+```typescript
+import { ChatMessage } from '../model/Protocol';
+
+@ObservedV2
+export class ChatStore {
+  static readonly instance: ChatStore = new ChatStore();
+
+  @Trace private messages: Map<string, ChatMessage[]> = new Map<string, ChatMessage[]>();
+  @Trace private streaming: Map<string, string> = new Map<string, string>();
+
+  messagesOf(chatKey: string): ChatMessage[] {
+    return this.messages.get(chatKey) ?? [];
+  }
+
+  streamingOf(chatKey: string): string {
+    return this.streaming.get(chatKey) ?? '';
+  }
+
+  append(chatKey: string, message: ChatMessage): void {
+    const list: ChatMessage[] = this.messagesOf(chatKey).slice();
+    list.push(message);
+    this.messages.set(chatKey, list);
+  }
+
+  appendDelta(chatKey: string, delta: string): void {
+    this.streaming.set(chatKey, this.streamingOf(chatKey) + delta);
+  }
+
+  finalizeStream(chatKey: string, fullText: string, id: string, at: number): void {
+    this.streaming.delete(chatKey);
+    this.append(chatKey, { id: id, role: 'assistant', content: fullText, timestamp: at });
+  }
+
+  replaceAll(chatKey: string, history: ChatMessage[]): void {
+    this.messages.set(chatKey, history);
+  }
+
+  clear(chatKey: string): void {
+    this.messages.delete(chatKey);
+    this.streaming.delete(chatKey);
+  }
+}
+```
+
+`SessionStore` 持有 `currentChatKey`、会话列表与未读计数；`TaskStore` 持有每个 chatKey 的 `TaskPhase`；`ConnectionStore` 持有 `phase`、`connectedAtMs`、`bridgeConnected`。三者结构同上，各自只暴露读方法与意图方法。
+
+- [ ] **Step 2: 实现 ConnectionGateway 状态机**
+
+`harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`：
+
+```typescript
+import { webSocket, connection } from '@kit.NetworkKit';
+import { backoffDelayMs } from '../logic/backoff';
+import { normalizeEvent, RawWsEnvelope, NormalizedEvent } from '../logic/normalizeEvent';
+import { SendQueue, QueuedMessage } from '../logic/sendQueue';
+import { WsEvents, ChatMessage } from '../model/Protocol';
+import { ChatStore } from '../store/ChatStore';
+import { SessionStore } from '../store/SessionStore';
+import { TaskStore } from '../store/TaskStore';
+import { ConnectionStore } from '../store/ConnectionStore';
+import { NotificationGateway } from './NotificationGateway';
+
+export type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff';
+
+interface OutgoingEnvelope {
+  type: string;
+  connectionId: string;
+  sessionKey: string;
+  content: string;
+}
+
+export class ConnectionGateway {
+  static readonly instance: ConnectionGateway = new ConnectionGateway();
+
+  private socket: webSocket.WebSocket | undefined = undefined;
+  private netConn: connection.NetConnection | undefined = undefined;
+  private attempt: number = 0;
+  private timer: number = -1;
+  private baseUrl: string = '';
+  private token: string = '';
+  private queue: SendQueue = new SendQueue();
+  private stopped: boolean = true;
+  private foreground: boolean = true;
+
+  start(baseUrl: string, token: string): void {
+    this.baseUrl = baseUrl;
+    this.token = token;
+    this.stopped = false;
+    this.attempt = 0;
+    this.observeNetwork();
+    this.open();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.clearTimer();
+    if (this.socket !== undefined) {
+      this.socket.close();
+      this.socket = undefined;
+    }
+    if (this.netConn !== undefined) {
+      this.netConn.unregister(() => {});
+      this.netConn = undefined;
+    }
+    ConnectionStore.instance.setPhase('disconnected');
+  }
+
+  setForeground(value: boolean): void {
+    this.foreground = value;
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== -1) {
+      clearTimeout(this.timer);
+      this.timer = -1;
+    }
+  }
+
+  private wsUrl(): string {
+    const scheme: string = this.baseUrl.startsWith('https') ? 'wss' : 'ws';
+    const host: string = this.baseUrl.replace(/^https?/, '');
+    return `${scheme}${host}/ws?token=${encodeURIComponent(this.token)}`;
+  }
+
+  private open(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.clearTimer();
+    ConnectionStore.instance.setPhase('connecting');
+
+    if (this.socket !== undefined) {
+      this.socket.close();
+    }
+    const socket: webSocket.WebSocket = webSocket.createWebSocket();
+    this.socket = socket;
+
+    socket.on('open', () => {
+      this.attempt = 0;
+      ConnectionStore.instance.setPhase('connected');
+      ConnectionStore.instance.markConnectedAt(Date.now());
+      this.flushQueue();
+    });
+
+    socket.on('message', (err: Error | undefined, data: string | ArrayBuffer) => {
+      if (err !== undefined || typeof data !== 'string') {
+        return;
+      }
+      const raw: RawWsEnvelope = JSON.parse(data as string) as RawWsEnvelope;
+      this.dispatch(normalizeEvent(raw));
+    });
+
+    socket.on('close', () => { this.scheduleReconnect(); });
+    socket.on('error', () => { this.scheduleReconnect(); });
+
+    socket.connect(this.wsUrl(), (err: Error | undefined) => {
+      if (err !== undefined) {
+        this.scheduleReconnect();
+      }
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.stopped || this.timer !== -1) {
+      return;
+    }
+    ConnectionStore.instance.setPhase('backoff');
+    const delay: number = backoffDelayMs(this.attempt);
+    this.attempt += 1;
+    this.timer = setTimeout(() => {
+      this.timer = -1;
+      this.open();
+    }, delay);
+  }
+
+  /** Network came back: retry immediately instead of waiting out the backoff. */
+  private observeNetwork(): void {
+    if (this.netConn !== undefined) {
+      return;
+    }
+    const netConn: connection.NetConnection = connection.createNetConnection();
+    this.netConn = netConn;
+    netConn.on('netAvailable', () => {
+      this.attempt = 0;
+      this.clearTimer();
+      this.open();
+    });
+    netConn.register(() => {});
+  }
+
+  sendMessage(chatKey: string, text: string): void {
+    const id: string = `local-${Date.now()}`;
+    const parts: string[] = chatKey.split('::');
+    const connectionId: string = parts[0] ?? '';
+    const sessionKey: string = parts[1] ?? '';
+
+    ChatStore.instance.append(chatKey, {
+      id: id, role: 'user', content: text, timestamp: Date.now(),
+      connectionId: connectionId, sessionKey: sessionKey,
+    });
+
+    const queued: QueuedMessage = { id: id, chatKey: chatKey, text: text, queuedAt: Date.now() };
+    if (ConnectionStore.instance.phase !== 'connected' || this.socket === undefined) {
+      this.queue.enqueue(queued);
+      return;
+    }
+    this.transmit(queued);
+  }
+
+  private transmit(item: QueuedMessage): void {
+    const parts: string[] = item.chatKey.split('::');
+    const envelope: OutgoingEnvelope = {
+      type: WsEvents.SEND_MESSAGE,
+      connectionId: parts[0] ?? '',
+      sessionKey: parts[1] ?? '',
+      content: item.text,
+    };
+    if (this.socket !== undefined) {
+      this.socket.send(JSON.stringify(envelope));
+    }
+  }
+
+  private flushQueue(): void {
+    for (const item of this.queue.drain()) {
+      this.transmit(item);
+    }
+  }
+
+  /**
+   * Unread and notification share one predicate (spec 6.3) so the badge and
+   * the notification can never disagree.
+   */
+  private isAway(chatKey: string): boolean {
+    return chatKey !== SessionStore.instance.currentChatKey || !this.foreground;
+  }
+
+  private dispatch(event: NormalizedEvent): void {
+    if (event.type === WsEvents.BRIDGE_CONNECTED) {
+      ConnectionStore.instance.setBridgeConnected(true);
+      ConnectionStore.instance.markConnectedAt(Date.now());
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_ERROR) {
+      ConnectionStore.instance.setBridgeConnected(false);
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_MANIFEST) {
+      SessionStore.instance.applyManifest(event.payload);
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_SKILLS_UPDATED) {
+      SessionStore.instance.applySkills(event.payload);
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_TYPING_START) {
+      TaskStore.instance.setPhase(event.chatKey, 'working');
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_TYPING_STOP) {
+      TaskStore.instance.setPhase(event.chatKey, 'completed');
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_STREAM_DELTA) {
+      const delta: Object | undefined = event.payload['delta'];
+      ChatStore.instance.appendDelta(event.chatKey, typeof delta === 'string' ? delta as string : '');
+      TaskStore.instance.setPhase(event.chatKey, 'working');
+      if (this.isAway(event.chatKey)) {
+        SessionStore.instance.incrementUnreadOnce(event.chatKey);
+      }
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
+      const full: Object | undefined = event.payload['fullText'];
+      const text: string = typeof full === 'string' ? full as string : '';
+      ChatStore.instance.finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
+      TaskStore.instance.setPhase(event.chatKey, 'completed');
+      this.afterAssistantReply(event.chatKey, text);
+      return;
+    }
+    if (event.type === WsEvents.BRIDGE_MESSAGE) {
+      const content: Object | undefined = event.payload['content'];
+      const text: string = typeof content === 'string' ? content as string : '';
+      const message: ChatMessage = {
+        id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
+        connectionId: event.connectionId, sessionKey: event.sessionKey,
+      };
+      ChatStore.instance.append(event.chatKey, message);
+      TaskStore.instance.setPhase(event.chatKey, 'completed');
+      this.afterAssistantReply(event.chatKey, text);
+    }
+  }
+
+  private afterAssistantReply(chatKey: string, text: string): void {
+    if (!this.isAway(chatKey)) {
+      return;
+    }
+    SessionStore.instance.incrementUnread(chatKey);
+    NotificationGateway.instance.notifyReply(
+      SessionStore.instance.labelOf(chatKey),
+      text.length > 80 ? `${text.slice(0, 80)}…` : text,
+    );
+  }
+}
+```
+
+`incrementUnreadOnce` 只在该 chatKey 当前 streaming 为空时加一，避免每个 delta 都累加未读——对应 web 端 `firstChunk` 的判定。
+
+Task 14 尚未创建 `NotificationGateway` 时，先建一个只打日志的空实现占位，Task 14 再补真正的通知逻辑；这样本任务能独立编译通过。
+
+- [ ] **Step 3: 在 EntryAbility 里接前后台**
+
+`harmony/entry/src/main/ets/entryability/EntryAbility.ets` 的 `onForeground` / `onBackground` 各调一行 `ConnectionGateway.instance.setForeground(true/false)`，不做别的。
+
+- [ ] **Step 4: 真机验证连接**
+
+装到真机，登录后在日志里确认：`phase` 依次为 `connecting → connected`；从 web 端发一条消息，鸿蒙端日志能打印出 `bridge:message` 归一化后的 `chatKey`。
+
+然后开飞行模式 10 秒再关闭，确认日志出现退避重连且最终回到 `connected`。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/gateway/ConnectionGateway.ets harmony/entry/src/main/ets/store harmony/entry/src/main/ets/entryability/EntryAbility.ets
+git commit -m "feat(harmony): add ws gateway with backoff reconnect and stores"
+```
+
+---
+
+### Task 12: 聊天界面（消息列表、markdown 渲染、输入发送）
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/components/MarkdownView.ets`
+- Create: `harmony/entry/src/main/ets/components/MessageList.ets`
+- Create: `harmony/entry/src/main/ets/components/MessageInput.ets`
+- Create: `harmony/entry/src/main/ets/components/ChatWindow.ets`
+- Modify: `harmony/entry/src/main/ets/pages/Index.ets`
+
+**Interfaces:**
+- Consumes: `ChatStore`、`SessionStore`、`ConnectionGateway`、`parseMarkdown`、`parseInline`
+- Produces: `ChatWindow()` 组件，供 `Index` 与后续断点布局复用。
+
+- [ ] **Step 1: 实现 MarkdownView**
+
+按 `MdNode.kind` 分支渲染：`heading` 用递增字号；`paragraph`/`quote` 用 `Text` 承载 `parseInline` 得到的 `MdSpan[]`（`bold` → `FontWeight.Bold`，`italic` → `FontStyle.Italic`，`code` → 等宽 + 浅底，`link` → 主题色 + 点击调 `@kit.BasicServicesKit` 打开浏览器，`image` → `Image` 组件）；`list` 用 `ForEach` 加前缀（有序为 `${i + 1}.`，无序为 `•`）；`table` 用嵌套 `Row`/`Column` + 边框；`code` 用 `Scroll({ scrollable: ScrollDirection.Horizontal })` 包一个等宽 `Text`，右上角放复制按钮，点击调用 `pasteboard` 写入。
+
+- [ ] **Step 2: 实现 MessageList**
+
+用 `List` + `LazyForEach` 渲染 `ChatStore.instance.messagesOf(currentChatKey)`；user 气泡右对齐、assistant 左对齐。
+
+**流式特例**：若 `ChatStore.instance.streamingOf(chatKey)` 非空，在列表末尾追加一个气泡，内容用纯 `Text` 直接显示，**不调 `parseMarkdown`**——每几十毫秒重解析整段会掉帧。`bridge:stream-done` 后该气泡被正式消息取代，此时才走 `MarkdownView`。
+
+- [ ] **Step 3: 实现 MessageInput**
+
+多行 `TextArea` + 发送按钮。点击发送时调 `ConnectionGateway.instance.sendMessage(chatKey, text)` 并清空输入框。socket 未连接时按钮保持可用（消息进队列），但按钮文案变为「待发送」。
+
+- [ ] **Step 4: 组装 ChatWindow 并接入 Index**
+
+`ChatWindow` 自上而下为 `MessageList`（`layoutWeight(1)`）+ `MessageInput`。`Index` 在已登录分支渲染 `ChatWindow()`，并在 `aboutToAppear` 里调 `ConnectionGateway.instance.start(...)`。
+
+- [ ] **Step 5: 真机验证一轮完整对话**
+
+发一条消息 → 看到流式文字逐步出现 → 结束后排版落定（标题、列表、代码块正确渲染）→ 代码块能横向滚动、复制按钮可用。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/components harmony/entry/src/main/ets/pages/Index.ets
+git commit -m "feat(harmony): render chat with markdown and streaming input"
+```
+
+---
+
+### Task 13: 宠物与图片缓存
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/gateway/PetImageCache.ets`
+- Create: `harmony/entry/src/main/ets/components/PetMini.ets`
+- Create: `harmony/entry/src/main/resources/base/media/pet_idle.png` 等 5 张
+- Modify: `harmony/entry/src/main/ets/components/ChatWindow.ets`
+
+**Interfaces:**
+- Consumes: `derivePetState`、`ConnectionStore`、`TaskStore`、`SessionStore`、`RestClient`
+- Produces: `PetMini()` 组件；`PetImageCache.instance.uriFor(state: PetState): Promise<string>`
+
+- [ ] **Step 1: 放入内置宠物图**
+
+把 `packages/web/src/assets/pet/{idle,thinking,talking,happy,error}.png` 复制到 `harmony/entry/src/main/resources/base/media/`，重命名为 `pet_idle.png` 等（HarmonyOS 资源名不允许连字符，且必须小写）。
+
+- [ ] **Step 2: 实现 PetImageCache**
+
+按 token 拉取 `/api/pet-images/:state`，写入应用沙箱 `context.filesDir/pet/<tokenHash>/<state>.png`；命中缓存直接返回 `file://` URI；网络失败或 404 返回 `$r('app.media.pet_idle')` 一类的内置资源标识。**缓存键必须含 token**，否则换 token 后会显示上一个用户的宠物图。
+
+- [ ] **Step 3: 实现 PetMini**
+
+22vp 圆形 `Image`，图源为 `PetImageCache` 的结果。状态由 `derivePetState` 派生，输入来自三个 store：
+
+```typescript
+const state: PetState = derivePetState({
+  taskPhase: TaskStore.instance.phaseOf(SessionStore.instance.currentChatKey),
+  hasUnread: SessionStore.instance.totalUnread() > 0,
+  bridgeConnected: ConnectionStore.instance.bridgeConnected,
+  msSinceConnected: Date.now() - ConnectionStore.instance.connectedAtMs,
+});
+```
+
+切换时用 `animateTo({ duration: 200 })` 做一次透明度过渡。**组件内不得出现任何 `if (event.type === ...) setPetState(...)` 式的命令写法。**
+
+- [ ] **Step 4: 真机验证五态**
+
+发消息时变 thinking；回复完且停留在当前会话时回 idle；切到别的会话让消息到达，变 talking；断网变 error；恢复连接 3 秒内为 happy。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/gateway/PetImageCache.ets harmony/entry/src/main/ets/components/PetMini.ets harmony/entry/src/main/resources/base/media harmony/entry/src/main/ets/components/ChatWindow.ets
+git commit -m "feat(harmony): add derived pet avatar with per-token image cache"
+```
+
+---
+
+### Task 14: 本地通知
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/gateway/NotificationGateway.ets`
+- Modify: `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`
+- Modify: `harmony/entry/src/main/module.json5`
+
+**Interfaces:**
+- Consumes: `@kit.NotificationKit`
+- Produces: `interface Notifier { notifyReply(title: string, body: string): Promise<void> }`；`NotificationGateway.instance` 实现该接口。
+
+接口化是刻意的：将来换 Push Kit 只替换实现，`ConnectionGateway` 不动。
+
+- [ ] **Step 1: 声明通知权限并申请**
+
+`module.json5` 追加 `ohos.permission.NOTIFICATION_CONTROLLER`；首次进入聊天页时调用 `notificationManager.requestEnableNotification()`。
+
+- [ ] **Step 2: 实现 NotificationGateway**
+
+用 `notificationManager.publish` 发基础文本通知，`id` 用 chatKey 的哈希，使同一会话的通知互相覆盖而不是堆叠。
+
+- [ ] **Step 3: 在 dispatch 里接入**
+
+仅当 `event.chatKey !== SessionStore.instance.currentChatKey || !this.foreground` 时发通知——**与未读判定用同一个条件表达式**，不要各写一套（spec 6.3 已写死此规则）。
+
+触发时机：`bridge:message` 到达，或 `bridge:stream-done` 且该会话 typing 已停止。
+
+- [ ] **Step 4: 真机验证**
+
+打开应用 → 按 Home 键退到后台 → 从 web 端发消息触发回复 → 确认收到通知；点击通知能拉起应用。
+
+再验证反例：应用在前台且停留在该会话时，**不应**收到通知。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/gateway/NotificationGateway.ets harmony/entry/src/main/ets/gateway/ConnectionGateway.ets harmony/entry/src/main/module.json5
+git commit -m "feat(harmony): notify on background replies via local notifications"
+```
+
+---
+
+### Task 15: slash command 浮层
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/components/SlashCommandMenu.ets`
+- Modify: `harmony/entry/src/main/ets/components/MessageInput.ets`
+- Modify: `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`
+- Modify: `harmony/entry/src/main/ets/store/SessionStore.ets`
+
+**Interfaces:**
+- Consumes: `mergeCommands`、`matchCommands`、`isSlashInput`
+- Produces: `SlashCommandMenu({ input: string, onPick: (spec: SlashCommandSpec) => void })`
+
+- [ ] **Step 1: 接收 skills 事件**
+
+在 `ConnectionGateway.dispatch` 中处理 `WsEvents.BRIDGE_SKILLS_UPDATED`，把 payload 里的命令数组存进 `SessionStore.instance.skillCommands`。
+
+- [ ] **Step 2: 实现浮层组件**
+
+输入以 `/` 开头时显示，数据为 `matchCommands(mergeCommands(skills), input)`，按 `category` 分组显示小标题。**浮层锚定在输入框上方**（`Stack` + `.align(Alignment.Bottom)` 或 `offset` 向上）——手机上输入框紧贴键盘，向下弹必被遮挡。
+
+- [ ] **Step 3: 接入 MessageInput 并执行命令**
+
+选中后：`type === 'send'` 的命令填入输入框（保留参数位，让用户接着打）；`type === 'local'` 的命令本地执行——`/clear` 调 `ChatStore.instance.clear(chatKey)`，`/settings` 打开设置，`/connect` 与 `/disconnect` 调 `RestClient` 的 `/api/bridges/:id/connect` 与 `/api/bridges/:id/disconnect`。
+
+- [ ] **Step 4: 真机验证**
+
+输入 `/` 看到完整列表且 builtin 在最前；输入 `/mo` 只剩 `/model`；选 `/clear` 后消息清空；选 `/model` 后输入框变成 `/model ` 等待参数。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/components/SlashCommandMenu.ets harmony/entry/src/main/ets/components/MessageInput.ets harmony/entry/src/main/ets/gateway/ConnectionGateway.ets harmony/entry/src/main/ets/store/SessionStore.ets
+git commit -m "feat(harmony): add slash command palette above the input"
+```
+
+---
+
+### Task 16: 会话切换与三档断点
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/components/ResponsiveLayout.ets`
+- Create: `harmony/entry/src/main/ets/components/SessionSheet.ets`
+- Create: `harmony/entry/src/main/ets/components/SessionSidebar.ets`
+- Create: `harmony/entry/src/main/ets/components/ConnectionBadge.ets`
+- Create: `harmony/entry/src/test/ResponsiveLayout.test.ets`
+- Modify: `harmony/entry/src/main/ets/pages/Index.ets`
+- Modify: `harmony/entry/src/test/List.test.ets`
+
+**Interfaces:**
+- Consumes: `SessionStore`、`ConnectionStore`
+- Produces: `ResponsiveLayout.widthClass(width: number): ResponsiveWidthClass`、`ResponsiveLayout.usesSideSessions(width: number): boolean`、`ResponsiveLayout.contentMaxWidth(width: number): number`
+
+- [ ] **Step 1: 移植断点纯函数并写测试**
+
+从 `/Users/StevenZhu/code/Tailscale-OHOS/entry/src/main/ets/components/ResponsiveLayout.ets` 复制 `ResponsiveWidthClass` 枚举与 `widthClass` / `pageMargin`，删去 cc-pet 用不到的部分（`TransferContentLayout`、`SettingsContentLayout` 等），追加两个方法：
+
+```typescript
+static usesSideSessions(width: number): boolean {
+  return width >= ResponsiveLayout.MEDIUM_MIN_WIDTH;
+}
+
+static contentMaxWidth(width: number): number {
+  return width >= ResponsiveLayout.EXPANDED_MIN_WIDTH
+    ? ResponsiveLayout.EXPANDED_CONTENT_MAX_WIDTH
+    : width;
+}
+```
+
+测试 `harmony/entry/src/test/ResponsiveLayout.test.ets`：
+
+```typescript
+import { describe, it, expect } from '@ohos/hypium';
+import { ResponsiveLayout, ResponsiveWidthClass } from '../main/ets/components/ResponsiveLayout';
+
+export default function responsiveLayoutTest() {
+  describe('ResponsiveLayout', () => {
+    it('classifies the three width bands', 0, () => {
+      expect(ResponsiveLayout.widthClass(599)).assertEqual(ResponsiveWidthClass.COMPACT);
+      expect(ResponsiveLayout.widthClass(600)).assertEqual(ResponsiveWidthClass.MEDIUM);
+      expect(ResponsiveLayout.widthClass(839)).assertEqual(ResponsiveWidthClass.MEDIUM);
+      expect(ResponsiveLayout.widthClass(840)).assertEqual(ResponsiveWidthClass.EXPANDED);
+    });
+
+    it('uses side sessions from medium up', 0, () => {
+      expect(ResponsiveLayout.usesSideSessions(599)).assertEqual(false);
+      expect(ResponsiveLayout.usesSideSessions(600)).assertEqual(true);
+    });
+
+    it('caps content width only when expanded', 0, () => {
+      expect(ResponsiveLayout.contentMaxWidth(500)).assertEqual(500);
+      expect(ResponsiveLayout.contentMaxWidth(2000)).assertEqual(1240);
+    });
+  });
+}
+```
+
+在 `List.test.ets` 追加导入与调用，跑测试确认先失败后通过。
+
+- [ ] **Step 2: 实现会话两种壳**
+
+`SessionSheet` 为底部半模态（`bindSheet`），`SessionSidebar` 为常驻左栏；两者渲染同一份 `SessionStore` 数据，含未读红点。
+
+- [ ] **Step 3: 实现 ConnectionBadge**
+
+按 `ConnectionStore.instance.phase` 显示「已连接 / 重连中 / 未登录」，常驻顶栏。
+
+- [ ] **Step 4: 按断点装配 Index**
+
+用 `GridRow`/`onAreaChange` 拿到窗口宽度，`usesSideSessions` 为真时渲染 `SessionSidebar` + `ChatWindow`，否则渲染顶栏（PetMini + 会话名 + ConnectionBadge + 设置）+ `ChatWindow` + `SessionSheet`。EXPANDED 下给 `ChatWindow` 套 `.constraintSize({ maxWidth: ResponsiveLayout.contentMaxWidth(width) })`。
+
+- [ ] **Step 5: 真机验证三档**
+
+手机竖屏（COMPACT）→ 横屏（MEDIUM，会话列表出现在左侧）→ 若有平板或 2in1 设备再验 EXPANDED 的内容封顶。折叠屏需验证展开瞬间布局平滑切换、不丢当前会话。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/components harmony/entry/src/main/ets/pages/Index.ets harmony/entry/src/test
+git commit -m "feat(harmony): adapt sessions and chat width across three breakpoints"
+```
+
+---
+
+### Task 17: 历史补齐与错误降级
+
+把 spec 第 8 节的降级表逐行落地。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/gateway/HistoryApi.ets`
+- Create: `harmony/entry/src/main/ets/components/ErrorBanner.ets`
+- Modify: `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`
+- Modify: `harmony/entry/src/main/ets/components/MessageList.ets`
+- Modify: `harmony/entry/src/main/ets/store/AuthStore.ets`
+
+**Interfaces:**
+- Consumes: `RestClient`、`UnauthorizedError`
+- Produces: `HistoryApi.fetch(chatKey: string): Promise<ChatMessage[]>`；`ErrorBanner({ text: string, onRetry: () => void })`
+
+- [ ] **Step 1: 重连后补齐历史**
+
+`ConnectionGateway` 在 `open()` 成功回调里，对当前 chatKey 调 `HistoryApi.fetch` 并 `ChatStore.replaceAll`。失败时不抛给用户中断，而是置一个 `historyError` 标志。
+
+- [ ] **Step 2: 401 统一登出**
+
+任何 `RestClient` 调用抛出 `UnauthorizedError` 时，调 `AuthStore.instance.clear()`，UI 自动回到 `LoginGate`。**不做静默重试**——token 失效重试多少次都是失败。
+
+- [ ] **Step 3: 发送失败可重试**
+
+发送后若 socket 关闭或服务端返回错误，消息气泡标红并显示重试按钮，点击重新入队。原文不得丢失。
+
+- [ ] **Step 4: 历史失败提示条**
+
+`ErrorBanner` 置于 `MessageList` 顶部，仅 `historyError` 为真时显示，带「重试」按钮。不阻塞当前会话的收发。
+
+- [ ] **Step 5: 逐条验证降级表**
+
+对照 spec 第 8 节五行逐条验证：故意填错 token 验 401；飞行模式验断线与发送队列；把服务端 `/api/history` 临时改成 500 验提示条（**验证完立即改回，服务端不得留下改动**）；断网状态下验宠物图回落内置资源。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/gateway/HistoryApi.ets harmony/entry/src/main/ets/components/ErrorBanner.ets harmony/entry/src/main/ets/gateway/ConnectionGateway.ets harmony/entry/src/main/ets/components/MessageList.ets harmony/entry/src/main/ets/store/AuthStore.ets
+git commit -m "feat(harmony): backfill history and degrade gracefully on errors"
+```
+
+---
+
+### Task 18: 真机探针脚本与文档收尾
+
+**Files:**
+- Create: `harmony/scripts/build.sh`
+- Create: `harmony/scripts/device-login-probe.sh`
+- Create: `harmony/scripts/device-chat-probe.sh`
+- Create: `harmony/scripts/device-reconnect-probe.sh`
+- Create: `harmony/scripts/device-notification-probe.sh`
+- Modify: `harmony/README.md`
+
+**Interfaces:**
+- Consumes: Task 1 记录的构建命令
+- Produces: 四条可重复执行的真机验证脚本
+
+- [ ] **Step 1: 写 build.sh**
+
+封装 Task 1 记录的 HAP 构建命令，`set -euo pipefail`，产物路径打印到 stdout。用 bash 而非 PowerShell——Tailscale-OHOS 的 `.ps1` 探针在 macOS 上跑不了。
+
+- [ ] **Step 2: 写四条探针脚本**
+
+每条脚本用 `hdc shell` 抓日志并断言关键行，退出码非零即失败：
+
+- `device-login-probe.sh`：安装 HAP、拉起应用、断言日志出现 `auth verified`
+- `device-chat-probe.sh`：断言一轮收发中出现 `stream-delta` 与 `stream-done`
+- `device-reconnect-probe.sh`：`hdc shell` 切飞行模式、等待、恢复，断言日志出现退避重连且最终 `connected`
+- `device-notification-probe.sh`：把应用退到后台，断言 `notifyReply` 被调用
+
+脚本必须打印明确的 PASS / FAIL 行，不要只靠退出码。
+
+- [ ] **Step 3: 补全 README**
+
+`harmony/README.md` 写明：环境要求（DevEco Studio 版本、API 26）、签名配置步骤（指向 `build-profile.example.json5`）、构建与单测命令、四条探针的用法、以及「服务端零改动」这一约束。
+
+- [ ] **Step 4: 跑一遍全量验证**
+
+```bash
+cd /Users/StevenZhu/code/cc-pet-web
+pnpm --filter @cc-pet/server exec vitest run tests/harmony-protocol-alignment.test.ts
+```
+
+外加 Task 1 的单测命令（全部 hypium 用例）与四条探针。全绿才算完成。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add harmony/scripts harmony/README.md
+git commit -m "chore(harmony): add device probes and build docs"
+```
+
+---
+
+## 附：自查结论
+
+写完后按 spec 逐节核对的结果：
+
+- spec 2（范围）→ Task 10–16 覆盖全部「做」的条目；「不做」的条目未出现在任何任务中。
+- spec 4.1（分层）→ 目录结构见本计划 File Structure，与 spec 一致；依赖规则写入 Global Constraints。
+- spec 4.2（移植资产）→ `ResponsiveLayout` 在 Task 16 移植；`AppShell`/`MotionTokens` 首版未用到，故未列入任务（首版无底部导航，见 spec 7.2）。
+- spec 5（协议与漂移守卫）→ Task 2，且 Step 4 强制验证守卫会响。
+- spec 6.1/6.2/6.3/6.4 → 分别对应 Task 3/11、Task 11、Task 4 + 11、Task 5 + 13。
+- spec 7.1/7.2/7.3/7.4 → 分别对应 Task 16、Task 10 + 16、Task 6 + 7 + 12、Task 8 + 15。
+- spec 8（降级表）→ Task 17，逐行验证。
+- spec 9（测试）→ 单测散在 Task 3–9 与 16，协议对齐在 Task 2，探针在 Task 18。
+- spec 10（风险）→ 签名风险在 Task 1 Step 3 前置；markdown 风险通过 Task 6/7 拆分与纯函数化降低。
