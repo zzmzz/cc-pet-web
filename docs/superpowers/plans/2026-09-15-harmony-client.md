@@ -652,9 +652,10 @@ web 端在十几个 case 里各解一遍 `connectionId / sessionKey`，这里一
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `interface WsPayload` —— 首版全部事件的 payload 字段并集，全部可选
-  - `interface RawWsEnvelope { type: string; payload: WsPayload }`
-  - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; payload: WsPayload }`
+  - `interface WsFrame` —— 一帧的扁平结构，首版全部事件的字段并集，除 `type` 外全部可选
+  - `interface BridgeInfo { id: string; name: string; attachmentStaging?: boolean }`
+  - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; frame: WsFrame }`
+  - `normalizeEvent(frame: WsFrame): NormalizedEvent`
   - `normalizeEvent(raw: RawWsEnvelope): NormalizedEvent`
   - `chatKeyOf(connectionId: string, sessionKey: string): string`
 
@@ -737,15 +738,7 @@ Expected: FAIL，找不到模块 `../main/ets/logic/normalizeEvent`
 `harmony/entry/src/main/ets/logic/normalizeEvent.ets`：
 
 ```typescript
-/**
- * Union of every payload field the first release consumes.
- *
- * ArkTS strict mode forbids indexed access on interfaces
- * (arkts-no-props-by-index), so payload fields must be declared, not read
- * dynamically. That is a feature here: when the server adds a field, this
- * interface is the one place that has to acknowledge it.
- */
-export interface WsPayload {
+
   connectionId?: string;
   sessionKey?: string;
   /** bridge:message */
@@ -766,9 +759,45 @@ export interface WsPayload {
   connected?: boolean;
 }
 
-export interface RawWsEnvelope {
+/**
+ * One frame exactly as it arrives on the wire.
+ *
+ * The server sends `JSON.stringify({ type: event, ...payload })`
+ * (packages/server/src/ws/hub.ts) — the payload fields are spread onto the
+ * TOP LEVEL, there is no nested `payload` object. An earlier version of this
+ * plan assumed a nested envelope; it crashed on the first real message and the
+ * unit tests passed anyway, because they encoded the same wrong assumption.
+ */
+export interface WsFrame {
   type: string;
-  payload: WsPayload;
+  connectionId?: string;
+  sessionKey?: string;
+  /** bridge:message */
+  content?: string;
+  /** bridge:stream-delta */
+  delta?: string;
+  /** bridge:stream-done */
+  fullText?: string;
+  /** message-ack: the id this client generated */
+  clientMsgId?: string;
+  /** message-ack: the id the server assigned */
+  id?: string;
+  /** message-ack: server sequence number */
+  seq?: number;
+  /** resident:unread */
+  unreadCount?: number;
+  /** bridge:connected */
+  connected?: boolean;
+  /** bridge:manifest */
+  bridges?: BridgeInfo[];
+  /** bridge:skills-updated */
+  commands?: SlashCommandSpec[];
+}
+
+export interface BridgeInfo {
+  id: string;
+  name: string;
+  attachmentStaging?: boolean;
 }
 
 export interface NormalizedEvent {
@@ -776,7 +805,7 @@ export interface NormalizedEvent {
   connectionId: string;
   sessionKey: string;
   chatKey: string;
-  payload: WsPayload;
+  frame: WsFrame;
 }
 
 /** Chat key format mirrors the server: `${connectionId}::${sessionKey}`. */
@@ -788,15 +817,15 @@ export function chatKeyOf(connectionId: string, sessionKey: string): string {
 }
 
 /** Parses ids once so downstream stores never re-derive them. */
-export function normalizeEvent(raw: RawWsEnvelope): NormalizedEvent {
-  const connectionId: string = raw.payload.connectionId ?? '';
-  const sessionKey: string = raw.payload.sessionKey ?? '';
+export function normalizeEvent(frame: WsFrame): NormalizedEvent {
+  const connectionId: string = frame.connectionId ?? '';
+  const sessionKey: string = frame.sessionKey ?? '';
   return {
-    type: raw.type,
+    type: frame.type,
     connectionId: connectionId,
     sessionKey: sessionKey,
     chatKey: chatKeyOf(connectionId, sessionKey),
-    payload: raw.payload,
+    frame: frame,
   };
 }
 ```
@@ -2326,7 +2355,7 @@ git commit -m "feat(harmony): guard REST endpoint methods against the server rou
   - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`
   - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
   - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
-  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: WsPayload): void`、`applySessions(sessions: Session[]): void`、`applySkills(payload: WsPayload): void`
+  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(frame: WsFrame): void`、`applySessions(sessions: Session[]): void`、`applySkills(frame: WsFrame): void`
   - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
   - `NotificationGateway.instance`：`notifyReply(title: string, body: string): Promise<void>`
 
@@ -2439,7 +2468,7 @@ export class NotificationGateway {
 import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
-import { normalizeEvent, RawWsEnvelope, NormalizedEvent, WsPayload } from '../logic/normalizeEvent';
+import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
@@ -2543,8 +2572,9 @@ export class ConnectionGateway {
       if (err !== undefined || typeof data !== 'string') {
         return;
       }
-      const raw: RawWsEnvelope = JSON.parse(data as string) as RawWsEnvelope;
-      this.dispatch(normalizeEvent(raw));
+      // The server spreads payload fields onto the top level, so the frame
+      // parses directly — no envelope unwrapping, no shim.
+      this.dispatch(normalizeEvent(JSON.parse(data as string) as WsFrame));
     });
 
     socket.on('close', () => { this.scheduleReconnect(); });
@@ -2673,16 +2703,16 @@ export class ConnectionGateway {
 
   private dispatch(event: NormalizedEvent): void {
     if (event.type === WsEvents.MESSAGE_ACK) {
-      const clientMsgId: string = event.payload.clientMsgId ?? '';
+      const clientMsgId: string = event.frame.clientMsgId ?? '';
       if (clientMsgId.length === 0) {
         return;
       }
       this.outbox.markSent(clientMsgId);
-      ChatStore.instance.applyAck(clientMsgId, event.payload.id ?? clientMsgId, event.payload.seq ?? 0);
+      ChatStore.instance.applyAck(clientMsgId, event.frame.id ?? clientMsgId, event.frame.seq ?? 0);
       return;
     }
     if (event.type === WsEvents.RESIDENT_UNREAD) {
-      SessionStore.instance.setUnread(event.chatKey, event.payload.unreadCount ?? 0);
+      SessionStore.instance.setUnread(event.chatKey, event.frame.unreadCount ?? 0);
       return;
     }
     if (event.type === WsEvents.BRIDGE_CONNECTED) {
@@ -2711,19 +2741,19 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DELTA) {
-      ChatStore.instance.appendDelta(event.chatKey, event.payload.delta ?? '');
+      ChatStore.instance.appendDelta(event.chatKey, event.frame.delta ?? '');
       TaskStore.instance.setPhase(event.chatKey, 'working');
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
-      const text: string = event.payload.fullText ?? '';
+      const text: string = event.frame.fullText ?? '';
       ChatStore.instance.finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
       TaskStore.instance.setPhase(event.chatKey, 'completed');
       this.afterAssistantReply(event.chatKey, text);
       return;
     }
     if (event.type === WsEvents.BRIDGE_MESSAGE) {
-      const text: string = event.payload.content ?? '';
+      const text: string = event.frame.content ?? '';
       const message: ChatMessage = {
         id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
         connectionId: event.connectionId, sessionKey: event.sessionKey,
