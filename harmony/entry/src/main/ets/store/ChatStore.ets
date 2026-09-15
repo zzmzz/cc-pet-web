@@ -26,6 +26,19 @@ export class ChatStore {
   @Trace private messages: Map<string, ChatMessage[]> = new Map<string, ChatMessage[]>();
   @Trace private streaming: Map<string, string> = new Map<string, string>();
 
+  /**
+   * Bumped by every mutation below. `build()` already re-runs on its own
+   * when `messages`/`streaming` change (that is what `@Trace` is for), but a
+   * side effect that must run *after* such a change — `MessageList`'s
+   * scroll-to-bottom — has no `build()` to hang off. `@Monitor` is the V2
+   * tool for that, and `@Monitor` needs a named field to watch: the two maps
+   * above are `private`, so a consumer cannot name them in a monitor path.
+   * This counter is that name. It also removes the last reason
+   * `MessageList` kept a 1 Hz timer: auto-scroll used to fire only off that
+   * tick, so a new message could sit below the fold for up to a second.
+   */
+  @Trace revision: number = 0;
+
   messagesOf(chatKey: string): ChatMessage[] {
     return this.messages.get(chatKey) ?? [];
   }
@@ -38,14 +51,17 @@ export class ChatStore {
     const list: ChatMessage[] = this.messagesOf(chatKey).slice();
     list.push(message);
     this.messages.set(chatKey, list);
+    this.revision += 1;
   }
 
   appendDelta(chatKey: string, delta: string): void {
     this.streaming.set(chatKey, this.streamingOf(chatKey) + delta);
+    this.revision += 1;
   }
 
   finalizeStream(chatKey: string, fullText: string, id: string, at: number, seq: number): void {
     this.streaming.delete(chatKey);
+    // `append` bumps `revision` for us.
     this.append(chatKey, { id: id, role: 'assistant', content: fullText, timestamp: at, seq: seq });
   }
 
@@ -67,6 +83,7 @@ export class ChatStore {
       }
       if (changed) {
         this.messages.set(key, next);
+        this.revision += 1;
       }
     });
   }
@@ -85,10 +102,26 @@ export class ChatStore {
 
   replaceAll(chatKey: string, history: ChatMessage[]): void {
     this.messages.set(chatKey, history);
+    this.revision += 1;
   }
 
   clear(chatKey: string): void {
     this.messages.delete(chatKey);
     this.streaming.delete(chatKey);
+    this.revision += 1;
+  }
+
+  /**
+   * Logout path only (`ConnectionGateway.stop`). `clear(chatKey)` drops one
+   * chat; this drops every chat, because the transcripts belong to the token
+   * that fetched them. Without it the next account to log in on this device
+   * opens straight into the previous account's messages — the store is an
+   * `AppStorageV2` singleton that outlives any one session, and `Index` is
+   * the `@Entry` struct, never remounted on logout.
+   */
+  clearAll(): void {
+    this.messages = new Map<string, ChatMessage[]>();
+    this.streaming = new Map<string, string>();
+    this.revision += 1;
   }
 }

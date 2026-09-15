@@ -2,18 +2,20 @@ import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { backoffDelayMs } from '../logic/backoff';
-import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
+import {
+  normalizeEvent, WsFrame, NormalizedEvent, splitChatKey, ChatKeyParts, BridgeInfo,
+} from '../logic/normalizeEvent';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
-import { mergeHistoryMessages } from '../logic/mergeHistory';
 import { Outbox, OutboxStatus, RetryPolicy } from '../logic/outbox';
-import { WsEvents, ChatMessage } from '../model/Protocol';
+import { WsEvents, ChatMessage, Session } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
 import { TaskStore } from '../store/TaskStore';
 import { ConnectionStore, ConnectionPhase } from '../store/ConnectionStore';
 import { AuthStore } from '../store/AuthStore';
 import { NotificationGateway } from './NotificationGateway';
-import { HistoryApi } from './HistoryApi';
+import { HistoryBackfill } from './HistoryBackfill';
+import { SessionApi } from './SessionApi';
 import { UnauthorizedError } from './RestClient';
 
 // ConnectionPhase itself lives in store/ConnectionStore.ets — the field it
@@ -64,36 +66,41 @@ export class ConnectionGateway {
   private stopped: boolean = true;
   private foreground: boolean = true;
   /**
-   * True when the last history-backfill attempt failed for a reason other
-   * than 401 (a 401 logs the user out instead, see `backfillHistory`).
-   * Plain field, not `@Trace` — this class isn't a Store (see class doc)
-   * — so `MessageList`'s `ErrorBanner` reads it through the same
-   * tick-gated polling trick it already uses for outbox status
-   * (`outboxEntriesOf`/`statusOf`), not a new poll.
+   * History backfill lives in its own collaborator (see `HistoryBackfill`);
+   * this gateway keeps only the handle and forwards `retryHistory`. Rebuilt
+   * on every `start()` so a re-login after a 401 never reuses the dead
+   * token or a stale in-flight set. `undefined` until the first `start()`.
    */
-  private historyError: boolean = false;
-  /**
-   * Task 17 fix round, Important-3: `retryHistory` (the `ErrorBanner`'s
-   * manual retry) and the reconnect-scheduled call from the
-   * `bridge:manifest` dispatch branch can both target the same `chatKey`
-   * concurrently — each would otherwise snapshot its own cursor and apply
-   * its own result independently, and whichever resolves later could stomp
-   * the other (including leaving `historyError` on a stale value). A plain
-   * `Set`, not `@Trace` — nothing renders off it directly, only
-   * `backfillHistory` reads/writes it.
-   */
-  private backfillInFlight: Set<string> = new Set<string>();
+  private backfill: HistoryBackfill | undefined = undefined;
 
   start(baseUrl: string, token: string): void {
     this.baseUrl = baseUrl;
     this.token = token;
     this.stopped = false;
     this.attempt = 0;
+    this.backfill = new HistoryBackfill(baseUrl, token, (): void => { this.logoutAndStop(); });
     this.observeNetwork();
     this.startAckSweep();
     this.open();
   }
 
+  /**
+   * Tears the connection down AND drops everything the previous session
+   * queued or displayed.
+   *
+   * The teardown half was always here. The forgetting half was not, and that
+   * was the more serious bug: all three logout paths (this gateway's own 401
+   * handler, `HistoryBackfill`'s, and `MessageInput.toggleBridge`'s) end
+   * here, but `ConnectionGateway` is an `AppStorageV2`-outliving singleton
+   * and `ChatStore`/`Outbox` are process-lifetime state, so account A's
+   * unsent messages and A's whole transcript survived into account B's
+   * session on the same device. `flushOutbox()` would then put A's queued
+   * text on B's socket on B's first connect.
+   *
+   * Does NOT clear `AuthStore` — the three callers each decide whether this
+   * is a logout or just a shutdown, and `EntryAbility` shutting the app down
+   * must not wipe a perfectly good token.
+   */
   stop(): void {
     this.stopped = true;
     this.clearTimer();
@@ -109,7 +116,31 @@ export class ConnectionGateway {
       this.netConn.unregister(() => {});
       this.netConn = undefined;
     }
+    this.outbox.clear();
+    this.backfill = undefined;
+    ChatStore.connect().clearAll();
+    ConnectionStore.connect().clearHistoryErrors();
     ConnectionStore.connect().setPhase('disconnected');
+  }
+
+  /**
+   * The one 401 reaction, shared by this gateway's own REST callers and by
+   * `HistoryBackfill` (through the callback handed to its constructor).
+   *
+   * Fire-and-forget on `clear()`, same pattern as `ChatWindow`'s
+   * `NotificationGateway.requestPermission` call: `clear()`'s synchronous
+   * prefix (before its first internal `await`) already flips
+   * `AuthStore.authorized`, which is what Index's
+   * `@Monitor('auth.authorized')` reacts to — nothing here needs to wait for
+   * the preferences flush to finish.
+   *
+   * `stop()` outright, not just log out: without it a dead token would keep
+   * bouncing through `backoffDelayMs()` forever in the background after the
+   * UI has already fallen back to `LoginGate`.
+   */
+  private logoutAndStop(): void {
+    AuthStore.connect().clear();
+    this.stop();
   }
 
   setForeground(value: boolean): void {
@@ -238,20 +269,26 @@ export class ConnectionGateway {
       return;
     }
     this.sweepTimer = setInterval(() => {
-      this.outbox.expireTimedOut(Date.now());
+      // Bump the store only when something actually expired. This is the
+      // whole reason `MessageList` no longer runs a 1 Hz timer of its own:
+      // the sweep is the only event that can change a bubble's send status
+      // without any other `@Trace` write happening, so it is the only thing
+      // that needs to announce itself. A quiet sweep writes nothing and
+      // re-renders nothing.
+      if (this.outbox.expireTimedOut(Date.now()).length > 0) {
+        ConnectionStore.connect().bumpOutboxRevision();
+      }
     }, ACK_SWEEP_MS);
   }
 
   sendMessage(chatKey: string, text: string): string {
     const clientMsgId: string = util.generateRandomUUID(true);
-    const parts: string[] = chatKey.split('::');
-    const connectionId: string = parts[0] ?? '';
-    const sessionKey: string = parts[1] ?? '';
+    const parts: ChatKeyParts = splitChatKey(chatKey);
     const now: number = Date.now();
 
     ChatStore.connect().append(chatKey, {
       id: clientMsgId, role: 'user', content: text, timestamp: now,
-      connectionId: connectionId, sessionKey: sessionKey,
+      connectionId: parts.connectionId, sessionKey: parts.sessionKey,
     });
 
     const policy: RetryPolicy = 'auto';
@@ -304,11 +341,11 @@ export class ConnectionGateway {
       if (!wanted) {
         continue;
       }
-      const parts: string[] = entry.chatKey.split('::');
+      const parts: ChatKeyParts = splitChatKey(entry.chatKey);
       const envelope: OutgoingEnvelope = {
         type: WsEvents.SEND_MESSAGE,
-        connectionId: parts[0] ?? '',
-        sessionKey: parts[1] ?? '',
+        connectionId: parts.connectionId,
+        sessionKey: parts.sessionKey,
         content: entry.text,
         clientMsgId: entry.clientMsgId,
       };
@@ -329,99 +366,70 @@ export class ConnectionGateway {
   }
 
   /**
-   * Whether `MessageList`'s `ErrorBanner` should be showing for the
-   * current chat — see the `historyError` field doc.
+   * `ErrorBanner`'s "重试" button — Task 17 degradation-table row 5.
+   * Forwards to `HistoryBackfill`; the banner's visibility itself is read
+   * straight off `ConnectionStore.historyErrorOf(chatKey)` by
+   * `MessageList`, so there is no `historyErrorFlag()` here anymore (that
+   * method existed only because the flag used to live on this class, where
+   * the UI could not observe it).
    */
-  historyErrorFlag(): boolean {
-    return this.historyError;
-  }
-
-  /** `ErrorBanner`'s "重试" button — Task 17 degradation-table row 5. */
   retryHistory(chatKey: string): void {
     this.backfillHistory(chatKey);
   }
 
   /**
-   * Incremental history backfill (Task 17 Step 1) — runs after every
-   * successful connection's `bridge:manifest` (see the dispatch handler
-   * above for why there, not directly in `open()`), not just the first
-   * connect, so a long-disconnected client's transcript catches up on
-   * reconnect too.
-   *
-   * `ChatStore.maxSeqOf(chatKey)` is read once, *before* the async `fetch`
-   * call, and passed straight into `HistoryApi.fetch(chatKey, cursor)`
-   * (Task 17 fix round, Minor) — `fetch` no longer independently re-derives
-   * the same value, so the branch decision here and the request URL it
-   * builds can never desync even if an `await` is ever introduced between
-   * them.
-   *
-   * There is no `cursor === 0` branch anymore (Task 17 fix round,
-   * Important-1/Important-2): both the cold-start case and the incremental
-   * case now go through the same `mergeHistoryMessages(current, messages)`
-   * call, reading `current` fresh from `ChatStore` *after* the fetch
-   * resolves rather than reusing the pre-fetch snapshot. That fresh read is
-   * what lets a message the user sent — or one the live socket delivered —
-   * while this fetch was in flight survive instead of being wiped by a bare
-   * `replaceAll`, and lets `mergeHistoryMessages`'s id-based dedup collapse
-   * a message that arrived by both paths into one. See that function's doc
-   * for the full merge/ordering rationale.
-   *
-   * `backfillInFlight` guards against two concurrent runs for the same
-   * `chatKey` (Task 17 fix round, Important-3) — `retryHistory`'s manual tap
-   * and a reconnect-triggered call can otherwise race; a re-entrant call
-   * here is a plain no-op rather than a second in-flight fetch that could
-   * apply its result after (or instead of) the first.
-   *
-   * Failure handling is exactly the Step 2 + Step 4 contract: a
-   * `UnauthorizedError` from `RestClient` (thrown by any REST call,
-   * `HistoryApi.fetch` included) clears the token and stops this gateway —
-   * no silent retry, a dead token never succeeds on retry. Any other
-   * failure (network blip, server 5xx) sets `historyError` instead, which
-   * `MessageList` surfaces as a top banner with a manual retry
-   * (`retryHistory` above) — it must not interrupt the current
-   * conversation, so nothing here blocks sending/receiving on this path.
+   * The ~90 lines that used to live here are now `HistoryBackfill.run` —
+   * all that is left is the forward, plus the `undefined` guard for the
+   * window between `stop()` and the next `start()` (a manifest frame can
+   * still be in flight when a 401 tears the gateway down).
    */
   private backfillHistory(chatKey: string): void {
-    if (chatKey.length === 0) {
-      // No session selected yet — nothing to backfill. Can still happen
-      // here (not just at the very first `open()`): a manifest with zero
-      // bridges, or one that arrives before the user has ever picked a
-      // session and the deferred default-pick (see the caller) hasn't run
-      // yet either.
+    if (this.backfill === undefined) {
       return;
     }
-    if (this.backfillInFlight.has(chatKey)) {
-      hilog.info(DOMAIN, TAG, 'history backfill already in flight for %{public}s, skipping', chatKey);
+    this.backfill.run(chatKey);
+  }
+
+  /**
+   * `/api/sessions`, once per connection, one request per advertised bridge
+   * (the route answers `{ sessions: [] }` without a `connectionId`).
+   *
+   * Runs off `bridge:manifest` rather than `socket.on('open')` for the same
+   * reason the backfill does: the bridge list this needs arrives with that
+   * frame and nowhere else.
+   *
+   * What it buys, both of which were broken while this was never called:
+   * notification titles stop being the raw `b1::default` chatKey
+   * (`SessionStore.labelOf` needs a `Session` record or a manifest bridge to
+   * name a chat), and `residentKeys` finally gets populated so spec §6.3's
+   * "resident sessions ignore all local unread increments; the server is the
+   * sole truth" invariant is actually armed.
+   *
+   * Failure never touches the socket — same posture as the history
+   * backfill, minus the banner: there is no per-session UI to degrade, the
+   * labels simply stay at their manifest-name fallback. A 401 is the one
+   * exception and is handled like every other 401 in this codebase.
+   */
+  private fetchSessions(bridges: BridgeInfo[]): void {
+    const connectionIds: string[] = [];
+    for (const bridge of bridges) {
+      connectionIds.push(bridge.id);
+    }
+    if (connectionIds.length === 0) {
       return;
     }
-    this.backfillInFlight.add(chatKey);
-    const cursor: number = ChatStore.connect().maxSeqOf(chatKey);
-    const historyApi: HistoryApi = new HistoryApi(this.baseUrl, this.token);
-    historyApi.fetch(chatKey, cursor).then((messages: ChatMessage[]) => {
-      const current: ChatMessage[] = ChatStore.connect().messagesOf(chatKey);
-      ChatStore.connect().replaceAll(chatKey, mergeHistoryMessages(current, messages));
-      this.historyError = false;
-    }).catch((err: Error) => {
-      if (err instanceof UnauthorizedError) {
-        hilog.warn(DOMAIN, TAG, 'history backfill got 401, logging out (no retry)');
-        // Fire-and-forget, same pattern as ChatWindow's
-        // NotificationGateway.requestPermission call: `clear()`'s
-        // synchronous prefix (before its first internal `await`) already
-        // flips `AuthStore.authorized`, which is what Index's
-        // `@Monitor('auth.authorized')` reacts to — nothing here needs to
-        // wait for the preferences flush to finish.
-        AuthStore.connect().clear();
-        // Stop outright, not just log out: without this, a dead token
-        // would keep bouncing through backoffDelayMs() forever in the
-        // background after the UI has already fallen back to LoginGate.
-        this.stop();
-        return;
-      }
-      hilog.error(DOMAIN, TAG, 'history backfill failed: %{public}s', err.message);
-      this.historyError = true;
-    }).finally(() => {
-      this.backfillInFlight.delete(chatKey);
-    });
+    new SessionApi(this.baseUrl, this.token).fetchAll(connectionIds)
+      .then((sessions: Session[]) => {
+        SessionStore.connect().applySessions(sessions);
+      })
+      .catch((err: Error) => {
+        if (err instanceof UnauthorizedError) {
+          hilog.warn(DOMAIN, TAG, 'session list got 401, logging out (no retry)');
+          this.logoutAndStop();
+          return;
+        }
+        hilog.error(DOMAIN, TAG, 'session list fetch failed: %{public}s', err.message);
+      });
   }
 
   /**
@@ -482,6 +490,11 @@ export class ConnectionGateway {
       // ArkUI's reactive update pass to run first; this is a single one-shot
       // callback, not a poll (`ConnectionGateway`'s only sanctioned repeating
       // timer is the ack sweep).
+      // `/api/sessions` goes out immediately (it needs only the bridge ids
+      // this frame just delivered, not `currentChatKey`), while the backfill
+      // still waits a macrotask for the default-session pick described
+      // above.
+      this.fetchSessions(event.frame.bridges ?? []);
       setTimeout(() => { this.backfillHistory(SessionStore.connect().currentChatKey); }, 0);
       return;
     }

@@ -2,6 +2,7 @@ import { ChatMessage } from '../model/Protocol';
 import { OutboxStatus } from '../logic/outbox';
 import { parseMarkdown } from '../logic/parseMarkdown';
 import { ChatStore } from '../store/ChatStore';
+import { ConnectionStore } from '../store/ConnectionStore';
 import { ConnectionGateway, OutboxStatusView } from '../gateway/ConnectionGateway';
 import { MarkdownView } from './MarkdownView';
 import { ErrorBanner } from './ErrorBanner';
@@ -19,33 +20,49 @@ export struct MessageList {
   @Require @Param chatKey: string = '';
   @Local private chat: ChatStore = ChatStore.connect();
   /**
-   * Bumped once a second so `statusOf()` reads register a V2 render
-   * dependency on it, forcing a re-render often enough to notice a bubble
-   * crossing the 15s ack-timeout into `failed` — the outbox itself isn't
-   * `@Trace`'d (it lives on the Gateway, not a Store; see
-   * `ConnectionGateway.outboxEntriesOf`), so nothing else would trigger that
-   * re-render.
+   * The gateway→UI signal channel (see `ConnectionStore.outboxRevision` and
+   * `historyErrors`). `@Local`-held for the same reason as `chat`: that is
+   * what registers this component as a V2 observer of the store's `@Trace`
+   * fields.
+   *
+   * This replaced a `setInterval(…, 1000)` that existed only to force a
+   * re-render — it bumped a local counter every second so `statusOf()` and
+   * `showHistoryError()` would be re-run, which meant re-running `ForEach`
+   * over the whole transcript and `parseMarkdown()` per assistant bubble
+   * once a second, forever, on a list Task 17 raised to 200 messages per
+   * page and up to 5000. The two things that timer was watching for now
+   * announce themselves.
    */
-  @Local private tick: number = 0;
+  @Local private conn: ConnectionStore = ConnectionStore.connect();
 
   private scroller: Scroller = new Scroller();
-  private pollTimer: number = -1;
   private lastRenderedCount: number = -1;
 
   aboutToAppear(): void {
-    this.pollTimer = setInterval(() => {
-      this.tick += 1;
-      this.maybeAutoScroll();
-    }, 1000);
     // Initial scroll-to-bottom once the first frame has laid out.
     setTimeout(() => { this.scroller.scrollEdge(Edge.Bottom); }, 100);
   }
 
-  aboutToDisappear(): void {
-    if (this.pollTimer !== -1) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = -1;
-    }
+  /**
+   * Auto-scroll used to ride on the 1 Hz tick, so a newly arrived message
+   * could sit below the fold for up to a second. `ChatStore.revision` is
+   * bumped by every message mutation, and `@Monitor` is the V2 tool for
+   * "run a side effect once when a tracked field changes" — the same
+   * mechanism `Index` already uses for `auth.authorized`/`session.bridges`.
+   * It fires for mutations in *any* chat, which is harmless:
+   * `maybeAutoScroll` recomputes this chat's own count and no-ops when it
+   * hasn't changed.
+   */
+  @Monitor('chat.revision')
+  onChatChanged(_monitor: IMonitor): void {
+    this.maybeAutoScroll();
+  }
+
+  /** A chat switch should land at the bottom of the new transcript. */
+  @Monitor('chatKey')
+  onChatKeyChanged(_monitor: IMonitor): void {
+    this.lastRenderedCount = -1;
+    this.maybeAutoScroll();
   }
 
   private maybeAutoScroll(): void {
@@ -59,8 +76,8 @@ export struct MessageList {
 
   /** Outbox status for one message id; `undefined` once acked (entry removed). */
   private statusOf(clientMsgId: string): OutboxStatus | undefined {
-    if (this.tick < 0) {
-      return undefined; // never true — reads `tick` so V2 tracks this as a render dependency.
+    if (this.conn.outboxRevision < 0) {
+      return undefined; // never true — reads `outboxRevision` so V2 tracks this as a render dependency.
     }
     const entries: OutboxStatusView[] = ConnectionGateway.instance.outboxEntriesOf(this.chatKey);
     for (const entry of entries) {
@@ -73,17 +90,16 @@ export struct MessageList {
 
   /**
    * Task 17 degradation-table row 5: history-backfill failure → a top
-   * banner, manual retry, must not block the current conversation. Reads
-   * `ConnectionGateway.instance.historyErrorFlag()` gated on `tick` — same
-   * reason/trick as `statusOf` above: that flag lives on the Gateway, not
-   * a `@Trace`'d Store field, so nothing else forces a re-render when it
-   * flips.
+   * banner, manual retry, must not block the current conversation.
+   *
+   * Per-chat, and that matters: this used to read one global boolean on the
+   * gateway, so a failure in chat A raised the banner in chat B too — and
+   * B's retry button retried B, cleared the shared flag, and left A stale
+   * with no banner at all. Reading a `@Trace` field of a Store is also what
+   * lets this re-render on its own; no tick needed.
    */
   private showHistoryError(): boolean {
-    if (this.tick < 0) {
-      return false; // never true — reads `tick` so V2 tracks this as a render dependency.
-    }
-    return ConnectionGateway.instance.historyErrorFlag();
+    return this.conn.historyErrorOf(this.chatKey);
   }
 
   /**

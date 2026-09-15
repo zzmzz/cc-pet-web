@@ -18,6 +18,23 @@ const HISTORY_LIMIT: number = 200;
  */
 const MAX_DRAIN_ITERATIONS: number = 25;
 
+/**
+ * What `fetch()` got, plus whether it got all of it.
+ *
+ * Hitting `MAX_DRAIN_ITERATIONS` used to return the partial batch silently,
+ * which is the exact failure the cap's own existence was meant to stop being
+ * silent: the chat looked caught up while messages were still missing, with
+ * no banner and nothing to retry. `truncated` hands that fact to the caller,
+ * which raises the existing history-error banner — and because the messages
+ * that *did* arrive are returned alongside it, the retry behind that banner
+ * resumes from a cursor 5000 messages further along instead of starting
+ * over.
+ */
+export interface HistoryBatch {
+  messages: ChatMessage[];
+  truncated: boolean;
+}
+
 interface HistoryResponsePayload {
   messages: ChatMessage[];
   /**
@@ -75,10 +92,14 @@ export class HistoryApi {
    * `ChatStore` — see class doc. Rejects with `UnauthorizedError` (from
    * `RestClient`) or any other network/parse error, unchanged, for the
    * caller to handle.
+   *
+   * Returns `truncated: true` when the loop ran out of iterations with the
+   * server still reporting `hasMore` — see `HistoryBatch`.
    */
-  async fetch(chatKey: string, cursor: number): Promise<ChatMessage[]> {
+  async fetch(chatKey: string, cursor: number): Promise<HistoryBatch> {
     const collected: ChatMessage[] = [];
     let afterSeq: number = cursor;
+    let drained: boolean = false;
     for (let iterations: number = 0; iterations < MAX_DRAIN_ITERATIONS; iterations++) {
       const url: string = historyUrl(chatKey, afterSeq, HISTORY_LIMIT);
       const raw: string = await new RestClient(this.baseUrl, this.token).getJson(url);
@@ -95,10 +116,11 @@ export class HistoryApi {
       const madeProgress: boolean = nextSeq > afterSeq;
       const hasMore: boolean = payload.hasMore ?? false;
       if (!hasMore || !madeProgress) {
+        drained = true;
         break;
       }
       afterSeq = nextSeq;
     }
-    return collected;
+    return { messages: collected, truncated: !drained };
   }
 }
