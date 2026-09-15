@@ -2892,7 +2892,9 @@ git commit -m "feat(harmony): render chat with markdown and streaming input"
 
 - [ ] **Step 1: 放入内置宠物图**
 
-把 `packages/web/src/assets/pet/{idle,thinking,talking,happy,error}.png` 复制到 `harmony/entry/src/main/resources/base/media/`，重命名为 `pet_idle.png` 等（HarmonyOS 资源名不允许连字符，且必须小写）。
+把 `packages/web/src/assets/pet/{idle,thinking,talking,happy,error}-256.webp` 复制到 `harmony/entry/src/main/resources/base/media/`，重命名为 `pet_idle.webp` 等（HarmonyOS 资源名不允许连字符，且必须小写）。
+
+**用 256px 的 webp，不要用原始 PNG。** 宠物在界面上只有 22vp（约 66px），而源 PNG 每张 670–800 KB、五张合计 3.6 MB——会占掉整个安装包的 88%。同目录下的 `-256.webp` 变体五张合计 64 KB，小 57 倍，在 22vp 的显示尺寸下肉眼无差别。ArkUI 的 `Image` 原生支持 webp。
 
 - [ ] **Step 2: 实现 PetImageCache**
 
