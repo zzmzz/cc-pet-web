@@ -3,7 +3,7 @@ import { ConnectionStore, ConnectionPhase } from '../store/ConnectionStore';
 const LABEL_CONNECTED: string = '已连接';
 const LABEL_CONNECTING: string = '连接中';
 const LABEL_BACKOFF: string = '重连中';
-const LABEL_DISCONNECTED: string = '未登录';
+const LABEL_DISCONNECTED: string = '未连接';
 
 const COLOR_CONNECTED: string = '#12B76A';
 const COLOR_CONNECTING: string = '#F79009';

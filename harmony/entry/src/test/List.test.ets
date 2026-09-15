@@ -8,6 +8,7 @@ import slashCommandsTest from './SlashCommands.test';
 import outboxTest from './Outbox.test';
 import assistantMessageFromFrameTest from './AssistantMessageFromFrame.test';
 import responsiveLayoutTest from './ResponsiveLayout.test';
+import sessionRowTest from './SessionRow.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -20,4 +21,5 @@ export default function testsuite() {
   outboxTest();
   assistantMessageFromFrameTest();
   responsiveLayoutTest();
+  sessionRowTest();
 }

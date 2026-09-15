@@ -1,55 +1,39 @@
 import { SessionStore } from '../store/SessionStore';
-import { BridgeInfo, chatKeyOf } from '../logic/normalizeEvent';
+import { BridgeInfo } from '../logic/normalizeEvent';
+import { chatKeyForBridge, labelForBridge, isCurrentBridge, unreadForBridge, selectBridge } from './SessionRow';
 
-/**
- * Every bridge advertised by `bridge:manifest` exposes exactly one
- * switchable chat at this stage of the protocol — its 'default' session
- * key (the same convention `Index.ets`'s old bootstrap scaffolding used).
- * `SessionStore.sessions` (richer, server-labelled `Session` records) has
- * no public iteration accessor — only per-key lookups (`labelOf`,
- * `unreadOf`, `isResident`) — so `bridges` is the enumerable list this
- * component switches between; `labelFor` below upgrades to the
- * server-provided label once one exists for a key.
- */
-const DEFAULT_SESSION_KEY: string = 'default';
 const SIDEBAR_WIDTH: number = 280;
 
 /**
  * Persistent left-column session switcher for MEDIUM/EXPANDED windows.
  * Renders the exact same `SessionStore` data (`bridges`, `currentChatKey`,
  * `unreadOf`) as `SessionSheet` — only the shell differs (always-visible
- * column vs. bottom half-modal).
+ * column vs. bottom half-modal). Row logic itself (key/label/current/unread/
+ * select) is shared with `SessionSheet` via `SessionRow.ets` so the two
+ * shells can't silently drift apart.
  */
 @ComponentV2
 export struct SessionSidebar {
   @Local private session: SessionStore = SessionStore.connect();
 
   private chatKeyFor(bridge: BridgeInfo): string {
-    return chatKeyOf(bridge.id, DEFAULT_SESSION_KEY);
+    return chatKeyForBridge(bridge);
   }
 
   private labelFor(bridge: BridgeInfo): string {
-    const key: string = this.chatKeyFor(bridge);
-    const label: string = this.session.labelOf(key);
-    return label === key ? bridge.name : label;
+    return labelForBridge(this.session, bridge);
   }
 
   private isCurrent(bridge: BridgeInfo): boolean {
-    return this.chatKeyFor(bridge) === this.session.currentChatKey;
+    return isCurrentBridge(this.session, bridge);
   }
 
   private unreadFor(bridge: BridgeInfo): number {
-    return this.session.unreadOf(this.chatKeyFor(bridge));
+    return unreadForBridge(this.session, bridge);
   }
 
   private select(bridge: BridgeInfo): void {
-    const key: string = this.chatKeyFor(bridge);
-    this.session.setCurrent(key);
-    // Switching to a session is how the user acknowledges it — mark it
-    // read. `clearUnread` already no-ops for resident sessions (their true
-    // count only ever comes from the server via `resident:unread`), so this
-    // is safe to call unconditionally.
-    this.session.clearUnread(key);
+    selectBridge(this.session, bridge);
   }
 
   build() {

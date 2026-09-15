@@ -81,13 +81,13 @@ struct Index {
   }
 
   /**
-   * First-load default: as soon as the manifest lists at least one bridge
-   * and nothing is selected yet, open that bridge's 'default' session so
-   * the chat surface isn't blank on first launch. This is a genuine
-   * product default, not a debug stand-in — `SessionSidebar`/`SessionSheet`
-   * (Task 16) are the real, always-available way to switch away from it
-   * afterwards. A no-op once `currentChatKey` is already set, so calling
-   * this more than once (see both call sites below) is safe.
+   * Product default: as soon as the manifest lists at least one bridge and
+   * nothing is selected yet, preselect that first advertised bridge's
+   * 'default' session, so the chat surface isn't blank on first launch.
+   * `SessionSidebar`/`SessionSheet` (Task 16) are the always-available way
+   * to switch away from it afterwards. A no-op once `currentChatKey` is
+   * already set, so calling this more than once (see both call sites
+   * below) is safe.
    */
   private defaultToFirstBridgeIfNoneSelected(): void {
     if (this.session.currentChatKey.length > 0) {
@@ -119,7 +119,8 @@ struct Index {
   }
 
   private onAreaChanged(newArea: Area): void {
-    this.windowWidth = Math.max(0, Number(newArea.width));
+    const width: number = Number(newArea.width);
+    this.windowWidth = Number.isFinite(width) ? Math.max(0, width) : 0;
   }
 
   private openSettings(): void {
