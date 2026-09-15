@@ -1529,7 +1529,7 @@ git commit -m "feat(harmony): merge and match slash commands with builtin preced
   - `type RetryPolicy = 'auto' | 'manual' | 'never'`
   - `type OutboxStatus = 'pending' | 'sent' | 'failed'`
   - `interface OutboxEntry { clientMsgId: string; chatKey: string; text: string; policy: RetryPolicy; status: OutboxStatus; createdAt: number; transmittedAt: number }`
-  - `class Outbox`：`enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void`、`markSent(clientMsgId: string): void`、`markTransmitted(ids: string[], now: number): void`、`expireTimedOut(now: number): string[]`、`takeSendable(now: number): OutboxEntry[]`、`resend(clientMsgId: string, now: number): void`、`entriesOf(chatKey: string): OutboxEntry[]`、`size(): number`
+  - `class Outbox`：`enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void`、`markSent(clientMsgId: string): void`、`markTransmitted(ids: string[], now: number): void`、`expireTimedOut(now: number): string[]`、`takeSendable(now: number): OutboxEntry[]`、`reviveAuto(): void`、`resend(clientMsgId: string, now: number): void`、`entriesOf(chatKey: string): OutboxEntry[]`、`size(): number`
   - `ACK_TIMEOUT_MS: number`（15000）、`MANUAL_WINDOW_MS: number`（120000）
 
 `clientMsgId` 由调用方（`ConnectionGateway`，用 `@kit.ArkTS` 的 `util.generateRandomUUID`）生成后传入，`now` 也由调用方传入——这样 `Outbox` 保持纯粹，测试不需要冻结时钟或打桩 UUID。
@@ -1628,6 +1628,40 @@ export default function outboxTest() {
       box.resend('id-a', 99999999);
       expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
       expect(box.takeSendable(99999999).length).assertEqual(1);
+    });
+
+    it('does not offer a failed entry until something revives it', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      expect(box.takeSendable(99999999).length).assertEqual(0);
+    });
+
+    it('fails a manual entry that outlived its window', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.takeSendable(1000 + MANUAL_WINDOW_MS + 1);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
+    });
+
+    it('revives failed auto entries on reconnect', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.reviveAuto();
+      expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
+      expect(box.takeSendable(99999999).length).assertEqual(1);
+    });
+
+    it('leaves failed manual entries for the user to retry', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.reviveAuto();
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
     });
 
     it('ignores duplicate client message ids', 0, () => {
@@ -1736,12 +1770,35 @@ export class Outbox {
       if (entry.policy === 'never') {
         continue;
       }
-      if (entry.policy === 'manual' && now - entry.createdAt > MANUAL_WINDOW_MS) {
-        continue;
+      // A manual entry that outlived its window fails here rather than being
+      // silently skipped: the user needs to see it went nowhere.
+      if (entry.policy === 'manual' && entry.status === 'pending'
+          && now - entry.createdAt > MANUAL_WINDOW_MS) {
+        entry.status = 'failed';
       }
-      out.push(entry);
+      // Only pending entries go on the wire. A failed entry needs an explicit
+      // decision first — reviveAuto() on reconnect, or resend() from the user.
+      if (entry.status === 'pending') {
+        out.push(entry);
+      }
     }
     return out;
+  }
+
+  /**
+   * Reconnect path: bring failed auto entries back.
+   *
+   * Manual entries are deliberately skipped. The user sent those by hand, so
+   * they get to decide again rather than having a two-minute-old message fire
+   * on its own after the network returns.
+   */
+  reviveAuto(): void {
+    for (const entry of this.entries) {
+      if (entry.status === 'failed' && entry.policy === 'auto') {
+        entry.status = 'pending';
+        entry.transmittedAt = 0;
+      }
+    }
   }
 
   resend(clientMsgId: string, now: number): void {
@@ -2374,6 +2431,7 @@ export class ConnectionGateway {
 
   /** Reconnect path: everything still sendable goes back out, oldest first. */
   private flushOutbox(): void {
+    this.outbox.reviveAuto();
     const ids: string[] = [];
     for (const entry of this.outbox.takeSendable(Date.now())) {
       ids.push(entry.clientMsgId);
