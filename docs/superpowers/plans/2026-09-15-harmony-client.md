@@ -656,7 +656,7 @@ web 端在十几个 case 里各解一遍 `connectionId / sessionKey`，这里一
   - `interface BridgeInfo { id: string; name: string; attachmentStaging?: boolean }`
   - `interface NormalizedEvent { type: string; connectionId: string; sessionKey: string; chatKey: string; frame: WsFrame }`
   - `normalizeEvent(frame: WsFrame): NormalizedEvent`
-  - `normalizeEvent(raw: RawWsEnvelope): NormalizedEvent`
+  - `normalizeEvent(frame: WsFrame): NormalizedEvent`
   - `chatKeyOf(connectionId: string, sessionKey: string): string`
 
 - [ ] **Step 1: 写失败测试**
@@ -665,55 +665,60 @@ web 端在十几个 case 里各解一遍 `connectionId / sessionKey`，这里一
 
 ```typescript
 import { describe, it, expect } from '@ohos/hypium';
-import { normalizeEvent, chatKeyOf, RawWsEnvelope, NormalizedEvent } from '../main/ets/logic/normalizeEvent';
+import { normalizeEvent, chatKeyOf, WsFrame, NormalizedEvent } from '../main/ets/logic/normalizeEvent';
 
 export default function normalizeEventTest() {
   describe('normalizeEvent', () => {
     it('builds the chat key from connection and session', 0, () => {
-      const raw: RawWsEnvelope = {
-        type: 'bridge:message',
-        payload: { connectionId: 'c1', sessionKey: 's1', content: 'hi' },
+      const frame: WsFrame = {
+        type: 'bridge:message', connectionId: 'c1', sessionKey: 's1', content: 'hi',
       };
-      const out: NormalizedEvent = normalizeEvent(raw);
+      const out: NormalizedEvent = normalizeEvent(frame);
       expect(out.connectionId).assertEqual('c1');
       expect(out.sessionKey).assertEqual('s1');
       expect(out.chatKey).assertEqual('c1::s1');
     });
 
     it('falls back to empty strings when ids are absent', 0, () => {
-      const raw: RawWsEnvelope = { type: 'bridge:manifest', payload: {} };
-      const out: NormalizedEvent = normalizeEvent(raw);
+      const out: NormalizedEvent = normalizeEvent({ type: 'bridge:manifest' });
       expect(out.connectionId).assertEqual('');
       expect(out.sessionKey).assertEqual('');
       expect(out.chatKey).assertEqual('');
     });
 
-    it('keeps the payload intact for consumers', 0, () => {
-      const raw: RawWsEnvelope = {
-        type: 'bridge:stream-delta',
-        payload: { connectionId: 'c1', sessionKey: 's1', delta: 'abc' },
+    it('keeps the frame intact for consumers', 0, () => {
+      const frame: WsFrame = {
+        type: 'bridge:stream-delta', connectionId: 'c1', sessionKey: 's1', delta: 'abc',
       };
-      const out: NormalizedEvent = normalizeEvent(raw);
-      expect(out.payload.delta).assertEqual('abc');
+      expect(normalizeEvent(frame).frame.delta).assertEqual('abc');
     });
 
     it('carries ack fields through untouched', 0, () => {
-      const raw: RawWsEnvelope = {
-        type: 'message-ack',
-        payload: { connectionId: 'c1', sessionKey: 's1', clientMsgId: 'local-1', id: 'srv-9', seq: 42 },
+      const frame: WsFrame = {
+        type: 'message-ack', connectionId: 'c1', sessionKey: 's1',
+        clientMsgId: 'local-1', id: 'srv-9', seq: 42,
       };
-      const out: NormalizedEvent = normalizeEvent(raw);
-      expect(out.payload.clientMsgId).assertEqual('local-1');
-      expect(out.payload.id).assertEqual('srv-9');
-      expect(out.payload.seq).assertEqual(42);
+      const out: NormalizedEvent = normalizeEvent(frame);
+      expect(out.frame.clientMsgId).assertEqual('local-1');
+      expect(out.frame.id).assertEqual('srv-9');
+      expect(out.frame.seq).assertEqual(42);
     });
 
-    it('parses a real json frame off the wire', 0, () => {
-      const raw: RawWsEnvelope =
-        JSON.parse('{"type":"resident:unread","payload":{"connectionId":"c1","sessionKey":"s1","unreadCount":3}}') as RawWsEnvelope;
-      const out: NormalizedEvent = normalizeEvent(raw);
+    it('parses a real flat json frame off the wire', 0, () => {
+      // Exactly what the server sends: JSON.stringify({ type: event, ...payload })
+      const frame: WsFrame =
+        JSON.parse('{"type":"resident:unread","connectionId":"c1","sessionKey":"s1","unreadCount":3}') as WsFrame;
+      const out: NormalizedEvent = normalizeEvent(frame);
       expect(out.chatKey).assertEqual('c1::s1');
-      expect(out.payload.unreadCount).assertEqual(3);
+      expect(out.frame.unreadCount).assertEqual(3);
+    });
+
+    it('reads the manifest bridge list', 0, () => {
+      const frame: WsFrame =
+        JSON.parse('{"type":"bridge:manifest","bridges":[{"id":"cs","name":"cc"}]}') as WsFrame;
+      const out: NormalizedEvent = normalizeEvent(frame);
+      expect(out.frame.bridges?.length).assertEqual(1);
+      expect(out.frame.bridges?.[0].id).assertEqual('cs');
     });
   });
 
@@ -2725,11 +2730,11 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_MANIFEST) {
-      SessionStore.instance.applyManifest(event.payload);
+      SessionStore.instance.applyManifest(event.frame);
       return;
     }
     if (event.type === WsEvents.BRIDGE_SKILLS_UPDATED) {
-      SessionStore.instance.applySkills(event.payload);
+      SessionStore.instance.applySkills(event.frame);
       return;
     }
     if (event.type === WsEvents.BRIDGE_TYPING_START) {
