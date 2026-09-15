@@ -1529,7 +1529,7 @@ git commit -m "feat(harmony): merge and match slash commands with builtin preced
   - `type RetryPolicy = 'auto' | 'manual' | 'never'`
   - `type OutboxStatus = 'pending' | 'sent' | 'failed'`
   - `interface OutboxEntry { clientMsgId: string; chatKey: string; text: string; policy: RetryPolicy; status: OutboxStatus; createdAt: number; transmittedAt: number }`
-  - `class Outbox`：`enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void`、`markSent(clientMsgId: string): void`、`markTransmitted(ids: string[], now: number): void`、`expireTimedOut(now: number): string[]`、`takeSendable(now: number): OutboxEntry[]`、`reviveAuto(): void`、`resend(clientMsgId: string, now: number): void`、`entriesOf(chatKey: string): OutboxEntry[]`、`size(): number`
+  - `class Outbox`：`enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void`、`markSent(clientMsgId: string): void`、`markTransmitted(ids: string[], now: number): void`、`expireTimedOut(now: number): string[]`、`takeSendable(now: number): OutboxEntry[]`、`reviveAuto(now: number): void`、`resend(clientMsgId: string, now: number): void`、`entriesOf(chatKey: string): OutboxEntry[]`、`size(): number`
   - `ACK_TIMEOUT_MS: number`（15000）、`MANUAL_WINDOW_MS: number`（120000）
 
 `clientMsgId` 由调用方（`ConnectionGateway`，用 `@kit.ArkTS` 的 `util.generateRandomUUID`）生成后传入，`now` 也由调用方传入——这样 `Outbox` 保持纯粹，测试不需要冻结时钟或打桩 UUID。
@@ -1650,7 +1650,7 @@ export default function outboxTest() {
       box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
       box.markTransmitted(['id-a'], 1000);
       box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
-      box.reviveAuto();
+      box.reviveAuto(99999999);
       expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
       expect(box.takeSendable(99999999).length).assertEqual(1);
     });
@@ -1660,7 +1660,16 @@ export default function outboxTest() {
       box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
       box.markTransmitted(['id-a'], 1000);
       box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
-      box.reviveAuto();
+      box.reviveAuto(99999999);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
+    });
+
+    it('does not revive a failed entry when retransmitting', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.markTransmitted(['id-a'], 99999999);
       expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
     });
 
@@ -1740,13 +1749,19 @@ export class Outbox {
     this.entries = kept;
   }
 
+  /**
+   * Restart the ack budget for entries just written to the socket.
+   *
+   * Only entries still waiting for an ack are touched. A failed entry must not
+   * be revived here — that decision belongs to reviveAuto() or to the user's
+   * explicit resend(). Writing status unconditionally would reopen the very
+   * hole those two methods exist to close.
+   */
   markTransmitted(ids: string[], now: number): void {
+    const wanted: Set<string> = new Set<string>(ids);
     for (const entry of this.entries) {
-      for (const id of ids) {
-        if (entry.clientMsgId === id) {
-          entry.transmittedAt = now;
-          entry.status = 'pending';
-        }
+      if (entry.status === 'pending' && wanted.has(entry.clientMsgId)) {
+        entry.transmittedAt = now;
       }
     }
   }
@@ -1792,10 +1807,14 @@ export class Outbox {
    * they get to decide again rather than having a two-minute-old message fire
    * on its own after the network returns.
    */
-  reviveAuto(): void {
+  reviveAuto(now: number): void {
     for (const entry of this.entries) {
       if (entry.status === 'failed' && entry.policy === 'auto') {
         entry.status = 'pending';
+        // Reset createdAt too, matching the web store: a revived entry is a
+        // fresh send attempt, and anything rendering "sent N ago" should agree
+        // across the two clients.
+        entry.createdAt = now;
         entry.transmittedAt = 0;
       }
     }
@@ -2431,7 +2450,7 @@ export class ConnectionGateway {
 
   /** Reconnect path: everything still sendable goes back out, oldest first. */
   private flushOutbox(): void {
-    this.outbox.reviveAuto();
+    this.outbox.reviveAuto(Date.now());
     const ids: string[] = [];
     for (const entry of this.outbox.takeSendable(Date.now())) {
       ids.push(entry.clientMsgId);
