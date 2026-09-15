@@ -11,14 +11,6 @@ export struct LoginGate {
   @Local token: string = '';
   @Local error: string = '';
   @Local busy: boolean = false;
-  // On-device testing showed that mutating the AuthStore singleton's
-  // @Trace fields from here does not, by itself, cause the parent Index
-  // page's conditional (`!AuthStore.instance.authorized`) to re-evaluate
-  // live in the same session — the value IS correct (a cold restart reads
-  // it fine), but the cross-component ObservedV2 dependency does not
-  // propagate on this build. An explicit callback forces the parent to
-  // re-render after a successful login.
-  @Param onLoggedIn: () => void = () => {};
 
   async verify(): Promise<void> {
     this.busy = true;
@@ -31,7 +23,6 @@ export struct LoginGate {
       const payload: VerifyRequest = { token: this.token.trim() };
       await client.postJson('/api/auth/verify', JSON.stringify(payload));
       await AuthStore.instance.save(this.serverUrl.trim(), this.token.trim());
-      this.onLoggedIn();
     } catch (err) {
       this.error = err instanceof UnauthorizedError ? 'Token 无效' : '无法连接服务器';
     } finally {
@@ -44,10 +35,12 @@ export struct LoginGate {
       Text('cc-pet').fontSize(28).fontWeight(FontWeight.Bold)
       TextInput({ placeholder: 'https://your-server', text: this.serverUrl })
         .onChange((value: string) => { this.serverUrl = value; })
+        .enableAutoFill(false)
         .width('100%')
       TextInput({ placeholder: 'Token', text: this.token })
         .type(InputType.Password)
         .onChange((value: string) => { this.token = value; })
+        .enableAutoFill(false)
         .width('100%')
       if (this.error.length > 0) {
         Text(this.error).fontColor(Color.Red).fontSize(13)
