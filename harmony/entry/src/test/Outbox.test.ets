@@ -138,5 +138,18 @@ export default function outboxTest() {
       box.enqueue('id-a', 'c::s', 'hello again', 'auto', 2000);
       expect(box.size()).assertEqual(1);
     });
+
+    it('drops every entry on clear, across all chats', 0, () => {
+      // Logout path: what is queued belongs to the token that queued it.
+      // Without this, reviveAuto()/flushOutbox() would put the previous
+      // account's text on the next account's socket.
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.enqueue('id-b', 'other::s', 'hi', 'manual', 1000);
+      box.clear();
+      expect(box.size()).assertEqual(0);
+      expect(box.entriesOf('c::s').length).assertEqual(0);
+      expect(box.takeSendable(2000).length).assertEqual(0);
+    });
   });
 }

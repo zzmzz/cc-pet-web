@@ -143,6 +143,19 @@ export class Outbox {
     return out;
   }
 
+  /**
+   * Logout path only (`ConnectionGateway.stop`). Everything still queued
+   * belongs to the token that queued it: without this, a message typed by
+   * account A while offline survives the logout, and `flushOutbox()` writes
+   * it to the socket the moment account B connects — B's bridge, B's
+   * session, A's text. Not a hypothetical: `stop()` is called on all three
+   * logout paths and the gateway singleton (and this Outbox with it)
+   * outlives every one of them.
+   */
+  clear(): void {
+    this.entries = [];
+  }
+
   size(): number {
     return this.entries.length;
   }

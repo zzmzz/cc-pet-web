@@ -9,10 +9,8 @@ import { SessionSheet } from '../components/SessionSheet';
 import { ResponsiveLayout } from '../components/ResponsiveLayout';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
 import { SessionStore } from '../store/SessionStore';
-import { chatKeyOf } from '../logic/normalizeEvent';
+import { chatKeyForBridge } from '../components/SessionRow';
 import { common } from '@kit.AbilityKit';
-
-const DEFAULT_SESSION_KEY: string = 'default';
 
 @Entry
 @ComponentV2
@@ -64,6 +62,16 @@ struct Index {
   @Monitor('auth.authorized')
   onAuthorizedChanged(_monitor: IMonitor): void {
     if (!this.auth.authorized) {
+      // Logging out has to un-latch `gatewayStarted`, or logging back in
+      // never reconnects. This struct is `@Entry` — loaded once in
+      // `EntryAbility.onWindowStageCreate` and NOT remounted when
+      // `authorized` flips, because `LoginGate` is only a branch inside
+      // this component's own `build()`. So the latch survives the logout,
+      // `startGatewayOnce()` returns early on the next login, and the user
+      // gets a fully-rendered chat screen over a socket that was closed by
+      // `ConnectionGateway.stop()` and will never reopen. Only killing the
+      // process recovered from that.
+      this.gatewayStarted = false;
       return;
     }
     this.startGatewayOnce();
@@ -96,7 +104,7 @@ struct Index {
     if (this.session.bridges.length === 0) {
       return;
     }
-    this.session.setCurrent(chatKeyOf(this.session.bridges[0].id, DEFAULT_SESSION_KEY));
+    this.session.setCurrent(chatKeyForBridge(this.session.bridges[0]));
   }
 
   private startGatewayOnce(): void {
@@ -127,27 +135,6 @@ struct Index {
     // No settings screen exists yet — same honest-degradation toast
     // `MessageInput`'s `/settings` local command already uses.
     promptAction.showToast({ message: '设置面板尚未实现' });
-  }
-
-  /**
-   * Same "fall back to the bridge's advertised name" upgrade
-   * `SessionSidebar`/`SessionSheet` apply to each row — `labelOf` itself
-   * only knows a server-assigned `Session.label`, and returns the raw
-   * chatKey when no such record exists yet (see SessionStore.ets), which
-   * reads as a raw `bridgeId::sessionKey` string in the top bar otherwise.
-   */
-  private currentSessionLabel(): string {
-    const key: string = this.session.currentChatKey;
-    const label: string = this.session.labelOf(key);
-    if (label !== key) {
-      return label;
-    }
-    for (const bridge of this.session.bridges) {
-      if (chatKeyOf(bridge.id, DEFAULT_SESSION_KEY) === key) {
-        return bridge.name;
-      }
-    }
-    return label;
   }
 
   build() {
@@ -220,7 +207,10 @@ struct Index {
   TopBar(showSwitcher: boolean) {
     Row({ space: 8 }) {
       PetMini()
-      Text(this.currentSessionLabel())
+      // `labelOf` owns the whole naming rule now, bridge-name fallback
+      // included — this file used to carry a third copy of it alongside
+      // `SessionRow.labelForBridge` and the store's own lookup.
+      Text(this.session.labelOf(this.session.currentChatKey))
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
         .maxLines(1)
