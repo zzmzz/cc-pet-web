@@ -1,6 +1,6 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { Session, SlashCommandSpec } from '../model/Protocol';
-import { WsPayload, chatKeyOf } from '../logic/normalizeEvent';
+import { WsFrame, BridgeInfo, chatKeyOf } from '../logic/normalizeEvent';
 
 const APP_STORAGE_KEY: string = 'SessionStore';
 
@@ -26,6 +26,8 @@ export class SessionStore {
 
   @Trace currentChatKey: string = '';
   @Trace skillCommands: SlashCommandSpec[] = [];
+  /** Populated from bridge:manifest's `bridges` field. */
+  @Trace bridges: BridgeInfo[] = [];
 
   @Trace private sessions: Map<string, Session> = new Map<string, Session>();
   @Trace private unread: Map<string, number> = new Map<string, number>();
@@ -89,22 +91,9 @@ export class SessionStore {
     this.unread.set(chatKey, 0);
   }
 
-  /**
-   * Placeholder: `bridge:manifest`'s real payload carries a `bridges` array
-   * (see packages/server/src/index.ts, `send(WS_EVENTS.BRIDGE_MANIFEST, {
-   * bridges: ... })`), but `WsPayload` (logic/normalizeEvent.ets, owned by
-   * an earlier task) does not declare that field, so it cannot be read here
-   * without an indexed/dynamic access ArkTS strict mode forbids
-   * (arkts-no-props-by-index). Session bootstrapping instead goes through
-   * applySessions(), which a later task feeds from a REST
-   * GET Endpoints.SESSIONS call. This method is kept as a documented no-op
-   * so ConnectionGateway.dispatch() matches the Task 11 contract and
-   * compiles; real behavior needs WsPayload extended with a `bridges` field
-   * first — flagged in the Task 11 report as a concern, not silently
-   * papered over.
-   */
-  applyManifest(payload: WsPayload): void {
-    // No-op until WsPayload declares the `bridges` field bridge:manifest sends.
+  /** `bridge:manifest`'s bridge list (`WsFrame.bridges`, see normalizeEvent.ets). */
+  applyManifest(frame: WsFrame): void {
+    this.bridges = frame.bridges ?? [];
   }
 
   applySessions(sessions: Session[]): void {
@@ -127,14 +116,8 @@ export class SessionStore {
     this.unread = nextUnread;
   }
 
-  /**
-   * Placeholder: `bridge:skills-updated`'s real payload carries a `commands`
-   * array (see packages/server/src/index.ts,
-   * `send(WS_EVENTS.BRIDGE_SKILLS_UPDATED, { connectionId, commands })`),
-   * but `WsPayload` does not declare that field for the same reason noted on
-   * applyManifest() above. Kept as a documented no-op for the same reason.
-   */
-  applySkills(payload: WsPayload): void {
-    // No-op until WsPayload declares the `commands` field bridge:skills-updated sends.
+  /** `bridge:skills-updated`'s command list (`WsFrame.commands`, see normalizeEvent.ets). */
+  applySkills(frame: WsFrame): void {
+    this.skillCommands = frame.commands ?? [];
   }
 }

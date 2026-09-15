@@ -1,7 +1,7 @@
 import { webSocket, connection } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
-import { normalizeEvent, RawWsEnvelope, NormalizedEvent, WsPayload } from '../logic/normalizeEvent';
+import { normalizeEvent, WsFrame, NormalizedEvent } from '../logic/normalizeEvent';
 import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
@@ -22,52 +22,6 @@ interface OutgoingEnvelope {
   sessionKey: string;
   content: string;
   clientMsgId: string;
-}
-
-/**
- * Shape of what actually arrives on the wire.
- *
- * `RawWsEnvelope` (logic/normalizeEvent.ets, owned by an earlier task) models
- * `{ type, payload: {...} }` — a nested envelope. The server does not send
- * that: `ClientHub.broadcast()`/`onClientConnected`'s `send()`
- * (packages/server/src/ws/hub.ts) both do
- * `ws.send(JSON.stringify({ type: event, ...payload }))`, which spreads the
- * payload fields onto the top-level object instead of nesting them. Parsing
- * a real frame directly as `RawWsEnvelope` and reading `raw.payload.x`
- * therefore reads `undefined.x` and throws — reproduced live on the emulator
- * against a real server (see Task 11 report). `WireMessage` models the
- * actual flat shape (every field `WsPayload` declares, since those are
- * exactly the fields the server spreads); `toEnvelope()` re-nests it into
- * what `normalizeEvent()` (unmodified, per Task 11's constraints) expects.
- */
-interface WireMessage {
-  type: string;
-  connectionId?: string;
-  sessionKey?: string;
-  content?: string;
-  delta?: string;
-  fullText?: string;
-  clientMsgId?: string;
-  id?: string;
-  seq?: number;
-  unreadCount?: number;
-  connected?: boolean;
-}
-
-function toEnvelope(msg: WireMessage): RawWsEnvelope {
-  const payload: WsPayload = {
-    connectionId: msg.connectionId,
-    sessionKey: msg.sessionKey,
-    content: msg.content,
-    delta: msg.delta,
-    fullText: msg.fullText,
-    clientMsgId: msg.clientMsgId,
-    id: msg.id,
-    seq: msg.seq,
-    unreadCount: msg.unreadCount,
-    connected: msg.connected,
-  };
-  return { type: msg.type, payload: payload };
 }
 
 /**
@@ -171,7 +125,9 @@ export class ConnectionGateway {
       if (this.socket !== socket || err !== undefined || typeof data !== 'string') {
         return;
       }
-      this.dispatch(normalizeEvent(toEnvelope(JSON.parse(data as string) as WireMessage)));
+      // The server spreads payload fields onto the top level, so the frame
+      // parses directly — no envelope unwrapping, no shim.
+      this.dispatch(normalizeEvent(JSON.parse(data as string) as WsFrame));
     });
 
     socket.on('close', () => {
@@ -313,16 +269,16 @@ export class ConnectionGateway {
 
   private dispatch(event: NormalizedEvent): void {
     if (event.type === WsEvents.MESSAGE_ACK) {
-      const clientMsgId: string = event.payload.clientMsgId ?? '';
+      const clientMsgId: string = event.frame.clientMsgId ?? '';
       if (clientMsgId.length === 0) {
         return;
       }
       this.outbox.markSent(clientMsgId);
-      ChatStore.connect().applyAck(clientMsgId, event.payload.id ?? clientMsgId, event.payload.seq ?? 0);
+      ChatStore.connect().applyAck(clientMsgId, event.frame.id ?? clientMsgId, event.frame.seq ?? 0);
       return;
     }
     if (event.type === WsEvents.RESIDENT_UNREAD) {
-      SessionStore.connect().setUnread(event.chatKey, event.payload.unreadCount ?? 0);
+      SessionStore.connect().setUnread(event.chatKey, event.frame.unreadCount ?? 0);
       return;
     }
     if (event.type === WsEvents.BRIDGE_CONNECTED) {
@@ -335,11 +291,11 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_MANIFEST) {
-      SessionStore.connect().applyManifest(event.payload);
+      SessionStore.connect().applyManifest(event.frame);
       return;
     }
     if (event.type === WsEvents.BRIDGE_SKILLS_UPDATED) {
-      SessionStore.connect().applySkills(event.payload);
+      SessionStore.connect().applySkills(event.frame);
       return;
     }
     if (event.type === WsEvents.BRIDGE_TYPING_START) {
@@ -351,19 +307,19 @@ export class ConnectionGateway {
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DELTA) {
-      ChatStore.connect().appendDelta(event.chatKey, event.payload.delta ?? '');
+      ChatStore.connect().appendDelta(event.chatKey, event.frame.delta ?? '');
       TaskStore.connect().setPhase(event.chatKey, 'working');
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
-      const text: string = event.payload.fullText ?? '';
+      const text: string = event.frame.fullText ?? '';
       ChatStore.connect().finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
       TaskStore.connect().setPhase(event.chatKey, 'completed');
       this.afterAssistantReply(event.chatKey, text);
       return;
     }
     if (event.type === WsEvents.BRIDGE_MESSAGE) {
-      const text: string = event.payload.content ?? '';
+      const text: string = event.frame.content ?? '';
       const message: ChatMessage = {
         id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
         connectionId: event.connectionId, sessionKey: event.sessionKey,

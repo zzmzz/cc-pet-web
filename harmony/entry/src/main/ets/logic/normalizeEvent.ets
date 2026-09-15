@@ -1,12 +1,23 @@
+import { SlashCommandSpec } from '../model/Protocol';
+
 /**
- * Union of every payload field the first release consumes.
+ * One frame exactly as it arrives on the wire.
+ *
+ * The server sends `JSON.stringify({ type: event, ...payload })`
+ * (packages/server/src/ws/hub.ts) — the payload fields are spread onto the
+ * TOP LEVEL, there is no nested `payload` object. An earlier version of this
+ * plan assumed a nested envelope (`RawWsEnvelope { type, payload }`); it
+ * crashed on the first real message and the unit tests passed anyway,
+ * because they encoded the same wrong assumption by hand-constructing
+ * nested objects that never saw a real frame.
  *
  * ArkTS strict mode forbids indexed access on interfaces
- * (arkts-no-props-by-index), so payload fields must be declared, not read
+ * (arkts-no-props-by-index), so fields must be declared, not read
  * dynamically. That is a feature here: when the server adds a field, this
  * interface is the one place that has to acknowledge it.
  */
-export interface WsPayload {
+export interface WsFrame {
+  type: string;
   connectionId?: string;
   sessionKey?: string;
   /** bridge:message */
@@ -25,11 +36,16 @@ export interface WsPayload {
   unreadCount?: number;
   /** bridge:connected */
   connected?: boolean;
+  /** bridge:manifest */
+  bridges?: BridgeInfo[];
+  /** bridge:skills-updated */
+  commands?: SlashCommandSpec[];
 }
 
-export interface RawWsEnvelope {
-  type: string;
-  payload: WsPayload;
+export interface BridgeInfo {
+  id: string;
+  name: string;
+  attachmentStaging?: boolean;
 }
 
 export interface NormalizedEvent {
@@ -37,7 +53,7 @@ export interface NormalizedEvent {
   connectionId: string;
   sessionKey: string;
   chatKey: string;
-  payload: WsPayload;
+  frame: WsFrame;
 }
 
 /** Chat key format mirrors the server: `${connectionId}::${sessionKey}`. */
@@ -49,14 +65,14 @@ export function chatKeyOf(connectionId: string, sessionKey: string): string {
 }
 
 /** Parses ids once so downstream stores never re-derive them. */
-export function normalizeEvent(raw: RawWsEnvelope): NormalizedEvent {
-  const connectionId: string = raw.payload.connectionId ?? '';
-  const sessionKey: string = raw.payload.sessionKey ?? '';
+export function normalizeEvent(frame: WsFrame): NormalizedEvent {
+  const connectionId: string = frame.connectionId ?? '';
+  const sessionKey: string = frame.sessionKey ?? '';
   return {
-    type: raw.type,
+    type: frame.type,
     connectionId: connectionId,
     sessionKey: sessionKey,
     chatKey: chatKeyOf(connectionId, sessionKey),
-    payload: raw.payload,
+    frame: frame,
   };
 }
