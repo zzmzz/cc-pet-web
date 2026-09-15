@@ -25,6 +25,7 @@
 - EXPANDED 断点下聊天内容最大宽度 1240vp；断点阈值 600 / 840 vp。
 - `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
 - 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
+- **REST 路径不得硬编码**：Task 10B 之后，所有 gateway 从 `model/Endpoints.ets` 取端点与 URL 构造函数。服务端改了方法或路径，`pnpm test` 会红。
 - 工作分支：`harmony-client`。
 - **真机构建与安装（已验证可用）**：
 
@@ -56,6 +57,7 @@
 | `harmony/entry/src/main/ets/entryability/EntryAbility.ets` | 生命周期 → `gateway.setForeground()` |
 | `harmony/entry/src/main/ets/model/Protocol.ets` | WS 事件名与消息类型，对齐 `packages/shared` |
 | `harmony/entry/src/main/ets/model/Markdown.ets` | `MdNode` 类型定义 |
+| `harmony/entry/src/main/ets/model/Endpoints.ets` | REST 端点集中声明，受契约守卫保护 |
 | `harmony/entry/src/main/ets/logic/backoff.ets` | 重连退避计算 |
 | `harmony/entry/src/main/ets/logic/normalizeEvent.ets` | WS 事件归一化 |
 | `harmony/entry/src/main/ets/logic/derivePetState.ets` | 宠物状态派生 |
@@ -2126,6 +2128,142 @@ git commit -m "feat(harmony): add rest client, token storage and login gate"
 
 ---
 
+### Task 10B: REST 端点契约守卫
+
+Task 2 的漂移守卫只比对 WS 事件名。REST 一侧完全没有守卫，结果是 `/api/auth/verify` 的方法写错（GET+Bearer 头，实际是 POST+body）一路走到真机才暴露——而服务端自己的 27 个测试也没有一个覆盖鉴权路径。本任务把守卫补到 REST 一侧。
+
+**Files:**
+- Create: `harmony/entry/src/main/ets/model/Endpoints.ets`
+- Modify: `packages/server/tests/harmony-protocol-alignment.test.ts`
+- Modify: `harmony/entry/src/main/ets/components/LoginGate.ets`（改为引用 `Endpoints`，不再硬编码路径）
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `interface Endpoint { method: string; path: string }` 与 `Endpoints` 常量类，供 Task 11 / 13 / 15 / 17 的所有 gateway 引用。**此后任何 gateway 不得再硬编码 REST 路径。**
+
+- [ ] **Step 1: 集中声明端点**
+
+`harmony/entry/src/main/ets/model/Endpoints.ets`：
+
+```typescript
+export interface Endpoint {
+  method: string;
+  path: string;
+}
+
+/**
+ * Every REST endpoint the client calls, declared once.
+ *
+ * Paths use the server's own parameter syntax (`:chatKey`) so the alignment
+ * guard can match them against the routes fastify actually registers. Build
+ * concrete URLs with the helpers below rather than concatenating by hand.
+ */
+export class Endpoints {
+  static readonly AUTH_VERIFY: Endpoint = { method: 'POST', path: '/api/auth/verify' };
+  static readonly SESSIONS: Endpoint = { method: 'GET', path: '/api/sessions' };
+  static readonly HISTORY: Endpoint = { method: 'GET', path: '/api/history/:chatKey' };
+  static readonly PET_IMAGE: Endpoint = { method: 'GET', path: '/api/pet-images/:state' };
+  static readonly FILE: Endpoint = { method: 'GET', path: '/api/files/:fileId' };
+  static readonly BRIDGE_CONNECT: Endpoint = { method: 'POST', path: '/api/bridges/:id/connect' };
+  static readonly BRIDGE_DISCONNECT: Endpoint = { method: 'POST', path: '/api/bridges/:id/disconnect' };
+}
+
+/** `/api/history/:chatKey` → `/api/history/c1%3A%3As1` */
+export function historyUrl(chatKey: string, afterSeq: number, limit: number): string {
+  const base: string = `/api/history/${encodeURIComponent(chatKey)}`;
+  return afterSeq > 0 ? `${base}?afterSeq=${afterSeq}&limit=${limit}` : `${base}?limit=${limit}`;
+}
+
+export function petImageUrl(state: string): string {
+  return `/api/pet-images/${encodeURIComponent(state)}`;
+}
+
+export function fileUrl(fileId: string): string {
+  return `/api/files/${encodeURIComponent(fileId)}`;
+}
+
+export function bridgeConnectUrl(bridgeId: string, connect: boolean): string {
+  const action: string = connect ? 'connect' : 'disconnect';
+  return `/api/bridges/${encodeURIComponent(bridgeId)}/${action}`;
+}
+```
+
+- [ ] **Step 2: 写失败的契约测试**
+
+在 `packages/server/tests/harmony-protocol-alignment.test.ts` 末尾追加：
+
+```typescript
+const endpointsPath = resolve(here, "../../../harmony/entry/src/main/ets/model/Endpoints.ets");
+const serverSrc = resolve(here, "../src");
+
+/** Routes fastify actually registers, including the generic-typed multi-line form. */
+function registeredRoutes(): Set<string> {
+  const files = globSync("**/*.ts", { cwd: serverSrc, absolute: true }).filter(
+    (f) => !f.endsWith(".test.ts"),
+  );
+  const routes = new Set<string>();
+  const re = /\bapp\.(get|post|put|delete)\s*(?:<[\s\S]*?>)?\s*\(\s*"([^"]+)"/g;
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(re)) {
+      routes.add(`${m[1].toUpperCase()} ${m[2]}`);
+    }
+  }
+  return routes;
+}
+
+describe("harmony REST endpoint alignment", () => {
+  it("declares only endpoints the server actually registers, with matching methods", () => {
+    const declared = Array.from(
+      readFileSync(endpointsPath, "utf8").matchAll(
+        /static readonly [A-Z_]+: Endpoint = \{ method: '([A-Z]+)', path: '([^']+)' \}/g,
+      ),
+    ).map((m) => `${m[1]} ${m[2]}`);
+
+    expect(declared.length).toBeGreaterThan(0);
+    const routes = registeredRoutes();
+    const missing = declared.filter((d) => !routes.has(d));
+    expect(missing).toEqual([]);
+  });
+});
+```
+
+`globSync` 从 `node:fs` 导入（Node 22+）；若该版本不可用，改用 `readdirSync` 递归，逻辑不变。
+
+- [ ] **Step 3: 跑测试确认通过**
+
+```bash
+cd /Users/StevenZhu/code/cc-pet-web
+pnpm --filter @cc-pet/server exec vitest run tests/harmony-protocol-alignment.test.ts
+```
+
+Expected: 3 passed（2 个 WS 用例 + 1 个 REST 用例）
+
+- [ ] **Step 4: 验证守卫真的会响 —— 两种错法都要试**
+
+这一步是本任务存在的理由，不可跳过：
+
+1. 把 `AUTH_VERIFY` 的 `method` 改成 `'GET'`，重跑 → **必须失败**，报缺 `GET /api/auth/verify`。这正是真机上踩到的那个 bug，守卫此前抓不到它。
+2. 改回 POST，把 `path` 改成 `'/api/auth/verifyx'`，重跑 → **必须失败**。
+3. 全部改回，确认 3 passed。
+
+把两次失败的输出记进报告。**没观察到失败的守卫等于没有守卫。**
+
+- [ ] **Step 5: LoginGate 改为引用 Endpoints**
+
+把 `LoginGate.ets` 里硬编码的 `'/api/auth/verify'` 换成 `Endpoints.AUTH_VERIFY.path`。行为不变，但从此路径只有一处定义。
+
+重新构建安装到真机，确认登录仍然可用（命令见 Global Constraints）。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add harmony/entry/src/main/ets/model/Endpoints.ets packages/server/tests/harmony-protocol-alignment.test.ts harmony/entry/src/main/ets/components/LoginGate.ets
+git commit -m "feat(harmony): guard REST endpoint methods against the server routes"
+```
+
+---
+
 ### Task 11: ConnectionGateway 与状态存储
 
 **Files:**
@@ -2866,7 +3004,14 @@ git commit -m "feat(harmony): adapt sessions and chat width across three breakpo
 
 - [ ] **Step 1: 重连后补齐历史**
 
-`ConnectionGateway` 在 `open()` 成功回调里，对当前 chatKey 调 `HistoryApi.fetch` 并 `ChatStore.replaceAll`。用 `ChatStore.maxSeqOf(chatKey)` 作为已知水位——服务端返回的消息带 `seq`，据此判断本地是否有断档，而不是盲目全量覆盖。失败时不抛给用户中断，而是置一个 `historyError` 标志。
+`ConnectionGateway` 在 `open()` 成功回调里，对当前 chatKey 调 `HistoryApi.fetch`。
+
+**按 `seq` 增量拉取，不要全量覆盖。** 服务端的 `GET /api/history/:chatKey` 支持 `afterSeq` 与 `limit`（上限 500，见 `packages/server/src/api/history.ts` 的 `getByChatKeyAfterSeq`）。用 `ChatStore.maxSeqOf(chatKey)` 作为已知水位构造请求（URL 用 `Endpoints` 的 `historyUrl(chatKey, afterSeq, limit)` 生成）：
+
+- `maxSeqOf` 为 0（本地无历史）→ 不带 `afterSeq`，拉最近一批，`ChatStore.replaceAll`
+- `maxSeqOf` 大于 0 → 带 `afterSeq`，只取断档部分，逐条 `append`
+
+每次重连都拖全量历史，在长会话上既慢又浪费流量。失败时不抛给用户中断，而是置一个 `historyError` 标志。
 
 - [ ] **Step 2: 401 统一登出**
 
