@@ -62,6 +62,12 @@
 
   同理，组件间传递 store 用 `@Param`，不要各自去取静态实例。
 
+  **⚠️ 适用范围说明**：上述证据只在 `AuthStore` + 单个消费组件（`Index`/`LoginGate`）这一对上
+  实测过，`@Monitor` 探针从未失败到失败的机制也没有对照 ArkUI V2 官方内部实现做交叉验证——目前
+  只是"换成 `AppStorageV2.connect()` 之后行为符合预期"这一层面的经验证据。**Task 11（第一个新
+  store）的实现者必须在自己的 store 上重新跑一遍同样的 `@Monitor` 探针验证**，确认这个模式能
+  迁移过去，而不是直接按类比假设成立；跑通后可以在后续任务里省略重复验证。
+
   详细复现证据、两次失败的修复尝试记录、以及排查过程见
   `.superpowers/sdd/2026-09-15-harmony-client/reactivity-fix-report.md`。
 - 工作分支：`harmony-client`。

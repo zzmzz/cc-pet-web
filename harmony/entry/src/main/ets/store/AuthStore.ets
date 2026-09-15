@@ -10,19 +10,16 @@ const APP_STORAGE_KEY: string = 'AuthStore';
 @ObservedV2
 export class AuthStore {
   /**
-   * The shared instance MUST be obtained through `AppStorageV2.connect()`,
-   * never via a bare `static readonly instance = new AuthStore()`. A plain
-   * static singleton is constructed at module-evaluation time, before any
-   * component holds it — @Local-holding a reference to it later does not
-   * reliably register the holding component as a V2 observer of its @Trace
-   * fields (confirmed empirically: `@Monitor('auth.authorized')` never
-   * fired and the UI never re-rendered after `save()` flipped `authorized`
-   * to `true`, even though the field write itself was correct and
-   * persisted). `AppStorageV2.connect(AuthStore, key, factory)` lazily
-   * creates (or returns the existing) shared instance from *inside* a
-   * reactive context and is the pattern ArkUI V2 documents for exactly
-   * this case — see docs/superpowers/plans/2026-09-15-harmony-client.md
-   * Global Constraints for the full writeup and the reproduction evidence.
+   * Must be obtained through `AppStorageV2.connect()` — see Global
+   * Constraints in docs/superpowers/plans/2026-09-15-harmony-client.md for
+   * why, and .superpowers/sdd/2026-09-15-harmony-client/reactivity-fix-report.md
+   * for the reproduction evidence. NOTE: a `private constructor()` was
+   * tried to make `new AuthStore()` a compile error outside this file, but
+   * ArkTS rejects it — `AppStorageV2.connect()`'s `type` parameter requires
+   * a public-constructor-shaped type, so passing `AuthStore` with a private
+   * constructor fails to compile (see the reactivity-fix report for the
+   * exact compiler error). This rule is therefore enforced by convention
+   * and code review only, not by the compiler.
    */
   static connect(): AuthStore {
     const instance: AuthStore | undefined = AppStorageV2.connect(AuthStore, APP_STORAGE_KEY, (): AuthStore => new AuthStore());
