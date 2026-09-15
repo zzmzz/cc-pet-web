@@ -1,6 +1,6 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { Session, SlashCommandSpec } from '../model/Protocol';
-import { WsFrame, BridgeInfo, chatKeyOf } from '../logic/normalizeEvent';
+import { WsFrame, BridgeInfo, chatKeyOf, splitChatKey } from '../logic/normalizeEvent';
 
 const APP_STORAGE_KEY: string = 'SessionStore';
 
@@ -45,12 +45,55 @@ export class SessionStore {
     return total;
   }
 
+  /**
+   * The ONE place that decides what a chat is called. Three files used to
+   * answer this question separately — `SessionRow.labelForBridge` (both
+   * session shells), `Index.currentSessionLabel()` (the top bar), and this
+   * method (notification titles) — and only the first two knew about the
+   * bridge-name fallback below. The third is what a lock screen actually
+   * rendered: a literal `b1::default` next to the reply text, because
+   * `/api/sessions` was never called, so `sessions` was always empty and
+   * this returned the raw chatKey.
+   *
+   * Preference order, and why:
+   * 1. the server's own `Session.label` — it is the only one that knows a
+   *    user-set or auto-derived title;
+   * 2. the advertised bridge name from `bridge:manifest` ("工作台A") — known
+   *    from the first frame of every connection, before any REST call;
+   * 3. the bare session key ('default') — better than nothing;
+   * 4. the raw chatKey, for a key belonging to neither a known session nor
+   *    a known bridge.
+   *
+   * `bridges` is already a field of this store, so no caller has to thread
+   * the manifest in to get the fallback.
+   */
   labelOf(chatKey: string): string {
     const session: Session | undefined = this.sessions.get(chatKey);
-    if (session === undefined) {
-      return chatKey;
+    if (session !== undefined && session.label !== undefined && session.label.length > 0) {
+      return session.label;
     }
-    return session.label !== undefined && session.label.length > 0 ? session.label : session.key;
+    const bridgeName: string = this.bridgeNameFor(chatKey);
+    if (bridgeName.length > 0) {
+      return bridgeName;
+    }
+    if (session !== undefined) {
+      return session.key;
+    }
+    return chatKey;
+  }
+
+  /** '' when this chatKey's connectionId matches no advertised bridge. */
+  private bridgeNameFor(chatKey: string): string {
+    const connectionId: string = splitChatKey(chatKey).connectionId;
+    if (connectionId.length === 0) {
+      return '';
+    }
+    for (const bridge of this.bridges) {
+      if (bridge.id === connectionId) {
+        return bridge.name;
+      }
+    }
+    return '';
   }
 
   isResident(chatKey: string): boolean {

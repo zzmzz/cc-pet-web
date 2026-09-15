@@ -1,16 +1,19 @@
 import { SessionStore } from '../store/SessionStore';
-import { BridgeInfo, chatKeyOf } from '../logic/normalizeEvent';
+import { BridgeInfo, chatKeyOf, DEFAULT_SESSION_KEY } from '../logic/normalizeEvent';
 
 /**
  * Every bridge advertised by `bridge:manifest` exposes exactly one
- * switchable chat at this stage of the protocol — its 'default' session
- * key. `SessionStore.sessions` (richer, server-labelled `Session` records)
- * has no public iteration accessor — only per-key lookups (`labelOf`,
- * `unreadOf`, `isResident`) — so `bridges` is the enumerable list
- * `SessionSidebar`/`SessionSheet` switch between; `labelForBridge` below
- * upgrades to the server-provided label once one exists for a key.
+ * switchable chat at this stage of the protocol — its `DEFAULT_SESSION_KEY`
+ * session. `SessionStore.sessions` (richer, server-labelled `Session`
+ * records) has no public iteration accessor — only per-key lookups
+ * (`labelOf`, `unreadOf`, `isResident`) — so `bridges` is the enumerable
+ * list `SessionSidebar`/`SessionSheet` switch between.
+ *
+ * `DEFAULT_SESSION_KEY` is imported, not declared: `pages/Index.ets` used to
+ * declare its own copy of the same constant alongside its own copy of the
+ * label rule below, so it now lives once, next to `chatKeyOf`/
+ * `splitChatKey` in `logic/normalizeEvent.ets`.
  */
-const DEFAULT_SESSION_KEY: string = 'default';
 
 /**
  * Shared row logic for `SessionSidebar` (persistent MEDIUM/EXPANDED column)
@@ -30,10 +33,15 @@ export function chatKeyForBridge(bridge: BridgeInfo): string {
   return chatKeyOf(bridge.id, DEFAULT_SESSION_KEY);
 }
 
+/**
+ * Thin forward to `SessionStore.labelOf`, which now owns the bridge-name
+ * fallback this function used to apply on its own (see that method's doc).
+ * Kept as a named function rather than inlined at the two call sites so the
+ * shells keep asking one question — "what is this row called?" — of one
+ * place.
+ */
 export function labelForBridge(session: SessionStore, bridge: BridgeInfo): string {
-  const key: string = chatKeyForBridge(bridge);
-  const label: string = session.labelOf(key);
-  return label === key ? bridge.name : label;
+  return session.labelOf(chatKeyForBridge(bridge));
 }
 
 export function isCurrentBridge(session: SessionStore, bridge: BridgeInfo): boolean {

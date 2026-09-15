@@ -58,12 +58,57 @@ export interface NormalizedEvent {
   frame: WsFrame;
 }
 
+/**
+ * The one session key every bridge advertised by `bridge:manifest` exposes
+ * at this stage of the protocol. Declared here, next to `chatKeyOf`/
+ * `splitChatKey`, because it used to be spelled out independently in both
+ * `components/SessionRow.ets` and `pages/Index.ets` — the same duplication
+ * Task 16 extracted `SessionRow.ets` to kill, just one file wider than that
+ * extraction reached.
+ */
+export const DEFAULT_SESSION_KEY: string = 'default';
+
 /** Chat key format mirrors the server: `${connectionId}::${sessionKey}`. */
 export function chatKeyOf(connectionId: string, sessionKey: string): string {
   if (connectionId.length === 0 || sessionKey.length === 0) {
     return '';
   }
   return `${connectionId}::${sessionKey}`;
+}
+
+export interface ChatKeyParts {
+  connectionId: string;
+  sessionKey: string;
+}
+
+/**
+ * Inverse of `chatKeyOf`. Splits on the FIRST `::` exactly like the server's
+ * own `parseChatKey` (`packages/shared/src/utils/chat-key.ts`), so a
+ * sessionKey that itself contains `::` survives the round trip instead of
+ * being truncated — which a `split('::')` + `parts[1]` read silently does.
+ *
+ * Four call sites used to parse chat keys by hand with `?? ''` fallbacks
+ * (the gateway's send/transmit paths, `assistantMessageFromFrame`, and
+ * `MessageInput.toggleBridge`); all four now route through here.
+ *
+ * Unlike the server's version this does not throw on a malformed key — the
+ * client's callers all want a value they can guard on, not an exception in
+ * the middle of a socket dispatch — so a key with no separator yields two
+ * empty strings. That is stricter than the old hand-rolled reads, which
+ * would have handed `'abc'` back as a connectionId with an empty
+ * sessionKey: an id without a session is not a chat key, and treating it as
+ * one is how `MessageInput.toggleBridge` could have POSTed to a bridge id
+ * derived from a string that was never a chat key at all.
+ */
+export function splitChatKey(chatKey: string): ChatKeyParts {
+  const separator: number = chatKey.indexOf('::');
+  if (separator === -1) {
+    return { connectionId: '', sessionKey: '' };
+  }
+  return {
+    connectionId: chatKey.slice(0, separator),
+    sessionKey: chatKey.slice(separator + 2),
+  };
 }
 
 /** Parses ids once so downstream stores never re-derive them. */

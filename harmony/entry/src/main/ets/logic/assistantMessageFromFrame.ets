@@ -1,5 +1,5 @@
 import { ChatMessage } from '../model/Protocol';
-import { WsFrame } from './normalizeEvent';
+import { WsFrame, splitChatKey, ChatKeyParts } from './normalizeEvent';
 
 /**
  * Builds the `ChatMessage` for an assistant reply arriving off the wire
@@ -17,9 +17,7 @@ import { WsFrame } from './normalizeEvent';
  * `logic/`.
  */
 export function assistantMessageFromFrame(frame: WsFrame, chatKey: string, now: number): ChatMessage {
-  const parts: string[] = chatKey.split('::');
-  const connectionId: string = parts[0] ?? '';
-  const sessionKey: string = parts[1] ?? '';
+  const parts: ChatKeyParts = splitChatKey(chatKey);
   const content: string = frame.content ?? frame.fullText ?? '';
   const id: string = frame.msgId ?? `srv-${now}`;
   const seq: number = frame.seq ?? 0;
@@ -28,8 +26,8 @@ export function assistantMessageFromFrame(frame: WsFrame, chatKey: string, now: 
     role: 'assistant',
     content: content,
     timestamp: now,
-    connectionId: connectionId,
-    sessionKey: sessionKey,
+    connectionId: parts.connectionId,
+    sessionKey: parts.sessionKey,
     seq: seq,
   };
 }
