@@ -756,6 +756,8 @@ Expected: FAIL，找不到模块 `../main/ets/logic/normalizeEvent`
   clientMsgId?: string;
   /** message-ack: the id the server assigned */
   id?: string;
+  /** bridge:message / bridge:stream-done: the server's id for an assistant reply */
+  msgId?: string;
   /** message-ack: server sequence number */
   seq?: number;
   /** resident:unread */
@@ -2359,8 +2361,8 @@ git commit -m "feat(harmony): guard REST endpoint methods against the server rou
   - `type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff'`
   - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`
   - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
-  - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
-  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(frame: WsFrame): void`、`applySessions(sessions: Session[]): void`、`applySkills(frame: WsFrame): void`
+  - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number, seq: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
+  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`bridges: BridgeInfo[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(frame: WsFrame): void`、`applySessions(sessions: Session[]): void`、`applySkills(frame: WsFrame): void`
   - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
   - `NotificationGateway.instance`：`notifyReply(title: string, body: string): Promise<void>`
 
@@ -2613,6 +2615,13 @@ export class ConnectionGateway {
     const netConn: connection.NetConnection = connection.createNetConnection();
     this.netConn = netConn;
     netConn.on('netAvailable', () => {
+      // Only reconnect if we are actually down. netAvailable also fires on
+      // Wi-Fi/cellular handoff and DHCP renewal; tearing down a healthy socket
+      // there would re-run flushOutbox and re-send messages already awaiting ack.
+      const phase: ConnectionPhase = ConnectionStore.connect().phase;
+      if (phase === 'connected' || phase === 'connecting') {
+        return;
+      }
       this.attempt = 0;
       this.clearTimer();
       this.open();
@@ -2752,7 +2761,13 @@ export class ConnectionGateway {
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
       const text: string = event.frame.fullText ?? '';
-      ChatStore.instance.finalizeStream(event.chatKey, text, `srv-${Date.now()}`, Date.now());
+      // Use the server's own id and seq. Synthesising them breaks maxSeqOf(),
+      // which Task 17's incremental history backfill reads as its cursor.
+      ChatStore.instance.finalizeStream(
+        event.chatKey, text,
+        event.frame.msgId ?? `srv-${Date.now()}`,
+        Date.now(), event.frame.seq ?? 0,
+      );
       TaskStore.instance.setPhase(event.chatKey, 'completed');
       this.afterAssistantReply(event.chatKey, text);
       return;
@@ -2760,8 +2775,10 @@ export class ConnectionGateway {
     if (event.type === WsEvents.BRIDGE_MESSAGE) {
       const text: string = event.frame.content ?? '';
       const message: ChatMessage = {
-        id: `srv-${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now(),
+        id: event.frame.msgId ?? `srv-${Date.now()}`,
+        role: 'assistant', content: text, timestamp: Date.now(),
         connectionId: event.connectionId, sessionKey: event.sessionKey,
+        seq: event.frame.seq,
       };
       ChatStore.instance.append(event.chatKey, message);
       TaskStore.instance.setPhase(event.chatKey, 'completed');
