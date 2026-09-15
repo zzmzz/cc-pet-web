@@ -19,6 +19,8 @@
 - ArkTS 严格类型：不使用 `any`，所有变量、参数、返回值显式标注类型，对象字面量必须有对应 `interface`（参照 `Tailscale-OHOS/entry/src/main/ets/services/NetworkSettingsGateway.ets` 的风格）。
 - 鉴权：REST 用 `Authorization: Bearer <token>`，WS 用 `/ws?token=<token>` query。
 - 重连退避：`min(30000, 1000 × 2ⁿ)` 毫秒。
+- 发送可靠性常量：`ACK_TIMEOUT_MS = 15000`、`MANUAL_WINDOW_MS = 120000`，与 `packages/web/src/lib/store/outbox.ts` 保持一致。
+- 代码基线：`origin/main` 的 `e525167`。协议含 `resident:unread` 与 `message-ack`；常驻会话未读以服务端为唯一真相。
 - EXPANDED 断点下聊天内容最大宽度 1240vp；断点阈值 600 / 840 vp。
 - `harmony/build-profile.json5` 含签名材料，必须 gitignore，仓库内只保留 `harmony/build-profile.example.json5`。
 - 每个任务结束必须提交，提交信息使用仓库既有的 conventional commits 风格（`feat(harmony): ...` / `test(harmony): ...` / `chore(harmony): ...`）。
@@ -44,7 +46,7 @@
 | `harmony/entry/src/main/ets/logic/derivePetState.ets` | 宠物状态派生 |
 | `harmony/entry/src/main/ets/logic/parseMarkdown.ets` | markdown → `MdNode[]` |
 | `harmony/entry/src/main/ets/logic/slashCommands.ets` | 命令合并 / 匹配 / 排序 |
-| `harmony/entry/src/main/ets/logic/sendQueue.ets` | 离线发送队列 |
+| `harmony/entry/src/main/ets/logic/outbox.ets` | 发送可靠性：clientMsgId / ack 超时 / 重试策略 |
 | `harmony/entry/src/main/ets/gateway/RestClient.ets` | Bearer 封装 + 401 统一处理 |
 | `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets` | WS 单例、状态机、事件分发 |
 | `harmony/entry/src/main/ets/gateway/NotificationGateway.ets` | 本地通知（接口化） |
@@ -208,9 +210,11 @@ export class WsEvents {
   static readonly BRIDGE_PREVIEW_DELETE: string = 'bridge:preview-delete';
   static readonly BRIDGE_CARD: string = 'bridge:card';
   static readonly BRIDGE_AUDIO: string = 'bridge:audio';
+  static readonly RESIDENT_UNREAD: string = 'resident:unread';
   static readonly SEND_MESSAGE: string = 'send-message';
   static readonly SEND_BUTTON: string = 'send-button';
   static readonly SEND_FILE: string = 'send-file';
+  static readonly MESSAGE_ACK: string = 'message-ack';
 }
 
 export type ChatRole = 'user' | 'assistant' | 'system';
@@ -222,6 +226,8 @@ export interface ChatMessage {
   timestamp: number;
   connectionId?: string;
   sessionKey?: string;
+  /** Server-assigned sequence number, present once acked. Drives history backfill. */
+  seq?: number;
 }
 
 export interface Session {
@@ -230,6 +236,10 @@ export interface Session {
   label?: string;
   createdAt: number;
   lastActiveAt: number;
+  /** True when this session is a config-declared resident session. */
+  isResident?: boolean;
+  /** Server-persisted unread count (resident sessions only). */
+  unreadCount?: number;
 }
 
 export type TaskPhase =
@@ -1286,119 +1296,258 @@ git commit -m "feat(harmony): merge and match slash commands with builtin preced
 
 ---
 
-### Task 9: 离线发送队列（纯函数 TDD）
+### Task 9: Outbox 发送可靠性（纯函数 TDD）
+
+**不要自创发送队列。** 这个任务移植 `packages/web/src/lib/store/outbox.ts` 的语义，服务端已有配套的 `message-ack` 回执。
 
 **Files:**
-- Create: `harmony/entry/src/main/ets/logic/sendQueue.ets`
-- Create: `harmony/entry/src/test/SendQueue.test.ets`
+- Create: `harmony/entry/src/main/ets/logic/outbox.ets`
+- Create: `harmony/entry/src/test/Outbox.test.ets`
 - Modify: `harmony/entry/src/test/List.test.ets`
 
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `interface QueuedMessage { id: string; chatKey: string; text: string; queuedAt: number }`
-  - `class SendQueue`，方法：`enqueue(msg: QueuedMessage): void`、`drain(): QueuedMessage[]`、`size(): number`、`remove(id: string): void`
+  - `type RetryPolicy = 'auto' | 'manual' | 'never'`
+  - `type OutboxStatus = 'pending' | 'sent' | 'failed'`
+  - `interface OutboxEntry { clientMsgId: string; chatKey: string; text: string; policy: RetryPolicy; status: OutboxStatus; createdAt: number; transmittedAt: number }`
+  - `class Outbox`：`enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void`、`markSent(clientMsgId: string): void`、`markTransmitted(ids: string[], now: number): void`、`expireTimedOut(now: number): string[]`、`takeSendable(now: number): OutboxEntry[]`、`resend(clientMsgId: string, now: number): void`、`entriesOf(chatKey: string): OutboxEntry[]`、`size(): number`
+  - `ACK_TIMEOUT_MS: number`（15000）、`MANUAL_WINDOW_MS: number`（120000）
+
+`clientMsgId` 由调用方（`ConnectionGateway`，用 `@kit.ArkTS` 的 `util.generateRandomUUID`）生成后传入，`now` 也由调用方传入——这样 `Outbox` 保持纯粹，测试不需要冻结时钟或打桩 UUID。
 
 - [ ] **Step 1: 写失败测试**
 
-`harmony/entry/src/test/SendQueue.test.ets`：
+`harmony/entry/src/test/Outbox.test.ets`：
 
 ```typescript
 import { describe, it, expect } from '@ohos/hypium';
-import { SendQueue, QueuedMessage } from '../main/ets/logic/sendQueue';
+import { Outbox, OutboxEntry, ACK_TIMEOUT_MS, MANUAL_WINDOW_MS } from '../main/ets/logic/outbox';
 
-function msg(id: string, at: number): QueuedMessage {
-  return { id: id, chatKey: 'c::s', text: `text-${id}`, queuedAt: at };
-}
-
-export default function sendQueueTest() {
-  describe('SendQueue', () => {
-    it('drains in enqueue order', 0, () => {
-      const q: SendQueue = new SendQueue();
-      q.enqueue(msg('a', 1));
-      q.enqueue(msg('b', 2));
-      const drained: QueuedMessage[] = q.drain();
-      expect(drained.length).assertEqual(2);
-      expect(drained[0].id).assertEqual('a');
-      expect(drained[1].id).assertEqual('b');
+export default function outboxTest() {
+  describe('Outbox', () => {
+    it('enqueues as pending and reports size', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      expect(box.size()).assertEqual(1);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
     });
 
-    it('is empty after draining', 0, () => {
-      const q: SendQueue = new SendQueue();
-      q.enqueue(msg('a', 1));
-      q.drain();
-      expect(q.size()).assertEqual(0);
+    it('drops an entry once acked', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markSent('id-a');
+      expect(box.size()).assertEqual(0);
     });
 
-    it('ignores duplicate ids', 0, () => {
-      const q: SendQueue = new SendQueue();
-      q.enqueue(msg('a', 1));
-      q.enqueue(msg('a', 2));
-      expect(q.size()).assertEqual(1);
+    it('fails entries whose ack budget expired', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      const expired: string[] = box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      expect(expired.length).assertEqual(1);
+      expect(expired[0]).assertEqual('id-a');
+      expect(box.entriesOf('c::s')[0].status).assertEqual('failed');
     });
 
-    it('removes a single message by id', 0, () => {
-      const q: SendQueue = new SendQueue();
-      q.enqueue(msg('a', 1));
-      q.enqueue(msg('b', 2));
-      q.remove('a');
-      expect(q.size()).assertEqual(1);
-      expect(q.drain()[0].id).assertEqual('b');
+    it('does not expire an entry that was never transmitted', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      expect(box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1).length).assertEqual(0);
+    });
+
+    it('restarts the ack budget on retransmit', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.markTransmitted(['id-a'], 50000);
+      expect(box.expireTimedOut(50000 + ACK_TIMEOUT_MS - 1).length).assertEqual(0);
+      expect(box.expireTimedOut(50000 + ACK_TIMEOUT_MS + 1).length).assertEqual(1);
+    });
+
+    it('keeps createdAt fixed across retransmits so manual entries still age out', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.markTransmitted(['id-a'], 1000 + MANUAL_WINDOW_MS - 1);
+      expect(box.entriesOf('c::s')[0].createdAt).assertEqual(1000);
+      expect(box.takeSendable(1000 + MANUAL_WINDOW_MS + 1).length).assertEqual(0);
+    });
+
+    it('offers manual entries only inside the window', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      expect(box.takeSendable(1000 + MANUAL_WINDOW_MS - 1).length).assertEqual(1);
+      expect(box.takeSendable(1000 + MANUAL_WINDOW_MS + 1).length).assertEqual(0);
+    });
+
+    it('never offers never-policy entries for auto resend', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'never', 1000);
+      expect(box.takeSendable(1001).length).assertEqual(0);
+    });
+
+    it('offers auto entries regardless of age', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      expect(box.takeSendable(99999999).length).assertEqual(1);
+    });
+
+    it('returns entries in enqueue order', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'first', 'auto', 1000);
+      box.enqueue('id-b', 'c::s', 'second', 'auto', 1001);
+      const sendable: OutboxEntry[] = box.takeSendable(2000);
+      expect(sendable[0].clientMsgId).assertEqual('id-a');
+      expect(sendable[1].clientMsgId).assertEqual('id-b');
+    });
+
+    it('revives one failed entry on explicit resend', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'manual', 1000);
+      box.markTransmitted(['id-a'], 1000);
+      box.expireTimedOut(1000 + ACK_TIMEOUT_MS + 1);
+      box.resend('id-a', 99999999);
+      expect(box.entriesOf('c::s')[0].status).assertEqual('pending');
+      expect(box.takeSendable(99999999).length).assertEqual(1);
+    });
+
+    it('ignores duplicate client message ids', 0, () => {
+      const box: Outbox = new Outbox();
+      box.enqueue('id-a', 'c::s', 'hello', 'auto', 1000);
+      box.enqueue('id-a', 'c::s', 'hello again', 'auto', 2000);
+      expect(box.size()).assertEqual(1);
     });
   });
 }
 ```
 
-在 `List.test.ets` 追加导入与调用。
+在 `List.test.ets` 追加 `import outboxTest from './Outbox.test';` 与 `outboxTest();`。
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: Task 1 记录的单测命令
-Expected: FAIL，找不到模块
+Expected: FAIL，找不到模块 `../main/ets/logic/outbox`
 
 - [ ] **Step 3: 最小实现**
 
-`harmony/entry/src/main/ets/logic/sendQueue.ets`：
+`harmony/entry/src/main/ets/logic/outbox.ets`：
 
 ```typescript
-export interface QueuedMessage {
-  id: string;
+export type RetryPolicy = 'auto' | 'manual' | 'never';
+export type OutboxStatus = 'pending' | 'sent' | 'failed';
+
+export const ACK_TIMEOUT_MS: number = 15000;
+export const MANUAL_WINDOW_MS: number = 120000;
+
+export interface OutboxEntry {
+  clientMsgId: string;
   chatKey: string;
   text: string;
-  queuedAt: number;
+  policy: RetryPolicy;
+  status: OutboxStatus;
+  /** When the user asked to send. Drives the manual policy's staleness window. */
+  createdAt: number;
+  /**
+   * When the entry was last actually written to the socket; start of the ack
+   * budget. Kept separate from createdAt on purpose: sharing one field would
+   * let every retransmit push the staleness window forward, so a manual entry
+   * would never age out.
+   */
+  transmittedAt: number;
 }
 
-/** Holds messages typed while the socket is down; drained on reconnect in order. */
-export class SendQueue {
-  private items: QueuedMessage[] = [];
+/** Mirrors packages/web/src/lib/store/outbox.ts so both clients fail the same way. */
+export class Outbox {
+  private entries: OutboxEntry[] = [];
 
-  enqueue(msg: QueuedMessage): void {
-    for (const existing of this.items) {
-      if (existing.id === msg.id) {
+  enqueue(clientMsgId: string, chatKey: string, text: string, policy: RetryPolicy, now: number): void {
+    for (const existing of this.entries) {
+      if (existing.clientMsgId === clientMsgId) {
         return;
       }
     }
-    this.items.push(msg);
+    this.entries.push({
+      clientMsgId: clientMsgId,
+      chatKey: chatKey,
+      text: text,
+      policy: policy,
+      status: 'pending',
+      createdAt: now,
+      transmittedAt: 0,
+    });
   }
 
-  remove(id: string): void {
-    const kept: QueuedMessage[] = [];
-    for (const item of this.items) {
-      if (item.id !== id) {
-        kept.push(item);
+  markSent(clientMsgId: string): void {
+    const kept: OutboxEntry[] = [];
+    for (const entry of this.entries) {
+      if (entry.clientMsgId !== clientMsgId) {
+        kept.push(entry);
       }
     }
-    this.items = kept;
+    this.entries = kept;
   }
 
-  drain(): QueuedMessage[] {
-    const out: QueuedMessage[] = this.items;
-    this.items = [];
+  markTransmitted(ids: string[], now: number): void {
+    for (const entry of this.entries) {
+      for (const id of ids) {
+        if (entry.clientMsgId === id) {
+          entry.transmittedAt = now;
+          entry.status = 'pending';
+        }
+      }
+    }
+  }
+
+  /** Returns the ids that just failed, so the UI can mark those bubbles. */
+  expireTimedOut(now: number): string[] {
+    const expired: string[] = [];
+    for (const entry of this.entries) {
+      const waiting: boolean = entry.status === 'pending' && entry.transmittedAt > 0;
+      if (waiting && now - entry.transmittedAt > ACK_TIMEOUT_MS) {
+        entry.status = 'failed';
+        expired.push(entry.clientMsgId);
+      }
+    }
+    return expired;
+  }
+
+  takeSendable(now: number): OutboxEntry[] {
+    const out: OutboxEntry[] = [];
+    for (const entry of this.entries) {
+      if (entry.policy === 'never') {
+        continue;
+      }
+      if (entry.policy === 'manual' && now - entry.createdAt > MANUAL_WINDOW_MS) {
+        continue;
+      }
+      out.push(entry);
+    }
+    return out;
+  }
+
+  resend(clientMsgId: string, now: number): void {
+    for (const entry of this.entries) {
+      if (entry.clientMsgId === clientMsgId) {
+        entry.status = 'pending';
+        entry.createdAt = now;
+        entry.transmittedAt = 0;
+      }
+    }
+  }
+
+  entriesOf(chatKey: string): OutboxEntry[] {
+    const out: OutboxEntry[] = [];
+    for (const entry of this.entries) {
+      if (entry.chatKey === chatKey) {
+        out.push(entry);
+      }
+    }
     return out;
   }
 
   size(): number {
-    return this.items.length;
+    return this.entries.length;
   }
 }
 ```
@@ -1406,13 +1555,13 @@ export class SendQueue {
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: Task 1 记录的单测命令
-Expected: 全部 PASS
+Expected: 全部 PASS（12 个用例）
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add harmony/entry/src/main/ets/logic/sendQueue.ets harmony/entry/src/test
-git commit -m "feat(harmony): queue outgoing messages while offline"
+git add harmony/entry/src/main/ets/logic/outbox.ets harmony/entry/src/test
+git commit -m "feat(harmony): add outbox with ack timeout and retry policies"
 ```
 
 ---
@@ -1665,6 +1814,7 @@ git commit -m "feat(harmony): add rest client, token storage and login gate"
 
 **Files:**
 - Create: `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`
+- Create: `harmony/entry/src/main/ets/gateway/NotificationGateway.ets`（本任务只建打日志的占位实现，Task 14 替换内部逻辑）
 - Create: `harmony/entry/src/main/ets/store/ChatStore.ets`
 - Create: `harmony/entry/src/main/ets/store/SessionStore.ets`
 - Create: `harmony/entry/src/main/ets/store/TaskStore.ets`
@@ -1672,14 +1822,15 @@ git commit -m "feat(harmony): add rest client, token storage and login gate"
 - Modify: `harmony/entry/src/main/ets/entryability/EntryAbility.ets`
 
 **Interfaces:**
-- Consumes: `backoffDelayMs`、`normalizeEvent`、`SendQueue`、`WsEvents`、`AuthStore`
+- Consumes: `backoffDelayMs`、`normalizeEvent`、`Outbox`、`WsEvents`、`AuthStore`
 - Produces:
   - `type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff'`
-  - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): void`
+  - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`
   - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
-  - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`clear(chatKey: string): void`
-  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`incrementUnreadOnce(chatKey: string): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: Record<string, Object>): void`、`applySkills(payload: Record<string, Object>): void`
+  - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
+  - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(payload: Record<string, Object>): void`、`applySessions(sessions: Session[]): void`、`applySkills(payload: Record<string, Object>): void`
   - `TaskStore.instance`：`phaseOf(chatKey: string): TaskPhase`、`setPhase(chatKey: string, phase: TaskPhase): void`
+  - `NotificationGateway.instance`：`notifyReply(title: string, body: string): Promise<void>`
 
 这份清单是 Task 12–17 的唯一契约来源——后续任务只许调用此处列出的方法。需要新方法时，先回到本任务补齐 store 再用。
 
@@ -1720,6 +1871,40 @@ export class ChatStore {
     this.append(chatKey, { id: id, role: 'assistant', content: fullText, timestamp: at });
   }
 
+  /** message-ack arrived: swap the local id for the server's and record its seq. */
+  applyAck(clientMsgId: string, serverId: string, seq: number): void {
+    this.messages.forEach((list: ChatMessage[], key: string) => {
+      let changed: boolean = false;
+      const next: ChatMessage[] = [];
+      for (const msg of list) {
+        if (msg.id === clientMsgId) {
+          next.push({
+            id: serverId, role: msg.role, content: msg.content, timestamp: msg.timestamp,
+            connectionId: msg.connectionId, sessionKey: msg.sessionKey, seq: seq,
+          });
+          changed = true;
+        } else {
+          next.push(msg);
+        }
+      }
+      if (changed) {
+        this.messages.set(key, next);
+      }
+    });
+  }
+
+  /** Highest server seq seen in this chat; 0 when none. Drives history backfill. */
+  maxSeqOf(chatKey: string): number {
+    let max: number = 0;
+    for (const msg of this.messagesOf(chatKey)) {
+      const seq: number = msg.seq ?? 0;
+      if (seq > max) {
+        max = seq;
+      }
+    }
+    return max;
+  }
+
   replaceAll(chatKey: string, history: ChatMessage[]): void {
     this.messages.set(chatKey, history);
   }
@@ -1731,17 +1916,33 @@ export class ChatStore {
 }
 ```
 
-`SessionStore` 持有 `currentChatKey`、会话列表与未读计数；`TaskStore` 持有每个 chatKey 的 `TaskPhase`；`ConnectionStore` 持有 `phase`、`connectedAtMs`、`bridgeConnected`。三者结构同上，各自只暴露读方法与意图方法。
+`SessionStore` 持有会话列表、`currentChatKey`、未读计数、`skillCommands`，以及一个 `residentKeys: Set<string>`。**未读有两个来源**（spec 6.3）：`incrementUnread` 对 `residentKeys` 内的 chatKey 直接 return，只有 `setUnread` 能改它们——服务端是常驻会话未读的唯一真相。`applySessions` 根据 `Session.isResident` 重建 `residentKeys`，并用 `Session.unreadCount` 初始化未读。
 
-- [ ] **Step 2: 实现 ConnectionGateway 状态机**
+`TaskStore` 持有每个 chatKey 的 `TaskPhase`；`ConnectionStore` 持有 `phase`、`connectedAtMs`、`bridgeConnected`。
+
+`NotificationGateway` 本任务只写占位实现，让 `ConnectionGateway` 能编译：
+
+```typescript
+/** Placeholder until Task 14 wires real notifications. Signature is final. */
+export class NotificationGateway {
+  static readonly instance: NotificationGateway = new NotificationGateway();
+
+  async notifyReply(title: string, body: string): Promise<void> {
+    console.info(`[cc-pet] would notify: ${title} / ${body}`);
+  }
+}
+```
+
+- [ ] **Step 2: 实现 ConnectionGateway**
 
 `harmony/entry/src/main/ets/gateway/ConnectionGateway.ets`：
 
 ```typescript
 import { webSocket, connection } from '@kit.NetworkKit';
+import { util } from '@kit.ArkTS';
 import { backoffDelayMs } from '../logic/backoff';
 import { normalizeEvent, RawWsEnvelope, NormalizedEvent } from '../logic/normalizeEvent';
-import { SendQueue, QueuedMessage } from '../logic/sendQueue';
+import { Outbox, OutboxEntry, RetryPolicy } from '../logic/outbox';
 import { WsEvents, ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
@@ -1751,11 +1952,14 @@ import { NotificationGateway } from './NotificationGateway';
 
 export type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff';
 
+const ACK_SWEEP_MS: number = 5000;
+
 interface OutgoingEnvelope {
   type: string;
   connectionId: string;
   sessionKey: string;
   content: string;
+  clientMsgId: string;
 }
 
 export class ConnectionGateway {
@@ -1765,9 +1969,10 @@ export class ConnectionGateway {
   private netConn: connection.NetConnection | undefined = undefined;
   private attempt: number = 0;
   private timer: number = -1;
+  private sweepTimer: number = -1;
   private baseUrl: string = '';
   private token: string = '';
-  private queue: SendQueue = new SendQueue();
+  private outbox: Outbox = new Outbox();
   private stopped: boolean = true;
   private foreground: boolean = true;
 
@@ -1777,12 +1982,17 @@ export class ConnectionGateway {
     this.stopped = false;
     this.attempt = 0;
     this.observeNetwork();
+    this.startAckSweep();
     this.open();
   }
 
   stop(): void {
     this.stopped = true;
     this.clearTimer();
+    if (this.sweepTimer !== -1) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = -1;
+    }
     if (this.socket !== undefined) {
       this.socket.close();
       this.socket = undefined;
@@ -1828,7 +2038,7 @@ export class ConnectionGateway {
       this.attempt = 0;
       ConnectionStore.instance.setPhase('connected');
       ConnectionStore.instance.markConnectedAt(Date.now());
-      this.flushQueue();
+      this.flushOutbox();
     });
 
     socket.on('message', (err: Error | undefined, data: string | ArrayBuffer) => {
@@ -1877,53 +2087,116 @@ export class ConnectionGateway {
     netConn.register(() => {});
   }
 
-  sendMessage(chatKey: string, text: string): void {
-    const id: string = `local-${Date.now()}`;
+  /** Entries whose ack never arrived turn failed, so their bubbles can go red. */
+  private startAckSweep(): void {
+    if (this.sweepTimer !== -1) {
+      return;
+    }
+    this.sweepTimer = setInterval(() => {
+      this.outbox.expireTimedOut(Date.now());
+    }, ACK_SWEEP_MS);
+  }
+
+  sendMessage(chatKey: string, text: string): string {
+    const clientMsgId: string = util.generateRandomUUID(true);
     const parts: string[] = chatKey.split('::');
     const connectionId: string = parts[0] ?? '';
     const sessionKey: string = parts[1] ?? '';
+    const now: number = Date.now();
 
     ChatStore.instance.append(chatKey, {
-      id: id, role: 'user', content: text, timestamp: Date.now(),
+      id: clientMsgId, role: 'user', content: text, timestamp: now,
       connectionId: connectionId, sessionKey: sessionKey,
     });
 
-    const queued: QueuedMessage = { id: id, chatKey: chatKey, text: text, queuedAt: Date.now() };
-    if (ConnectionStore.instance.phase !== 'connected' || this.socket === undefined) {
-      this.queue.enqueue(queued);
+    const policy: RetryPolicy = 'auto';
+    this.outbox.enqueue(clientMsgId, chatKey, text, policy, now);
+    if (ConnectionStore.instance.phase === 'connected') {
+      this.transmit([clientMsgId]);
+    }
+    return clientMsgId;
+  }
+
+  /** User tapped retry on one failed bubble. */
+  retry(clientMsgId: string): void {
+    this.outbox.resend(clientMsgId, Date.now());
+    if (ConnectionStore.instance.phase === 'connected') {
+      this.transmit([clientMsgId]);
+    }
+  }
+
+  private transmit(ids: string[]): void {
+    if (this.socket === undefined) {
       return;
     }
-    this.transmit(queued);
-  }
-
-  private transmit(item: QueuedMessage): void {
-    const parts: string[] = item.chatKey.split('::');
-    const envelope: OutgoingEnvelope = {
-      type: WsEvents.SEND_MESSAGE,
-      connectionId: parts[0] ?? '',
-      sessionKey: parts[1] ?? '',
-      content: item.text,
-    };
-    if (this.socket !== undefined) {
+    const sent: string[] = [];
+    for (const entry of this.outbox.takeSendable(Date.now())) {
+      let wanted: boolean = false;
+      for (const id of ids) {
+        if (entry.clientMsgId === id) {
+          wanted = true;
+        }
+      }
+      if (!wanted) {
+        continue;
+      }
+      const parts: string[] = entry.chatKey.split('::');
+      const envelope: OutgoingEnvelope = {
+        type: WsEvents.SEND_MESSAGE,
+        connectionId: parts[0] ?? '',
+        sessionKey: parts[1] ?? '',
+        content: entry.text,
+        clientMsgId: entry.clientMsgId,
+      };
       this.socket.send(JSON.stringify(envelope));
+      sent.push(entry.clientMsgId);
     }
+    this.outbox.markTransmitted(sent, Date.now());
   }
 
-  private flushQueue(): void {
-    for (const item of this.queue.drain()) {
-      this.transmit(item);
+  /** Reconnect path: everything still sendable goes back out, oldest first. */
+  private flushOutbox(): void {
+    const ids: string[] = [];
+    for (const entry of this.outbox.takeSendable(Date.now())) {
+      ids.push(entry.clientMsgId);
     }
+    this.transmit(ids);
   }
 
   /**
-   * Unread and notification share one predicate (spec 6.3) so the badge and
-   * the notification can never disagree.
+   * Notification predicate: is the user not looking at this chat right now?
+   * Deliberately separate from unread counting — resident sessions take their
+   * unread from the server, but "should I buzz" is always a local question.
    */
   private isAway(chatKey: string): boolean {
     return chatKey !== SessionStore.instance.currentChatKey || !this.foreground;
   }
 
   private dispatch(event: NormalizedEvent): void {
+    if (event.type === WsEvents.MESSAGE_ACK) {
+      const idValue: Object | undefined = event.payload['clientMsgId'];
+      const srvValue: Object | undefined = event.payload['id'];
+      const seqValue: Object | undefined = event.payload['seq'];
+      const clientMsgId: string = typeof idValue === 'string' ? idValue as string : '';
+      if (clientMsgId.length === 0) {
+        return;
+      }
+      this.outbox.markSent(clientMsgId);
+      ChatStore.instance.applyAck(
+        clientMsgId,
+        typeof srvValue === 'string' ? srvValue as string : clientMsgId,
+        typeof seqValue === 'number' ? seqValue as number : 0,
+      );
+      return;
+    }
+    if (event.type === WsEvents.RESIDENT_UNREAD) {
+      const countValue: Object | undefined = event.payload['unreadCount'];
+      SessionStore.instance.setUnread(
+        event.chatKey,
+        typeof countValue === 'number' ? countValue as number : 0,
+      );
+      return;
+    }
     if (event.type === WsEvents.BRIDGE_CONNECTED) {
       ConnectionStore.instance.setBridgeConnected(true);
       ConnectionStore.instance.markConnectedAt(Date.now());
@@ -1953,9 +2226,6 @@ export class ConnectionGateway {
       const delta: Object | undefined = event.payload['delta'];
       ChatStore.instance.appendDelta(event.chatKey, typeof delta === 'string' ? delta as string : '');
       TaskStore.instance.setPhase(event.chatKey, 'working');
-      if (this.isAway(event.chatKey)) {
-        SessionStore.instance.incrementUnreadOnce(event.chatKey);
-      }
       return;
     }
     if (event.type === WsEvents.BRIDGE_STREAM_DONE) {
@@ -1983,6 +2253,8 @@ export class ConnectionGateway {
     if (!this.isAway(chatKey)) {
       return;
     }
+    // Resident sessions get their unread from resident:unread; incrementUnread
+    // is a no-op for them by design (see SessionStore).
     SessionStore.instance.incrementUnread(chatKey);
     NotificationGateway.instance.notifyReply(
       SessionStore.instance.labelOf(chatKey),
@@ -1992,25 +2264,23 @@ export class ConnectionGateway {
 }
 ```
 
-`incrementUnreadOnce` 只在该 chatKey 当前 streaming 为空时加一，避免每个 delta 都累加未读——对应 web 端 `firstChunk` 的判定。
-
-Task 14 尚未创建 `NotificationGateway` 时，先建一个只打日志的空实现占位，Task 14 再补真正的通知逻辑；这样本任务能独立编译通过。
-
 - [ ] **Step 3: 在 EntryAbility 里接前后台**
 
 `harmony/entry/src/main/ets/entryability/EntryAbility.ets` 的 `onForeground` / `onBackground` 各调一行 `ConnectionGateway.instance.setForeground(true/false)`，不做别的。
 
-- [ ] **Step 4: 真机验证连接**
+- [ ] **Step 4: 真机验证连接与 ack**
 
-装到真机，登录后在日志里确认：`phase` 依次为 `connecting → connected`；从 web 端发一条消息，鸿蒙端日志能打印出 `bridge:message` 归一化后的 `chatKey`。
+装到真机，登录后在日志里确认：`phase` 依次为 `connecting → connected`；从 web 端发一条消息，鸿蒙端日志打印出归一化后的 `chatKey`。
 
-然后开飞行模式 10 秒再关闭，确认日志出现退避重连且最终回到 `connected`。
+发一条消息，确认日志里出现 `message-ack`，且该消息的 id 被替换为服务端 id。
+
+然后开飞行模式 10 秒再关闭，确认日志出现退避重连、最终回到 `connected`，且断网期间输入的消息在重连后被补发。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add harmony/entry/src/main/ets/gateway/ConnectionGateway.ets harmony/entry/src/main/ets/store harmony/entry/src/main/ets/entryability/EntryAbility.ets
-git commit -m "feat(harmony): add ws gateway with backoff reconnect and stores"
+git add harmony/entry/src/main/ets/gateway harmony/entry/src/main/ets/store harmony/entry/src/main/ets/entryability/EntryAbility.ets
+git commit -m "feat(harmony): add ws gateway with ack-tracked outbox and stores"
 ```
 
 ---
@@ -2036,11 +2306,15 @@ git commit -m "feat(harmony): add ws gateway with backoff reconnect and stores"
 
 用 `List` + `LazyForEach` 渲染 `ChatStore.instance.messagesOf(currentChatKey)`；user 气泡右对齐、assistant 左对齐。
 
-**流式特例**：若 `ChatStore.instance.streamingOf(chatKey)` 非空，在列表末尾追加一个气泡，内容用纯 `Text` 直接显示，**不调 `parseMarkdown`**——每几十毫秒重解析整段会掉帧。`bridge:stream-done` 后该气泡被正式消息取代，此时才走 `MarkdownView`。
+**回复有两条到达路径，都要处理**：
+1. 真流式（部分 bridge）：`streamingOf(chatKey)` 非空时在列表末尾追加气泡，内容用纯 `Text` 直接显示，**不调 `parseMarkdown`**——每几十毫秒重解析整段会掉帧。`bridge:stream-done` 后该气泡被正式消息取代，此时才走 `MarkdownView`。
+2. 整块到达（cc-connect 的 claudecode 回复没有 token 级流）：`bridge:message` 直接携带完整文本，正常走 `MarkdownView`。首版不实现 web 端那个纯视觉的本地打字机。
+
+**发送态**：气泡的发送状态来自 `Outbox`，不在 `ChatStore` 里另存一份。`failed` 的气泡标红并显示重试按钮，点击调 `ConnectionGateway.instance.retry(clientMsgId)`。
 
 - [ ] **Step 3: 实现 MessageInput**
 
-多行 `TextArea` + 发送按钮。点击发送时调 `ConnectionGateway.instance.sendMessage(chatKey, text)` 并清空输入框。socket 未连接时按钮保持可用（消息进队列），但按钮文案变为「待发送」。
+多行 `TextArea` + 发送按钮（**首版无附件上传**，见 spec 第 2 节）。点击发送时调 `ConnectionGateway.instance.sendMessage(chatKey, text)` 并清空输入框。socket 未连接时按钮保持可用——消息进 Outbox，重连后自动补发。
 
 - [ ] **Step 4: 组装 ChatWindow 并接入 Index**
 
@@ -2289,7 +2563,7 @@ git commit -m "feat(harmony): adapt sessions and chat width across three breakpo
 
 - [ ] **Step 1: 重连后补齐历史**
 
-`ConnectionGateway` 在 `open()` 成功回调里，对当前 chatKey 调 `HistoryApi.fetch` 并 `ChatStore.replaceAll`。失败时不抛给用户中断，而是置一个 `historyError` 标志。
+`ConnectionGateway` 在 `open()` 成功回调里，对当前 chatKey 调 `HistoryApi.fetch` 并 `ChatStore.replaceAll`。用 `ChatStore.maxSeqOf(chatKey)` 作为已知水位——服务端返回的消息带 `seq`，据此判断本地是否有断档，而不是盲目全量覆盖。失败时不抛给用户中断，而是置一个 `historyError` 标志。
 
 - [ ] **Step 2: 401 统一登出**
 
@@ -2297,7 +2571,7 @@ git commit -m "feat(harmony): adapt sessions and chat width across three breakpo
 
 - [ ] **Step 3: 发送失败可重试**
 
-发送后若 socket 关闭或服务端返回错误，消息气泡标红并显示重试按钮，点击重新入队。原文不得丢失。
+发送后 15 秒内未收到 `message-ack`，`Outbox.expireTimedOut` 将条目转 `failed`，气泡标红并显示重试按钮，点击调 `ConnectionGateway.instance.retry(clientMsgId)`。原文不得丢失。
 
 - [ ] **Step 4: 历史失败提示条**
 
