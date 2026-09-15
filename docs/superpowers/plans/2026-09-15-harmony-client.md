@@ -3082,6 +3082,8 @@ export default function responsiveLayoutTest() {
 
 - [ ] **Step 4: 按断点装配 Index**
 
+**关于首次进入时的默认会话**：Task 16 评审指出原脚手架 `maybeBootstrapSession` 只是被改名保留。裁决：**该行为保留**——没有默认选中会话时用户进来看到的是一片空白，这是产品缺陷而非纯净状态。原 brief 里「必须替换脚手架」的本意是「不要留下硬编码的临时逻辑」，不是「不许有默认选择」。但注释不得暗示这是在满足「替换脚手架」的要求；它就是一个产品默认值，如实写即可。
+
 用 `GridRow`/`onAreaChange` 拿到窗口宽度，`usesSideSessions` 为真时渲染 `SessionSidebar` + `ChatWindow`，否则渲染顶栏（PetMini + 会话名 + ConnectionBadge + 设置）+ `ChatWindow` + `SessionSheet`。EXPANDED 下给 `ChatWindow` 套 `.constraintSize({ maxWidth: ResponsiveLayout.contentMaxWidth(width) })`。
 
 - [ ] **Step 5: 真机验证三档**
