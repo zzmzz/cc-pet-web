@@ -7,7 +7,6 @@ import { chatKeyOf } from '../logic/normalizeEvent';
 import { common } from '@kit.AbilityKit';
 
 const DEFAULT_SESSION_KEY: string = 'default';
-const BOOTSTRAP_POLL_MS: number = 300;
 
 @Entry
 @ComponentV2
@@ -19,9 +18,11 @@ struct Index {
   // of AuthStore's @Trace fields, which in turn is what makes the
   // `@Monitor('auth.authorized')` below able to watch it.
   @Local auth: AuthStore = AuthStore.connect();
-  private session: SessionStore = SessionStore.connect();
+  // `@Local`, not a bare `private` field, for the same reason as `auth`
+  // above — this is what lets `@Monitor('session.bridges')` below observe
+  // `SessionStore`'s `@Trace bridges` field.
+  @Local session: SessionStore = SessionStore.connect();
   private gatewayStarted: boolean = false;
-  private sessionBootstrapTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
     await this.auth.init(getContext(this) as common.UIAbilityContext);
@@ -31,13 +32,6 @@ struct Index {
     // at launch" case) is itself a `@Trace` write the Monitor is already
     // registered to observe by this point, so it fires the same as a login
     // arriving later via LoginGate.
-  }
-
-  aboutToDisappear(): void {
-    if (this.sessionBootstrapTimer !== -1) {
-      clearInterval(this.sessionBootstrapTimer);
-      this.sessionBootstrapTimer = -1;
-    }
   }
 
   /**
@@ -60,31 +54,53 @@ struct Index {
     this.startGatewayOnce();
   }
 
+  /**
+   * Same fix, second poll: `session.bridges` used to be watched with its own
+   * `setInterval`. `session.bridges` is `@Trace` too, so this is the same
+   * `@Monitor` pattern as `auth.authorized` above rather than a second,
+   * inconsistent mechanism in the same file.
+   */
+  @Monitor('session.bridges')
+  onBridgesChanged(_monitor: IMonitor): void {
+    this.maybeBootstrapSession();
+  }
+
+  /**
+   * Task 16 owns real session selection (SessionSidebar/SessionSheet over
+   * SessionStore's session list). Until that lands, default to the first
+   * manifest-advertised bridge's "default" session as soon as one is known,
+   * so the chat window has something to show — otherwise `currentChatKey`
+   * stays '' forever (nothing else in the app sets it yet) and the chat
+   * looks permanently empty. A no-op once `currentChatKey` is already set,
+   * so calling this more than once (see both call sites below) is safe.
+   */
+  private maybeBootstrapSession(): void {
+    if (this.session.currentChatKey.length > 0) {
+      return;
+    }
+    if (this.session.bridges.length === 0) {
+      return;
+    }
+    this.session.setCurrent(chatKeyOf(this.session.bridges[0].id, DEFAULT_SESSION_KEY));
+  }
+
   private startGatewayOnce(): void {
     if (this.gatewayStarted) {
       return;
     }
     this.gatewayStarted = true;
     ConnectionGateway.instance.start(this.auth.baseUrl, this.auth.token);
-    // Task 16 owns real session selection (SessionSidebar/SessionSheet over
-    // SessionStore's session list). Until that lands, default to the first
-    // manifest-advertised bridge's "default" session as soon as one is
-    // known, so the chat window has something to show — otherwise
-    // currentChatKey stays '' forever (nothing else in the app sets it yet)
-    // and the chat looks permanently empty.
-    this.sessionBootstrapTimer = setInterval(() => {
-      const session: SessionStore = this.session;
-      if (session.currentChatKey.length > 0) {
-        clearInterval(this.sessionBootstrapTimer);
-        this.sessionBootstrapTimer = -1;
-        return;
-      }
-      if (session.bridges.length > 0) {
-        session.setCurrent(chatKeyOf(session.bridges[0].id, DEFAULT_SESSION_KEY));
-        clearInterval(this.sessionBootstrapTimer);
-        this.sessionBootstrapTimer = -1;
-      }
-    }, BOOTSTRAP_POLL_MS);
+    // `@Monitor('session.bridges')` above only fires on a *change* it
+    // observes after being registered — it cannot fire for a manifest that
+    // arrived (and was already applied to `session.bridges`) before the
+    // Monitor was set up. That is possible here in principle (the gateway
+    // could already be running from an earlier `startGatewayOnce()` call in
+    // a scenario this guard's `gatewayStarted` flag doesn't cover, or the
+    // Monitor's "already watching" window could start slightly after this
+    // component's own construction), so this checks synchronously,
+    // immediately after kicking off the connection, instead of relying on
+    // the Monitor alone to catch a change that may already have happened.
+    this.maybeBootstrapSession();
   }
 
   build() {
