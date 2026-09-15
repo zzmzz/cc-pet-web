@@ -135,6 +135,26 @@ export class SessionStore {
   }
 
   /** `bridge:manifest`'s bridge list (`WsFrame.bridges`, see normalizeEvent.ets). */
+  /**
+   * Logout only. Mirrors `ChatStore.clearAll()`: `ConnectionGateway.stop()`
+   * already drops the outbox and the transcript so account A's data cannot
+   * reach account B, but `currentChatKey` and `bridges` used to survive that
+   * same boundary. A stale `currentChatKey` pointing at a bridge the next
+   * account does not have makes `Index.defaultToFirstBridgeIfNoneSelected()`
+   * return early (it only fires when the key is empty), so B would land on a
+   * permanently blank chat surface until it picked a session by hand.
+   *
+   * `skillCommands` goes too: slash commands are advertised per account.
+   */
+  clearAll(): void {
+    this.currentChatKey = '';
+    this.skillCommands = [];
+    this.bridges = [];
+    this.sessions = new Map<string, Session>();
+    this.unread = new Map<string, number>();
+    this.residentKeys = new Set<string>();
+  }
+
   applyManifest(frame: WsFrame): void {
     this.bridges = frame.bridges ?? [];
   }

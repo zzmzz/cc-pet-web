@@ -119,6 +119,7 @@ export class ConnectionGateway {
     this.outbox.clear();
     this.backfill = undefined;
     ChatStore.connect().clearAll();
+    SessionStore.connect().clearAll();
     ConnectionStore.connect().clearHistoryErrors();
     ConnectionStore.connect().setPhase('disconnected');
   }
@@ -302,6 +303,12 @@ export class ConnectionGateway {
   /** User tapped retry on one failed bubble. */
   retry(clientMsgId: string): void {
     this.outbox.resend(clientMsgId, Date.now());
+    // `resend` flips the entry back to 'sending' inside the outbox, which is
+    // not observable state — so without this the bubble keeps rendering red
+    // with 「发送失败」 until the ack lands. The 1 Hz `MessageList` timer used
+    // to paper over this; now that it is gone, every outbox mutation the UI
+    // can see has to announce itself, exactly like the ack sweep does.
+    ConnectionStore.connect().bumpOutboxRevision();
     if (ConnectionStore.connect().phase === 'connected') {
       this.transmit([clientMsgId]);
     }

@@ -244,9 +244,24 @@ ui_tap() {
   hdc_ shell uitest uiInput click $xy >/dev/null
 }
 
+# Taps the field, then commits the text through the IME.
+#
+# Do NOT go back to `uitest uiInput inputText <x> <y> <text>`. That command
+# PREPENDS A SPACE to whatever you ask it to type, measured on this emulator:
+# asking for '/cl' delivers ' /cl'. It corrupted every string every probe here
+# typed, and went unnoticed for the whole project because the two places it
+# could have failed loudly both absorbed it -- `LoginGate` calls `.trim()` on
+# the URL and token, and the chat probes assert on a substring of the echo.
+# It was finally caught when it made the slash palette look permanently dead
+# (`isSlashInput` requires a strict leading slash), and roughly a day went
+# into "debugging" a component that was working the entire time.
+#
+# `uitest uiInput text <text>` delivers the string verbatim. Verified on this
+# emulator against both the IME path and `keyEvent` hardware-key injection.
 ui_type_at() {
   local xy="$1" text="$2"
-  hdc_ shell uitest uiInput inputText $xy "$text" >/dev/null
+  hdc_ shell uitest uiInput click $xy >/dev/null
+  hdc_ shell uitest uiInput text "$text" >/dev/null
 }
 
 # ---------------------------------------------------------------------------

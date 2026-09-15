@@ -170,6 +170,7 @@ bash scripts/device-chat-probe.sh
 bash scripts/device-reconnect-probe.sh
 bash scripts/device-notification-probe.sh
 bash scripts/device-relogin-probe.sh
+bash scripts/device-slash-palette-probe.sh
 ```
 
 - `device-login-probe.sh` — launches the app and asserts it reaches either the login gate or
@@ -186,7 +187,10 @@ bash scripts/device-relogin-probe.sh
   latched `true` forever, so logging back in left a fully-rendered chat screen over a dead
   socket; it additionally asserts the first session's transcript did **not** survive the logout.
 
-All five target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
+- `device-slash-palette-probe.sh` — types `/`, then narrows to `/cl`, then clears the input,
+  asserting the palette opens above the input, filters down to exactly `/clear`, and closes.
+
+All six target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
 this project has been verified against the emulator since Task 10, not a physical phone, and
 these probes follow that same convention. Set `CCPET_DEVICE_TARGET` to point at a real device
 instead if you need to, but nothing here assumes one is attached, and by default nothing
@@ -206,6 +210,14 @@ Two environment quirks these probes work around, discovered while building them:
   observed to silently die mid-session** (see the Task 17 report). The probes verify the
   tunnel is actually registered before depending on it and re-establish it rather than hanging
   on a dead one.
+- **`uitest uiInput inputText <x> <y> <text>` prepends a space to whatever you ask it to
+  type.** `ui_type_at` in `scripts/lib/common.sh` therefore taps the field and commits through
+  `uitest uiInput text` instead, which delivers the string verbatim. This corrupted every
+  string every probe typed for most of the project and stayed invisible because both places it
+  could have failed loudly absorbed it — `LoginGate` trims the URL and token, and the chat
+  probes assert on a substring of the echo. It surfaced only when it made the slash palette
+  look permanently dead (`isSlashInput` requires a strict leading slash), costing a day of
+  debugging a component that was working the whole time.
 - **The emulator can idle into a locked/screen-off state between runs**, and `aa start` alone
   does not dismiss a lock screen. The probes detect this (no app UI visible after launch) and
   wake + swipe past it before doing anything else.
