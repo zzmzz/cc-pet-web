@@ -92,9 +92,23 @@ export class PetImageCache {
     }
     hilog.info(DOMAIN, TAG, 'fetched custom pet image for state=%{public}s, caching', state);
 
+    // Write-then-rename, not a direct write to `path`: `writeFile` opens with
+    // `TRUNC`, so a process kill (low-memory reclaim, crash, force-stop —
+    // all common on-device) between open/write/close used to leave a
+    // truncated file sitting at the exact path `fileExists(path)` checks on
+    // the *next* call. That truncated file "exists", so it was returned as
+    // a cache hit with no content validation — a permanently corrupt image,
+    // forever, since a file that exists never gets re-fetched. Writing to a
+    // `.tmp` sibling and only moving it into place after a full successful
+    // write means a mid-write crash leaves at worst an orphaned `.tmp` file
+    // that `fileExists(path)` never sees — never a corrupt cache hit.
+    const tmpPath: string = `${path}.tmp`;
     try {
       await this.ensureDir(dir);
-      await this.writeFile(path, bytes);
+      await this.writeFile(tmpPath, bytes);
+      // Mode 0 (default): overwrite the destination if a stale cached image
+      // already exists there from a previous fetch of this state.
+      await fileIo.moveFile(tmpPath, path, 0);
     } catch (err) {
       const businessError: BusinessError = err as BusinessError;
       hilog.error(DOMAIN, TAG, 'failed to cache fetched pet image: code=%{public}d message=%{public}s',
