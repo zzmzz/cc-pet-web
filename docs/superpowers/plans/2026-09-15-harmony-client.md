@@ -2945,7 +2945,9 @@ git commit -m "feat(harmony): add derived pet avatar with per-token image cache"
 
 - [ ] **Step 1: 声明通知权限并申请**
 
-`module.json5` 追加 `ohos.permission.NOTIFICATION_CONTROLLER`；首次进入聊天页时调用 `notificationManager.requestEnableNotification()`。
+**不要声明 `ohos.permission.NOTIFICATION_CONTROLLER`。** 该权限在本 SDK 下是 `system_core` 级，普通应用声明它会导致 **HAP 安装直接失败**（Task 14 实测撞到 `hdc install` 报错；同机的 Tailscale-OHOS 参考工程也未声明它）。发布本地通知**不需要任何权限声明**，`module.json5` 在本任务中保持不变。
+
+首次进入聊天页时调用 `notificationManager.requestEnableNotification()` 请求用户开启通知开关（这是运行时开关，不是权限声明）。用户拒绝时必须优雅降级：聊天照常可用，只是不弹通知，不得反复弹窗或阻塞界面。
 
 - [ ] **Step 2: 实现 NotificationGateway**
 
