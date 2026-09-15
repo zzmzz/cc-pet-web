@@ -1,6 +1,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
+import { ConnectionGateway } from '../gateway/ConnectionGateway';
 
 const DOMAIN = 0x0000;
 const TAG = 'EntryAbility';
@@ -32,9 +33,11 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'Ability onForeground');
+    ConnectionGateway.instance.setForeground(true);
   }
 
   onBackground(): void {
     hilog.info(DOMAIN, TAG, '%{public}s', 'Ability onBackground');
+    ConnectionGateway.instance.setForeground(false);
   }
 }
