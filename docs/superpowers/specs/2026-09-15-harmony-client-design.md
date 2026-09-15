@@ -13,11 +13,13 @@ cc-pet-web 目前由 React PWA 提供移动端体验。本项目为它做一个*
 
 ## 2. 首版范围
 
-**做**：Token 登录、会话列表与切换、消息收发（含 `message-ack` 可靠投递）、markdown 渲染、接收图片预览、宠物五态动效、断线重连、本地通知、slash command 菜单。
+**做**：Token 登录、会话列表与切换、消息收发（含 `message-ack` 可靠投递）、markdown 渲染、宠物五态动效、断线重连、本地通知、slash command 菜单。
 
-**不做**（明确推迟，非遗漏）：全文搜索、AI 用量面板、workspace 的 git 与文件浏览、卡片/按钮消息、音频消息、**附件上传**、Push Kit 推送、后台长时任务保活。
+**不做**（明确推迟，非遗漏）：全文搜索、AI 用量面板、workspace 的 git 与文件浏览、卡片/按钮消息、音频消息、**附件上传**、**图片接收与预览**、Push Kit 推送、后台长时任务保活。
 
-附件上传推迟的理由：web 端的上传走 WS 流式分片，且带 `uploading` / `uploadProgress` / `uploadError` 三种中间态与失败重试（见 `packages/web/src/lib/attachment-upload.ts`）。这是独立一块可靠性工作，与首版的聊天闭环正交。首版只**接收并预览**图片。
+附件上传推迟的理由：web 端的上传走 WS 流式分片，且带 `uploading` / `uploadProgress` / `uploadError` 三种中间态与失败重试（见 `packages/web/src/lib/attachment-upload.ts`）。这是独立一块可靠性工作，与首版的聊天闭环正交。
+
+**图片接收与预览不在首版范围内——本文此前写"首版只接收并预览图片"，与实际交付不符，此处更正。** 它从未实现：`ConnectionGateway.dispatch` 没有 `bridge:file-received` 分支，`Endpoints.FILE` / `fileUrl()` 全程零调用者（已随本轮删除，见下方 §5），`MarkdownView` 也只是把 markdown 里的原始 href 交给 `ImageSpan`——那个组件既无法解析服务端相对路径，也无法附带 `/api/files/*` 所要求的 `Authorization: Bearer` 头。补齐它需要三步：dispatch `bridge:file-received`、走 `PetImageCache` 已在用的那条带 token 的二进制拉取通道取字节、把结果转成 `PixelMap` 交回 UI。在那之前，markdown 里的图片按 alt 文本降级显示（`logic/markdownImage.ets`），不再渲染成一片空白。
 
 **服务端改动：零。** 现有 `/ws` 与 `/api/*` 已满足全部需求。
 
@@ -79,7 +81,11 @@ harmony/entry/src/main/ets/
 
 首版消费的 WS 事件：`bridge:manifest`、`bridge:connected`、`bridge:error`、`bridge:message`、`bridge:stream-delta`、`bridge:stream-done`、`bridge:typing-start`、`bridge:typing-stop`、`bridge:skills-updated`、`resident:unread`、`message-ack`；发送 `send-message`。
 
-首版调用的 REST：`POST /api/auth/verify`（**token 放在请求体，不是 Authorization 头**——该路由注册在鉴权守卫之前，是唯一按载荷验证的端点；响应 `{valid, name, bridgeIds}`）、、`/api/sessions`、`/api/history/:chatKey`、`/api/pet-images/:state`、`/api/files/:fileId`、`/api/bridges/:id/connect`、`/api/bridges/:id/disconnect`。
+首版调用的 REST：`POST /api/auth/verify`（**token 放在请求体，不是 Authorization 头**——该路由注册在鉴权守卫之前，是唯一按载荷验证的端点；响应 `{valid, name, bridgeIds}`）、`/api/sessions`（必须带 `?connectionId=`，否则服务端返回空列表；每个 bridge 一次）、`/api/history/:chatKey`、`/api/pet-images/:state`、`/api/bridges/:id/connect`、`/api/bridges/:id/disconnect`。
+
+`/api/files/:fileId` 曾列在这里，现已移除：图片接收与预览不在首版范围（见 §2），该端点在 `Endpoints.ets` 里声明了但全程无人调用。
+
+**防死端点**：同一份守卫现在还断言——`Endpoints.ets` 里声明的每个端点，在 `harmony/entry/src/main/ets/` 下都必须至少有一个真实调用者（注释里提到不算）。端点"存在于服务端"和"客户端真的会调它"是两件事，而后者出问题时表现为一整块功能悄悄不存在：`SESSIONS` 与 `FILE` 两个端点都以零调用者通过了原先的对齐守卫，各自掩盖了一处范围缺口。
 
 **防协议漂移**：`packages/server/tests/harmony-protocol-alignment.test.ts` 读取 `harmony/.../model/Protocol.ets`，双向比对 `WS_EVENTS` 的事件名集合，不一致则 `pnpm test` 失败。
 
@@ -185,8 +191,10 @@ Index
 ├─ LoginGate      无 token 时全屏；POST /api/auth/verify 验证后存入首选项
 ├─ 顶栏           PetMini + 会话名（点击唤起半模态）+ 连接状态徽标 + 设置
 ├─ MessageList    LazyForEach 懒加载，历史向上分页
-└─ MessageInput   多行输入、发送（首版无附件上传）
+└─ MessageInput   多行输入、发送（首版无附件上传，也不接收/预览图片）
 ```
+
+首版**不包含图片的接收与预览**（见 §2 的更正说明）。回复正文里的 markdown 图片按 alt 文本降级显示。
 
 相对 web 移动端顶栏的五个控件（PetMini / 会话下拉 / 工作区 / 搜索 / 设置），首版降为三项——工作区与搜索不在范围内。将来加回时走底部导航，不再挤顶栏。
 
@@ -200,6 +208,8 @@ Index
 - `MarkdownView` —— 只负责把 `MdNode[]` 摆成组件树
 
 支持子集：标题、段落、有序/无序列表、粗体、斜体、行内代码、代码块、链接、图片、引用、表格。代码块首版不做语法高亮：等宽字体 + 横向滚动 + 右上角复制按钮。
+
+图片一项仅指**解析**：`parseInline` 认得 `![alt](href)` 并产出 image span，但首版不做图片接收与预览（见 §2），所以渲染时按 alt 文本降级（`[图片: alt]`），不去拉取字节。降级是必需的而非偷懒——`ImageSpan` 加载失败时渲染出的是零像素，没有边框也没有占位文字，整行内容会无声消失。
 
 **回复到达有两条路径，首版设计时搞错过，这里更正**：
 

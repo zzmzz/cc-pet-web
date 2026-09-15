@@ -10,6 +10,8 @@ import assistantMessageFromFrameTest from './AssistantMessageFromFrame.test';
 import responsiveLayoutTest from './ResponsiveLayout.test';
 import sessionRowTest from './SessionRow.test';
 import mergeHistoryTest from './MergeHistory.test';
+import splitChatKeyTest from './SplitChatKey.test';
+import markdownImageTest from './MarkdownImage.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -24,4 +26,6 @@ export default function testsuite() {
   responsiveLayoutTest();
   sessionRowTest();
   mergeHistoryTest();
+  splitChatKeyTest();
+  markdownImageTest();
 }

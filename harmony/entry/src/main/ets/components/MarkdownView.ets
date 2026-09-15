@@ -1,5 +1,6 @@
 import { MdNode, MdSpan } from '../model/Markdown';
 import { parseInline } from '../logic/parseInline';
+import { isRenderableImageHref, imageFallbackText } from '../logic/markdownImage';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { common, Want } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
@@ -15,6 +16,7 @@ const HEADING_SIZES: number[] = [24, 22, 20, 18, 16, 15];
 const TABLE_CHAR_WIDTH_PX: number = 16;
 const TABLE_CELL_PADDING_PX: number = 12;
 const TABLE_MIN_CELL_WIDTH_PX: number = 96;
+const IMAGE_FALLBACK_COLOR: string = '#8A8F98';
 
 /**
  * Renders a block-level `MdNode[]` (from `parseMarkdown`). Does not parse
@@ -25,6 +27,23 @@ const TABLE_MIN_CELL_WIDTH_PX: number = 96;
 @ComponentV2
 export struct MarkdownView {
   @Require @Param nodes: MdNode[] = [];
+
+  /**
+   * Hrefs whose `ImageSpan` reported `onError`. Reassigned (never mutated in
+   * place) so the V2 observer actually fires and the failed span re-renders
+   * as its alt text — see `renderSpan`. `@Local` because this is per-view
+   * render state, not anything another component or a gateway observes.
+   */
+  @Local private failedImages: Set<string> = new Set<string>();
+
+  private markImageFailed(href: string): void {
+    if (this.failedImages.has(href)) {
+      return;
+    }
+    const next: Set<string> = new Set<string>(this.failedImages);
+    next.add(href);
+    this.failedImages = next;
+  }
 
   private openLink(href: string): void {
     if (href.length === 0) {
@@ -110,12 +129,33 @@ export struct MarkdownView {
     .width('100%')
   }
 
+  /**
+   * Image spans degrade to alt text instead of to nothing.
+   *
+   * Image receive/preview is not in the first release (see `harmony/README.md`
+   * and spec §2) and `ImageSpan` renders a failed load as literally zero
+   * pixels — no box, no text — so a reply containing `![流程图](/api/files/x)`
+   * lost that line silently, with nothing on screen to say a line existed.
+   * Two guards, because one isn't enough: `isRenderableImageHref` rejects
+   * up front everything `ImageSpan` provably cannot resolve (any
+   * server-relative path, which is the only kind cc-pet emits, and which
+   * would additionally need the bearer header `ImageSpan` cannot attach),
+   * and `onError` catches an absolute URL that looked fine and then failed
+   * on the wire.
+   */
   @Builder
   renderSpan(span: MdSpan) {
     if (span.kind === 'image') {
-      ImageSpan(span.href)
-        .objectFit(ImageFit.Contain)
-        .verticalAlign(ImageSpanAlignment.CENTER)
+      if (isRenderableImageHref(span.href) && !this.failedImages.has(span.href)) {
+        ImageSpan(span.href)
+          .objectFit(ImageFit.Contain)
+          .verticalAlign(ImageSpanAlignment.CENTER)
+          .onError(() => { this.markImageFailed(span.href); })
+      } else {
+        Span(imageFallbackText(span))
+          .fontColor(IMAGE_FALLBACK_COLOR)
+          .fontStyle(FontStyle.Italic)
+      }
     } else if (span.kind === 'link') {
       Span(span.text)
         .fontColor(LINK_COLOR)

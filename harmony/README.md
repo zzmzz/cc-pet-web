@@ -169,6 +169,7 @@ bash scripts/device-login-probe.sh
 bash scripts/device-chat-probe.sh
 bash scripts/device-reconnect-probe.sh
 bash scripts/device-notification-probe.sh
+bash scripts/device-relogin-probe.sh
 ```
 
 - `device-login-probe.sh` — launches the app and asserts it reaches either the login gate or
@@ -179,14 +180,19 @@ bash scripts/device-notification-probe.sh
   connection badge leaves `已连接`, brings the server back, and asserts it recovers.
 - `device-notification-probe.sh` — backgrounds the app, waits for a delayed reply, and
   asserts a real system notification appears in the notification shade.
+- `device-relogin-probe.sh` — round-trips a message, forces a real 401 (it swaps a throwaway
+  401-only server in on the same port), asserts the app falls back to the login gate, then logs
+  in again and asserts a second message round-trips. Covers the bug where `gatewayStarted`
+  latched `true` forever, so logging back in left a fully-rendered chat screen over a dead
+  socket; it additionally asserts the first session's transcript did **not** survive the logout.
 
-All four target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
+All five target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
 this project has been verified against the emulator since Task 10, not a physical phone, and
 these probes follow that same convention. Set `CCPET_DEVICE_TARGET` to point at a real device
 instead if you need to, but nothing here assumes one is attached, and by default nothing
 touches one.
 
-The chat/reconnect/notification probes clear the target's app data (`bm clean -n
+The chat/reconnect/notification/relogin probes clear the target's app data (`bm clean -n
 com.ccpet.client -d`) and log in fresh against a **throwaway local server + bridge fixture
 each probe starts and tears down itself** (a real, unmodified `packages/server` process on a
 scratch port, plus a minimal external-bridge stand-in that answers with a canned
@@ -222,5 +228,18 @@ claim otherwise, and neither should anything you add here.
   probes above start a real, unmodified `packages/server` process against a scratch data
   directory for exactly this reason, rather than special-casing anything inside `packages/`
   for HarmonyOS.
-- Task 1 (this scaffold) declares no `requestPermissions` in `entry/src/main/module.json5`.
-  Network permission is added by Task 10, notification permission by Task 14.
+- `entry/src/main/module.json5` declares exactly two permissions: `ohos.permission.INTERNET`
+  and `ohos.permission.GET_NETWORK_INFO`, both added by Task 10. **There is no notification
+  permission.** An earlier version of this line said one was "added by Task 14" — Ruling 26
+  removed it entirely, because `ohos.permission.NOTIFICATION_CONTROLLER` is `system_core` and
+  declaring it makes the HAP refuse to install. Local notifications still work:
+  `NotificationGateway` asks for the runtime *enable* via `notificationManager.requestEnableNotification`,
+  which needs no declared permission.
+
+- **图片接收与预览不在首版范围内.** There is no `bridge:file-received` handling and no
+  `/api/files/:fileId` call; the spec's §2 previously listed image receive/preview as shipped
+  and has been corrected. A markdown image in a reply degrades to its alt text
+  (`[图片: …]`, see `entry/src/main/ets/logic/markdownImage.ets`) rather than rendering as the
+  zero pixels `ImageSpan` produces on a failed load. Adding it later means: dispatch
+  `bridge:file-received`, fetch the bytes over the same token-authenticated binary path
+  `PetImageCache` already uses (`RestClient.getBinary`), and hand a `PixelMap` back to the UI.
