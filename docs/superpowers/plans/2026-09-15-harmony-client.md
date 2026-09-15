@@ -2359,7 +2359,7 @@ git commit -m "feat(harmony): guard REST endpoint methods against the server rou
 - Consumes: `backoffDelayMs`、`normalizeEvent`、`Outbox`、`WsEvents`、`AuthStore`
 - Produces:
   - `type ConnectionPhase = 'disconnected' | 'connecting' | 'connected' | 'backoff'`
-  - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`
+  - `ConnectionGateway.instance`：`start(baseUrl: string, token: string): void`、`stop(): void`、`setForeground(value: boolean): void`、`sendMessage(chatKey: string, text: string): string`（返回 clientMsgId）、`retry(clientMsgId: string): void`、`outboxEntriesOf(chatKey: string): OutboxEntry[]`（UI 读发送态用；发送状态只此一份，不要在消息上另设状态字段）
   - `ConnectionStore.instance`：`phase: ConnectionPhase`、`connectedAtMs: number`、`bridgeConnected: boolean`、`setPhase(phase: ConnectionPhase): void`、`markConnectedAt(at: number): void`、`setBridgeConnected(value: boolean): void`
   - `ChatStore.instance`：`messagesOf(chatKey: string): ChatMessage[]`、`streamingOf(chatKey: string): string`、`append(chatKey: string, message: ChatMessage): void`、`appendDelta(chatKey: string, delta: string): void`、`finalizeStream(chatKey: string, fullText: string, id: string, at: number, seq: number): void`、`replaceAll(chatKey: string, history: ChatMessage[]): void`、`applyAck(clientMsgId: string, serverId: string, seq: number): void`、`maxSeqOf(chatKey: string): number`、`clear(chatKey: string): void`
   - `SessionStore.instance`：`currentChatKey: string`、`skillCommands: SlashCommandSpec[]`、`bridges: BridgeInfo[]`、`unreadOf(chatKey: string): number`、`totalUnread(): number`、`labelOf(chatKey: string): string`、`isResident(chatKey: string): boolean`、`setCurrent(chatKey: string): void`、`incrementUnread(chatKey: string): void`、`setUnread(chatKey: string, count: number): void`、`clearUnread(chatKey: string): void`、`applyManifest(frame: WsFrame): void`、`applySessions(sessions: Session[]): void`、`applySkills(frame: WsFrame): void`
@@ -2840,6 +2840,8 @@ git commit -m "feat(harmony): add ws gateway with ack-tracked outbox and stores"
 按 `MdNode.kind` 分支渲染：`heading` 用递增字号；`paragraph`/`quote` 用 `Text` 承载 `parseInline` 得到的 `MdSpan[]`（`bold` → `FontWeight.Bold`，`italic` → `FontStyle.Italic`，`code` → 等宽 + 浅底，`link` → 主题色 + 点击调 `@kit.BasicServicesKit` 打开浏览器，`image` → `Image` 组件）；`list` 用 `ForEach` 加前缀（有序为 `${i + 1}.`，无序为 `•`）；`table` 用嵌套 `Row`/`Column` + 边框；`code` 用 `Scroll({ scrollable: ScrollDirection.Horizontal })` 包一个等宽 `Text`，右上角放复制按钮，点击调用 `pasteboard` 写入。
 
 - [ ] **Step 2: 实现 MessageList**
+
+**已知限制（Task 12 实测）**：消息列表用的是 `ForEach` 而非 `LazyForEach`。`LazyForEach` 需要在 `build()` 之前准备数据源，而 ArkTS 不允许 `build()` 内出现前置命令式语句；正确接法还需引入 `@Monitor`，与本工程其余部分的写法不一致。当前消息规模下无影响，**但 Task 17 的历史增量回填会推高单会话消息数，届时需重新评估**。
 
 用 `List` + `LazyForEach` 渲染 `ChatStore.instance.messagesOf(currentChatKey)`；user 气泡右对齐、assistant 左对齐。
 
