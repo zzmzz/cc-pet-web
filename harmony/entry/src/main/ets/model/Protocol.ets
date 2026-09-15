@@ -15,9 +15,11 @@ export class WsEvents {
   static readonly BRIDGE_PREVIEW_DELETE: string = 'bridge:preview-delete';
   static readonly BRIDGE_CARD: string = 'bridge:card';
   static readonly BRIDGE_AUDIO: string = 'bridge:audio';
+  static readonly RESIDENT_UNREAD: string = 'resident:unread';
   static readonly SEND_MESSAGE: string = 'send-message';
   static readonly SEND_BUTTON: string = 'send-button';
   static readonly SEND_FILE: string = 'send-file';
+  static readonly MESSAGE_ACK: string = 'message-ack';
 }
 
 export type ChatRole = 'user' | 'assistant' | 'system';
@@ -29,6 +31,8 @@ export interface ChatMessage {
   timestamp: number;
   connectionId?: string;
   sessionKey?: string;
+  /** Server-assigned sequence number, present once acked. Drives history backfill. */
+  seq?: number;
 }
 
 export interface Session {
@@ -37,6 +41,10 @@ export interface Session {
   label?: string;
   createdAt: number;
   lastActiveAt: number;
+  /** True when this session is a config-declared resident session. */
+  isResident?: boolean;
+  /** Server-persisted unread count (resident sessions only). */
+  unreadCount?: number;
 }
 
 export type TaskPhase =
