@@ -30,12 +30,20 @@ function keyless(connectionId: string): NormalizedEvent {
  * The typing layer of `ConnectionGateway.routeIncoming`.
  *
  * Why this exists on top of `DispatchRouting.test.ets`: sticky alone cannot
- * fix the scenario this phase was opened for. Sticky is only ever WRITTEN by a
- * frame that named its own session (`'payload'` / `'reply_ctx'`), so in a turn
- * where the bridge never sends `session_key` at all — the exact case
- * `packages/server/src/index.ts` warns about with "Bridge content frame
- * carries no session_key" — sticky stays empty for the whole turn and routing
- * degrades to "whichever chat the user is looking at right now".
+ * fix the scenario this phase was opened for — not even after Task 6c gave
+ * `sendMessage` its own sticky write (`DispatchSendSticky.test.ets`), because
+ * sticky is ONE slot per connection: a second send or a second turn's keyed
+ * reply, on a different session, overwrites it while an earlier turn is
+ * still in flight. None of the tests below call `sendMessage`, so within
+ * THIS file sticky is written only by a frame that named its own session
+ * (`'payload'` / `'reply_ctx'`) — that is a fact about these fixtures, not a
+ * general property of sticky (see `ConnectionGateway.sendMessage`'s doc and
+ * the Task 6c report for where that general claim turned out to be false).
+ * In a turn where the bridge never sends `session_key` at all — the exact
+ * case `packages/server/src/index.ts` warns about with "Bridge content frame
+ * carries no session_key" — and no send or keyed frame from another turn
+ * has since moved the pin, sticky stays empty (or stale) for the whole turn
+ * and routing degrades to "whichever chat the user is looking at right now".
  *
  * What survives that turn is the memory of where the turn's `typing-start`
  * was delivered. `packages/web/src/App.tsx` keeps it in

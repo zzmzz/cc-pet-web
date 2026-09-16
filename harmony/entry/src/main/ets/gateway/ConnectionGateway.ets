@@ -319,6 +319,32 @@ export class ConnectionGateway {
     }, ACK_SWEEP_MS);
   }
 
+  /**
+   * Task 6c: web pins sticky from its outgoing sends too (`ChatWindow.tsx`
+   * L245/293/318, one per send path — plain text, staged attachment, inline
+   * base64 fallback), unconditionally and before/at the moment the frame
+   * goes out. This gateway had only ever pinned sticky from the inbound side
+   * (`routeIncoming`, on a payload/reply_ctx frame), which the Task 6b review
+   * traced back to a premise ("sticky is only ever written by a frame that
+   * already identified its own session") that is true of THIS client's
+   * history but was never true of web's. The gap it leaves: a bridge that
+   * streams a keyless reply and never sends `bridge:typing-start` routed
+   * correctly on web, because the user's own send had already pinned the
+   * session, and wrongly here, because nothing had.
+   *
+   * Written from `parts.sessionKey`, the session the text actually went
+   * into — not `SessionStore.currentChatKey`, which can already have moved
+   * on by the time this runs (there is no `await` between the tap and here,
+   * but a future attachment-upload path, mirroring web's staged-attachment
+   * send, would introduce exactly that gap; reading the argument instead of
+   * store state keeps this correct either way).
+   *
+   * Unconditional, matching web: `noteStickySession` itself short-circuits
+   * when the value is unchanged (see its doc), so this never needs its own
+   * guard, and gating it further (e.g. only-if-empty) would diverge from
+   * every one of web's three call sites, none of which checks the existing
+   * pin before writing.
+   */
   sendMessage(chatKey: string, text: string): string {
     const clientMsgId: string = util.generateRandomUUID(true);
     const parts: ChatKeyParts = splitChatKey(chatKey);
@@ -328,6 +354,7 @@ export class ConnectionGateway {
       id: clientMsgId, role: 'user', content: text, timestamp: now,
       connectionId: parts.connectionId, sessionKey: parts.sessionKey,
     });
+    SessionStore.connect().noteStickySession(parts.connectionId, parts.sessionKey);
 
     const policy: RetryPolicy = 'auto';
     this.outbox.enqueue(clientMsgId, chatKey, text, policy, now);
@@ -557,11 +584,21 @@ export class ConnectionGateway {
       // `const` that the sticky block never touches — the sticky block
       // narrows a *different* variable (`sessionIsGuess`). Reading it as an
       // `else` of the sticky block is the one mistake that makes this layer
-      // look redundant, and it is not: sticky is only ever WRITTEN by a frame
-      // that named its session, so on a turn where the bridge sends no
-      // `session_key` at all — the case `packages/server/src/index.ts` warns
-      // about — sticky is empty for the whole turn and this is the only thing
-      // left that remembers who asked.
+      // look redundant, and it is not: sticky is ONE slot per connection —
+      // Task 6c made `sendMessage` write it too (see that method's doc), so a
+      // bridge that never sends `session_key` no longer leaves it empty for
+      // the whole turn, but that same write means a second send, or a second
+      // turn's keyed reply, on a DIFFERENT session overwrites it while the
+      // first turn is still in flight. Typing is what still remembers the
+      // first turn's home in that overlap; sticky alone cannot, because it
+      // has nowhere to keep two answers.
+      //
+      // (Earlier drafts of this comment, and of the Task 6b/6c briefs, said
+      // "sticky is only ever written by a frame that already identified its
+      // own session" as if that were a general truth. It described this
+      // gateway's OWN write from `routeIncoming` accurately but was never
+      // true of `packages/web`, which pins sticky from three outgoing send
+      // sites too (`ChatWindow.tsx` L245/293/318) — see the Task 6c report.)
       const typing: string = this.typingSessionOf(connectionId);
       if (typing.length > 0) {
         sessionKey = typing;
