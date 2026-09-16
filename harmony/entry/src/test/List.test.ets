@@ -15,6 +15,7 @@ import markdownImageTest from './MarkdownImage.test';
 import sessionRoutingTest from './SessionRouting.test';
 import sessionStoreModelTest from './SessionStoreModel.test';
 import sessionMapsTest from './SessionMaps.test';
+import endpointsTest from './Endpoints.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -34,4 +35,5 @@ export default function testsuite() {
   sessionRoutingTest();
   sessionStoreModelTest();
   sessionMapsTest();
+  endpointsTest();
 }

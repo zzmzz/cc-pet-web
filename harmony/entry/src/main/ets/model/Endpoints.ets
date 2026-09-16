@@ -30,9 +30,32 @@ export class Endpoints {
   static readonly SESSION_READ: Endpoint = { method: 'POST', path: '/api/sessions/:connectionId/:key/read' };
 }
 
+/**
+ * Substitutes `:param` placeholders in a declared path, left to right.
+ *
+ * Every helper below builds its URL from its own `Endpoint` constant rather
+ * than repeating the path as a literal. Two reasons, both learned the hard
+ * way: the path is then declared exactly once, and — because the alignment
+ * guard in packages/server/tests/harmony-protocol-alignment.test.ts decides
+ * "does this endpoint have a caller?" by looking for `Endpoints.<NAME>` — a
+ * helper now proves which endpoint it serves instead of being matched to one
+ * by path prefix. That prefix matching was blind to the HTTP method and had
+ * started returning wrong answers: `sessionsUrl()` (GET /api/sessions) was
+ * being counted as a caller for SESSION_CREATE (POST /api/sessions), and a
+ * caller for SESSION_DELETE silently also cleared SESSION_READ because the
+ * two share a prefix.
+ */
+function fillPath(path: string, values: string[]): string {
+  let out: string = path;
+  for (const value of values) {
+    out = out.replace(/:[A-Za-z]+/, encodeURIComponent(value));
+  }
+  return out;
+}
+
 /** `/api/history/:chatKey` → `/api/history/c1%3A%3As1` */
 export function historyUrl(chatKey: string, afterSeq: number, limit: number): string {
-  const base: string = `/api/history/${encodeURIComponent(chatKey)}`;
+  const base: string = fillPath(Endpoints.HISTORY.path, [chatKey]);
   return afterSeq > 0 ? `${base}?afterSeq=${afterSeq}&limit=${limit}` : `${base}?limit=${limit}`;
 }
 
@@ -43,22 +66,22 @@ export function historyUrl(chatKey: string, afterSeq: number, limit: number): st
  * an empty list. `packages/web` calls it the same way, once per connection.
  */
 export function sessionsUrl(connectionId: string): string {
-  return `/api/sessions?connectionId=${encodeURIComponent(connectionId)}`;
+  return `${Endpoints.SESSIONS.path}?connectionId=${encodeURIComponent(connectionId)}`;
 }
 
 export function petImageUrl(state: string): string {
-  return `/api/pet-images/${encodeURIComponent(state)}`;
+  return fillPath(Endpoints.PET_IMAGE.path, [state]);
 }
 
 export function bridgeConnectUrl(bridgeId: string, connect: boolean): string {
-  const action: string = connect ? 'connect' : 'disconnect';
-  return `/api/bridges/${encodeURIComponent(bridgeId)}/${action}`;
+  const endpoint: Endpoint = connect ? Endpoints.BRIDGE_CONNECT : Endpoints.BRIDGE_DISCONNECT;
+  return fillPath(endpoint.path, [bridgeId]);
 }
 
 export function sessionDeleteUrl(connectionId: string, key: string): string {
-  return `/api/sessions/${encodeURIComponent(connectionId)}/${encodeURIComponent(key)}`;
+  return fillPath(Endpoints.SESSION_DELETE.path, [connectionId, key]);
 }
 
 export function sessionReadUrl(connectionId: string, key: string): string {
-  return `${sessionDeleteUrl(connectionId, key)}/read`;
+  return fillPath(Endpoints.SESSION_READ.path, [connectionId, key]);
 }

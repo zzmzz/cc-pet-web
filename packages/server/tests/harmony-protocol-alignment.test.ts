@@ -139,16 +139,12 @@ describe("harmony REST endpoint alignment", () => {
    * entry is deleted from here. It must never grow to cover an endpoint
    * that isn't actively mid-rollout like this.
    *
-   * SESSION_CREATE ('POST /api/sessions') is deliberately NOT listed here:
-   * the "uncalled" scan below matches by path *prefix* only, blind to HTTP
-   * method, and SESSION_CREATE's prefix ('/api/sessions') is identical to
-   * the pre-existing `Endpoints.SESSIONS` ('GET /api/sessions'), which
-   * `sessionsUrl()` already calls. So the scan already (incorrectly, from a
-   * strict reading) counts SESSION_CREATE as "called" today, ahead of any
-   * real Task 5 caller — see the Task 4 report for why this was left
-   * as-is rather than patched here.
+   * SESSION_CREATE is listed too, and its presence here is itself the proof
+   * that the caller scan got fixed: under the old path-prefix match it was
+   * silently counted as called by `sessionsUrl()`, which serves a different
+   * HTTP method on the same path. Task 5 wires all three.
    */
-  const PENDING_CALLER_ENDPOINTS = new Set(["SESSION_DELETE", "SESSION_READ"]);
+  const PENDING_CALLER_ENDPOINTS = new Set(["SESSION_CREATE", "SESSION_DELETE", "SESSION_READ"]);
 
   it("declares no endpoint the client never calls (except endpoints named in PENDING_CALLER_ENDPOINTS)", () => {
     const endpoints = declaredEndpoints();
@@ -160,9 +156,18 @@ describe("harmony REST endpoint alignment", () => {
       .filter((endpoint) => {
         // '/api/history/:chatKey' -> '/api/history/'; a path with no param
         // is its own prefix.
-        const colon = endpoint.path.indexOf(":");
-        const prefix = colon === -1 ? endpoint.path : endpoint.path.slice(0, colon);
-        const builders = helpers.filter((h) => h.body.includes(prefix)).map((h) => h.name);
+        // A helper belongs to an endpoint when its BODY NAMES that endpoint
+        // constant -- not when their paths happen to share a prefix. The old
+        // prefix match was blind to the HTTP method and had started returning
+        // wrong answers: `sessionsUrl()` (GET /api/sessions) counted as a
+        // caller for SESSION_CREATE (POST /api/sessions), and wiring a caller
+        // for SESSION_DELETE silently cleared SESSION_READ too, because the
+        // two share `/api/sessions/`. Every helper in Endpoints.ets now
+        // builds its URL from its own constant, which is what makes this
+        // exact.
+        const builders = helpers
+          .filter((h) => h.body.includes(`Endpoints.${endpoint.name}`))
+          .map((h) => h.name);
         const needles = [`Endpoints.${endpoint.name}`, ...builders.map((b) => `${b}(`)];
         return !sources.some(({ src }) => needles.some((needle) => src.includes(needle)));
       })
