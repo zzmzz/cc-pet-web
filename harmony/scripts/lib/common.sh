@@ -281,6 +281,21 @@ FIXTURE_BRIDGE_PORT=""
 
 start_fixture_stack() {
   local server_port="$1" bridge_port="$2" reply_delay_ms="${3:-150}"
+  # The readiness check at the bottom of this function only waits for the port
+  # to OPEN -- it cannot tell our server apart from a stale one left listening
+  # by an earlier run. A squatter passes that check and then rejects every
+  # token, which presents as "the login screen just sits there" and cost three
+  # probe runs to diagnose. Refusing to start is the only honest answer: the
+  # alternative is a probe that reports on someone else's process.
+  local squatter
+  for squatter in "$server_port" "$bridge_port"; do
+    if lsof -nP -iTCP:"$squatter" -sTCP:LISTEN >/dev/null 2>&1; then
+      fail "tcp:$squatter is already in use before the fixture stack starts --" \
+           " something (probably a fixture server from an earlier run that was not torn down)" \
+           " owns it. Run 'lsof -nP -iTCP:$squatter -sTCP:LISTEN' and kill it; do NOT assume the" \
+           " app is broken."
+    fi
+  done
   FIXTURE_SERVER_PORT="$server_port"
   FIXTURE_BRIDGE_PORT="$bridge_port"
   FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ccpet-probe.XXXXXX")"
@@ -316,6 +331,18 @@ wss.on('connection', (ws) => {
     }
     if (msg.type === 'message') {
       const text = String(msg.content ?? '');
+      // A `message` containing SENDFILE also gets a bridge `file` frame, so a
+      // probe can drive the one path nothing else in this stack reaches: the
+      // server persists it under /api/files/* and packages/web renders a
+      // download link for it. Gated on the magic word so every other probe's
+      // traffic is unaffected.
+      if (text.includes('SENDFILE')) {
+        ws.send(JSON.stringify({
+          type: 'file', session_key: msg.session_key,
+          name: 'probe-download.txt',
+          data: Buffer.from('hello from the probe bridge\n').toString('base64'),
+        }));
+      }
       setTimeout(() => {
         ws.send(JSON.stringify({ type: 'reply_stream', session_key: msg.session_key, reply_ctx: msg.reply_ctx, chunk: `probe-echo: ${text}` }));
         setTimeout(() => {
