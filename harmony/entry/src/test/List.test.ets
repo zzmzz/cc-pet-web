@@ -19,6 +19,7 @@ import endpointsTest from './Endpoints.test';
 import requestHeadersTest from './RequestHeaders.test';
 import routingEventSetTest from './RoutingEventSet.test';
 import dispatchRoutingTest from './DispatchRouting.test';
+import dispatchTypingRoutingTest from './DispatchTypingRouting.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -42,4 +43,5 @@ export default function testsuite() {
   requestHeadersTest();
   routingEventSetTest();
   dispatchRoutingTest();
+  dispatchTypingRoutingTest();
 }

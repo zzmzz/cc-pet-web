@@ -73,12 +73,47 @@ export class ConnectionGateway {
    * token or a stale in-flight set. `undefined` until the first `start()`.
    */
   private backfill: HistoryBackfill | undefined = undefined;
+  /**
+   * Which chats have a turn still in flight, as told by
+   * `bridge:typing-start` / `bridge:typing-stop` and by nothing else. Read
+   * only by `routeIncoming`, to answer "which session asked?" on a turn where
+   * no frame ever names one.
+   *
+   * A plain field, not a store, and that is not a loophole in the "no
+   * `@Trace` state in the gateway" rule: nothing renders this. The UI's
+   * notion of "is this chat busy" is `TaskStore`'s phase, which is written
+   * independently in `dispatch` below and is what `PetView`/`MessageList`
+   * observe. Putting this in an observable store would publish a value no
+   * component reads and invite a future component to read it, at which point
+   * the two notions of "typing" would have to stay in sync forever.
+   *
+   * And it is NOT `TaskStore`, which looks equivalent
+   * (`setPhase(chatKey, 'working')` is already written on typing-start) but
+   * is not, in two ways that both break routing:
+   *   1. `dispatch` also drives `TaskStore` to `'working'` from every
+   *      `bridge:stream-delta`. Web's `typingActiveByChatKey` is written by
+   *      the two typing events only. Reusing the phase would let a keyless
+   *      delta that was just mis-guessed into `c1::s2` mark `c1::s2` busy and
+   *      thereby confirm its own guess for every frame after it — the exact
+   *      failure mode sticky's read-only-on-guess discipline exists to avoid.
+   *   2. `TaskStore` is persistent `@Trace` state that outlives a logout;
+   *      web's map is a local of the `[authToken]` effect and dies with it.
+   *      Account A's in-flight turn must not steer account B's frames.
+   *
+   * Cleared in `start()`/`stop()` and nowhere else — in particular NOT on
+   * reconnect, matching web: `createWebAdapter`'s socket reconnects inside
+   * the adapter (`packages/web/src/lib/web-adapter.ts`), the App effect never
+   * re-runs, and the map survives. A turn that spans a dropped socket keeps
+   * its pin on both clients.
+   */
+  private typingByChatKey: Map<string, boolean> = new Map();
 
   start(baseUrl: string, token: string): void {
     this.baseUrl = baseUrl;
     this.token = token;
     this.stopped = false;
     this.attempt = 0;
+    this.typingByChatKey.clear();
     this.backfill = new HistoryBackfill(baseUrl, token, (): void => { this.logoutAndStop(); });
     this.observeNetwork();
     this.startAckSweep();
@@ -118,6 +153,7 @@ export class ConnectionGateway {
       this.netConn = undefined;
     }
     this.outbox.clear();
+    this.typingByChatKey.clear();
     this.backfill = undefined;
     ChatStore.connect().clearAll();
     SessionStore.connect().clearAll();
@@ -482,6 +518,10 @@ export class ConnectionGateway {
    * write the pin would let one mis-guessed frame drag the rest of the turn
    * after it, and the pin would no longer mean "where this turn came from".
    *
+   * Typing is the layer BELOW sticky (see the block itself): it is what keeps
+   * a turn pinned when no frame of that turn ever names a session, which is
+   * the only case sticky cannot cover at all.
+   *
    * Public, not private, purely as a test seam (same rationale as
    * `SessionStore.persistedSnapshot`): it is the one part of `dispatch` that
    * can be exercised without a socket, a notification manager or a clock, and
@@ -506,11 +546,49 @@ export class ConnectionGateway {
     if (decision.source === 'payload' || decision.source === 'reply_ctx') {
       sessions.noteStickySession(connectionId, sessionKey);
     } else {
+      let decidedBy: string = 'router';
       const sticky: string = sessions.stickySessionOf(connectionId);
       if (sticky.length > 0) {
         sessionKey = sticky;
+        decidedBy = 'sticky';
+      }
+      // Typing runs AFTER sticky and overrides it unconditionally. Web's
+      // `if` here (App.tsx L209-216) tests `guessedFromActiveSession`, a
+      // `const` that the sticky block never touches — the sticky block
+      // narrows a *different* variable (`sessionIsGuess`). Reading it as an
+      // `else` of the sticky block is the one mistake that makes this layer
+      // look redundant, and it is not: sticky is only ever WRITTEN by a frame
+      // that named its session, so on a turn where the bridge sends no
+      // `session_key` at all — the case `packages/server/src/index.ts` warns
+      // about — sticky is empty for the whole turn and this is the only thing
+      // left that remembers who asked.
+      const typing: string = this.typingSessionOf(connectionId);
+      if (typing.length > 0) {
+        sessionKey = typing;
+        decidedBy = 'typing';
+      }
+      if (sessionKey !== decision.sessionKey) {
+        // The server log records that the frame carried no `session_key` but
+        // not where it ended up; this is the other half, so a reported
+        // "reply went to the wrong chat" can be traced from logs without a
+        // live repro. Only the frames a pin actually MOVED are logged, not
+        // every guess web logs (App.tsx L188-198): after this task the
+        // interesting question is which layer won, and on a bridge that never
+        // sends `session_key` the every-guess form would log each delta.
+        // Placed after the typing layer, unlike web, which logs inside the
+        // sticky block and so prints a `resolvedSessionKey` that the typing
+        // layer may still overwrite — a breadcrumb naming a chat the frame
+        // did not go to is worse than none.
+        // Fields match web's payload (type/connectionId/routeSource/sticky/
+        // resolvedSessionKey): identifiers only, never token, URL or content.
+        hilog.warn(DOMAIN, TAG,
+          'keyless %{public}s on %{public}s: %{public}s -> %{public}s by %{public}s (sticky %{public}s)',
+          event.type, connectionId, decision.source, sessionKey, decidedBy,
+          sticky.length > 0 ? sticky : '-');
       }
     }
+
+    this.noteTyping(event.type, chatKeyOf(connectionId, sessionKey));
 
     if (sessionKey === event.sessionKey) {
       return event;
@@ -524,6 +602,64 @@ export class ConnectionGateway {
       // its raw fields (`content`, `msgId`, `seq`, `delta`) straight off it.
       frame: event.frame,
     };
+  }
+
+  /**
+   * The session on this connection whose turn is still in flight, or `''`.
+   *
+   * Insertion order, first match wins — `Object.entries` order is what web's
+   * `findTypingActiveSession` walks, and `Map` preserves the same thing
+   * (re-`set`ting an existing key does not move it, exactly like assigning to
+   * an existing object property). With two turns overlapping on one
+   * connection both clients therefore pick the one that started typing
+   * FIRST, which is not obviously the better answer — the newer turn is the
+   * likelier owner of a frame arriving now. Copied rather than improved:
+   * a client that quietly disagrees with web about where a reply belongs is
+   * worse than both being wrong identically, because nobody can see it. See
+   * the Task 6b report's note raising this as a web-side question.
+   *
+   * `substring`, not a rebuilt key: a session key may itself contain `::`,
+   * and the prefix is the only part we know the length of.
+   */
+  private typingSessionOf(connectionId: string): string {
+    const prefix: string = `${connectionId}::`;
+    for (const chatKey of this.typingByChatKey.keys()) {
+      if (this.typingByChatKey.get(chatKey) === true && chatKey.startsWith(prefix)) {
+        return chatKey.substring(prefix.length);
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Records a turn as started/finished, keyed by where the typing frame
+   * actually LANDED rather than by what it claimed — typing frames are
+   * routed like every other frame, so a keyless typing-start on a pinned
+   * connection belongs to the pinned session.
+   *
+   * Lives here rather than in `dispatch`'s typing branches (where web puts
+   * it, inside the switch) so that the whole typing lifecycle — write and
+   * read — is one reviewable block, and so `routeIncoming` stays the single
+   * seam `DispatchTypingRouting.test.ets` drives. Observationally identical:
+   * nothing between routing and the switch touches the map.
+   *
+   * A stop for a chat that is not typing writes nothing, mirroring web's
+   * early `break` (App.tsx L446-449). That matters for more than tidiness:
+   * inserting a `false` entry would give that chatKey an insertion-order
+   * slot it has not earned, ahead of chats already typing, and a later
+   * typing-start on it would inherit that slot.
+   */
+  private noteTyping(type: string, chatKey: string): void {
+    if (chatKey.length === 0) {
+      return;
+    }
+    if (type === WsEvents.BRIDGE_TYPING_START) {
+      this.typingByChatKey.set(chatKey, true);
+      return;
+    }
+    if (type === WsEvents.BRIDGE_TYPING_STOP && this.typingByChatKey.get(chatKey) === true) {
+      this.typingByChatKey.set(chatKey, false);
+    }
   }
 
   private dispatch(incoming: NormalizedEvent): void {
