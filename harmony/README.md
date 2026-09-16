@@ -1,9 +1,29 @@
 # cc-pet HarmonyOS client
 
-Native ArkTS/ArkUI client for cc-pet, targeting API 26 (HarmonyOS NEXT). This project talks
-to the existing cc-pet server over its existing WebSocket bridge protocol —
-**the server is not modified for this client** (see `entry/src/main/ets/model/Protocol.ets`
-for the shared message shapes).
+HarmonyOS client for cc-pet, targeting API 26 (HarmonyOS NEXT).
+**The server is not modified for this client**, at any point, for any reason.
+
+## What this app is now: a WebView shell
+
+The app is a shell around the existing `packages/web` React app, which
+`packages/server` already serves at `/` (`packages/server/src/index.ts:138`). The entry
+point is `entry/src/main/ets/pages/Shell.ets`: one `Web` component plus the handful of
+things a web page physically cannot do for itself. See
+`docs/superpowers/specs/2026-09-16-harmony-webview-shell-design.md`.
+
+The earlier native ArkTS port (`entry/src/main/ets/components|store|gateway|logic|model`,
+227 unit tests) **is still in the tree and still compiles and tests**, but nothing routes to
+it: `EntryAbility` loads `pages/Shell`, and `pages/Index` is now unreachable. It is kept for
+reference in case a hybrid approach is ever wanted. Do not treat it as live code, and do not
+"fix" the shell by copying from it — every capability the shell duplicates is a place the
+two implementations can drift, and removing drift is the only reason the shell exists.
+
+The shell owns exactly: the server-address screen, the back key, the file picker, downloads,
+and a load-failure screen. Everything else — login, sessions, messages, the WebSocket,
+notifications-in-page — belongs to `packages/web`.
+
+**No background notifications.** The app suspends when backgrounded and the page's WebSocket
+drops with it. That was accepted when this direction was chosen.
 
 ## Toolchain
 
@@ -111,15 +131,15 @@ placeholder certificate paths that don't exist on your machine.
   eval "$HVIGORW test -p module=entry@default -p product=default --no-daemon"
   ```
   Verified output ends with `BUILD SUCCESSFUL`, and
-  `entry/.test/default/intermediates/test/coverage_data/test_result.txt` contains:
+  `entry/.test/default/intermediates/test/coverage_data/test_result.txt` ends with:
   ```
-  class=localUnitTest
-  test=hypium_is_wired
-  result=Success
-  Tests run: 1, Failure: 0, Error: 0, Pass: 1, Ignore: 0
+  Tests run: 237, Failure: 0, Error: 0, Pass: 237, Ignore: 0
   ```
-  All downstream tasks should add their `describe`/`it` blocks to `entry/src/test/` (wired
-  into `List.test.ets`) and verify with this same command.
+  227 of those cover the native port; the shell adds 10, all of them for
+  `ets/shell/normalizeBaseUrl.ets`. That is the shell's entire unit-testable surface — every
+  other file in `ets/shell` touches preferences, the network, or an `@Entry` struct, none of
+  which `hvigorw test` can reach. Add `describe`/`it` blocks to `entry/src/test/` (wired into
+  `List.test.ets`) and verify with this same command.
 
 - 构建 HAP（需先配置签名，见下）：
   ```bash
@@ -162,18 +182,59 @@ that it compiles and unit-tests pass. Each one prints an explicit `PASS: [...]` 
 `FAIL: [...]` line and exits non-zero on failure — never rely on the exit code alone, and
 never assume silence means success.
 
+### The one probe that applies to the shell
+
 ```bash
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 cd harmony
-bash scripts/device-login-probe.sh
-bash scripts/device-chat-probe.sh
-bash scripts/device-reconnect-probe.sh
-bash scripts/device-notification-probe.sh
-bash scripts/device-relogin-probe.sh
-bash scripts/device-slash-palette-probe.sh
-bash scripts/device-session-panel-probe.sh
-bash scripts/device-session-switch-probe.sh
+bash scripts/device-shell-probe.sh
 ```
+
+`device-shell-probe.sh` wipes the target's app data, launches the shell, types a server
+address into the shell's **native** setup screen, then — inside the WebView — logs in with
+the fixture token and round-trips a message, asserting the transcript shows both the sent
+text and the bridge fixture's reply. Two consecutive green runs on the emulator.
+
+**This probe was expected to be impossible.** §8 of the design doc, following the
+feasibility spike, said WebView content is invisible to `uitest` (the layout dump has zero
+text nodes) and that coordinate taps cannot focus a web `<input>`. Measured against this
+shell on the emulator, **both claims are false**:
+
+- `uitest dumpLayout` returns a full accessibility tree for the page — `rootWebArea`,
+  `heading`, `paragraph`, `textField`, `button`, each with `text`/`hint` and real `bounds`.
+- `uitest uiInput click` on a web `<input>`'s bounds focuses it and raises the soft keyboard.
+- `uitest uiInput text` commits into the focused web field verbatim.
+
+Two gotchas that cost real time and are now encoded in the probe:
+
+- **Use `ui_query_exact`, not `ui_query`, against web content.** ArkWeb exposes an entire
+  paragraph as one node's `text`. This login screen's body copy is
+  `认证通过后才可进入会话界面。`, which *contains* `进入` — the button's label. A substring
+  query returns the paragraph's bounds and the probe taps the middle of a sentence forever
+  while the button sits 360px lower, which looks exactly like a timing bug. Three failed
+  runs went into that.
+- **Let the IME attach before typing into a web field.** `ui_type_at` clicks and types back
+  to back, which is fine for a native `TextInput` but drops characters into an ArkWeb
+  `<input>`; the probe's local `web_type_at` sleeps 1s between the two.
+
+One more trap, not shell-specific: `start_fixture_stack` only waits for the port to *open*,
+not for the listener to be the server it just started. A stale server left over from an
+earlier run answering on the same port will pass that check and then reject every token,
+which presents as "the login screen just sits there". Check `lsof -nP -iTCP:19411 -sTCP:LISTEN`
+before believing the app is at fault.
+
+### The eight native-port probes are dead under this architecture
+
+`device-login-probe.sh`, `device-chat-probe.sh`, `device-reconnect-probe.sh`,
+`device-notification-probe.sh`, `device-relogin-probe.sh`, `device-slash-palette-probe.sh`,
+`device-session-panel-probe.sh` and `device-session-switch-probe.sh` all drive `pages/Index`
+and the native components under it. Nothing routes to that page any more, so **they will
+fail against the shipped app** — not because the app is broken, but because the UI they
+assert on is no longer on screen. They are kept, unchanged, alongside the native code they
+test. Do not run them expecting green, and do not "fix" them by pointing them at the
+WebView; `device-shell-probe.sh` is the shell's probe.
+
+Their descriptions below are retained for whoever revisits the native port:
 
 - `device-login-probe.sh` — launches the app and asserts it reaches either the login gate or
   a logged-in chat screen; if it's at the login gate, drives a real login through it.
@@ -210,7 +271,7 @@ bash scripts/device-session-switch-probe.sh
   cannot still be in memory, and only the restored session is backfilled. Saves a
   screenshot (`CCPET_PROBE_SHOT` to choose where). COMPACT shell only, same caveat as above.
 
-All eight target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
+All of them (the shell probe included) target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
 this project has been verified against the emulator since Task 10, not a physical phone, and
 these probes follow that same convention. Set `CCPET_DEVICE_TARGET` to point at a real device
 instead if you need to, but nothing here assumes one is attached, and by default nothing
@@ -252,6 +313,99 @@ unit-tested but have never been exercised on-device — the wider-format emulato
 alive, never reachable; see the Task 16 report for what was ruled out). None of these probes
 claim otherwise, and neither should anything you add here.
 
+## What ArkWeb actually does with `packages/web` (measured, emulator, API 26)
+
+§7 of the design doc listed six things that had to be measured rather than assumed. Five were
+measured; one could not be. Screenshots for every line below are in
+`.superpowers/sdd/2026-09-16-harmony-webview-shell/screenshots/` (gitignored — they are
+evidence for the report, not artifacts of the build).
+
+1. **`env(safe-area-inset-*)` — irrelevant here, because ArkUI never lets the page into the
+   unsafe area.** The `Web` component's own bounds on this device are `[0,137][1256,2662]` on
+   a `1256×2760` screen: ArkUI has already inset it below the status bar (137px) and above the
+   gesture bar (98px). Inside the page the insets evaluate to ~0 — `packages/web`'s header is
+   `pt-[max(0.5rem,env(safe-area-inset-top))]` and measures 8 CSS px of top padding, i.e. the
+   `0.5rem` branch won. Nothing is occluded and nothing is double-padded. This holds only as
+   long as the shell does not call `expandSafeArea()` on the `Web`; if you ever do, the page
+   will need real insets and there is no evidence ArkWeb supplies them.
+2. **The soft keyboard does not occlude anything.** ArkWeb's default
+   `WebKeyboardAvoidMode.RESIZE_CONTENT` shrinks the component to `[0,137][1256,1661]` when the
+   IME opens, so the composer, the 文件 button and 发送 all stay fully visible above the
+   keyboard. Verified on both the web login field and the chat composer.
+3. **Scrolling works; painting does not always keep up.** Fling and inertia are fine, and the
+   web app's own scroll logic works inside ArkWeb (its 回到最新 pill appears and behaves).
+   **But after scrolling, the right-aligned user message bubbles frequently fail to repaint
+   their background**: `bg-indigo-500` collapses to a thin bar at the bubble's bottom edge and
+   the `text-white` label is left on a near-white page, effectively unreadable. It persists
+   (still wrong 5s later, and through further slow scrolling) and only clears on a full
+   relayout — opening the keyboard repaints them correctly. Assistant bubbles and the file
+   attachment bubble are never affected. Not fixable from the shell: setting
+   `renderMode: RenderMode.SYNC_RENDER` was tried and changed nothing (reverted). Whether
+   this is ArkWeb or the emulator's software renderer cannot be told apart without a physical
+   device, which this project does not use.
+4. **`<input type="file">` works end to end.** `onShowFileSelector` → `DocumentViewPicker` →
+   `handleFileList` puts a real `File` in the page: the system picker opens, the chosen file
+   shows up as `📎 pickme.txt` in the composer, and sending it round-trips through the real
+   server and the bridge fixture. Note the attachment travels over the WebSocket, not a REST
+   upload — no `/api/files` request appears in the server log.
+5. **The spike's mystery 404s are all benign and none are the shell's.** Full list from a
+   logged-in session against the fixture stack: `/favicon.ico` (the WebView asks for `.ico`;
+   `packages/web/dist` only ships `favicon.png`), `/api/pet-images/happy`,
+   `/api/pet-images/idle` (no custom pet images configured in the throwaway data dir — the
+   page falls back to its bundled `/assets/*.png`, which return 200), and
+   `/api/workspaces/<bridge>` (the fixture bridge implements no workspaces). The shell logs
+   every one of them to hilog via `onHttpErrorReceive` — that logging is the only window into
+   the page's network activity and should be kept.
+6. **Foldable reflow: NOT TESTED.** Unchanged from the native port's Task 16 finding — the
+   wider-format emulator instances will not come up as `hdc` targets on this machine, and
+   this project does not use a physical device. Nobody has seen this app reflow.
+
+Three further things measured while doing the above, all of which change how the app behaves
+from what the design assumed:
+
+- **`GET /api/health` is NOT unauthenticated.** §4 of the design says to validate a typed
+  server address with it. `packages/server/src/index.ts:155` installs `authGuard` as a global
+  `onRequest` hook, which runs for every route regardless of registration order, and its
+  exempt list (`packages/server/src/middleware/auth.ts:23`) is exactly `/`, `/favicon.ico`,
+  `/assets/*` and `/api/auth/verify`. `curl http://<server>/api/health` returns
+  `401 {"error":"Unauthorized"}`. Worse, that guard locks a client IP out with HTTP 429 for
+  five minutes after five failures in a minute — a shell that pinged `/api/health` on every
+  "连接" tap would lock the user out of their own server after five typos. The shell therefore
+  validates with `GET /` (exempt, and the exact URL it is about to load) and checks the body
+  for the web app's `<title>`, `CC Pet`. See `ets/shell/probeServer.ets`.
+- **The back key always exits.** `packages/web` has no router and never pushes a history
+  entry (`grep -r "pushState\|react-router" packages/web/src` — nothing), so
+  `controller.accessBackward()` is always false and §5's "go back if you can, otherwise hand
+  it to the system" always takes the second branch. The handling is implemented and correct;
+  it is simply inert against the current web app. If `packages/web` ever gains routing it will
+  start working with no shell change.
+- **The load-failure screen is hard to reach, because the page is a PWA.** `packages/web`
+  registers a service worker (`/sw.js`, workbox). With the app already configured and the
+  server killed, a relaunch still rendered the cached app shell rather than any network
+  error, so the shell's error page never appeared. It only appears on a genuinely uncached
+  main-frame failure (first run, or after cache eviction) — verified by pointing the shell at
+  a throwaway server that answers the validation probe and then 503s, which produced the
+  native error page with 重试 and 更换服务器.
+
+## Manual device checklist (no automation covers these)
+
+`device-shell-probe.sh` covers cold start → address → login → send/receive. The rest of §9's
+acceptance list is human-eye work. Run it on the emulator after any change to `ets/shell` or
+`pages/Shell.ets`:
+
+1. Force-stop and relaunch a configured app: it should go straight to the chat, with neither
+   the address screen nor the web login. (Address lives in `preferences`, token in the page's
+   `localStorage`; the shell never sees the token.)
+2. Press back on the chat screen: the app exits. That is correct — see the back-key note
+   above — but confirm it is an exit and not a crash.
+3. Tap 文件, pick a file, send it: the chip appears in the composer and the message lands in
+   the transcript.
+4. Scroll a long transcript up and down and look at the user bubbles. The repaint defect in
+   item 3 above is the thing to watch for regressions against.
+5. From the error page (only reachable per the PWA note above), 更换服务器 → the address is
+   prefilled and a 取消 button appears; entering a different valid address reloads the page
+   there, and the new address survives a restart.
+
 ## Constraints
 
 - **服务端零改动 (zero server changes).** This client only consumes the existing WebSocket
@@ -260,13 +414,20 @@ claim otherwise, and neither should anything you add here.
   probes above start a real, unmodified `packages/server` process against a scratch data
   directory for exactly this reason, rather than special-casing anything inside `packages/`
   for HarmonyOS.
+The two bullets below are about the **native port**, which is no longer the entry point.
+They are kept because the code they describe is still in the tree, and because the
+permission rule in the first one still binds the HAP the shell ships in.
+
 - `entry/src/main/module.json5` declares exactly two permissions: `ohos.permission.INTERNET`
   and `ohos.permission.GET_NETWORK_INFO`, both added by Task 10. **There is no notification
   permission.** An earlier version of this line said one was "added by Task 14" — Ruling 26
   removed it entirely, because `ohos.permission.NOTIFICATION_CONTROLLER` is `system_core` and
   declaring it makes the HAP refuse to install. Local notifications still work:
   `NotificationGateway` asks for the runtime *enable* via `notificationManager.requestEnableNotification`,
-  which needs no declared permission.
+  which needs no declared permission. The shell does not use `NotificationGateway` at all —
+  it has no socket to be notified from — so under the current entry point the app requests no
+  runtime permission either, and the file picker works without one because
+  `DocumentViewPicker` grants per-file access on selection.
 
 - **图片接收与预览不在首版范围内.** There is no `bridge:file-received` handling and no
   `/api/files/:fileId` call; the spec's §2 previously listed image receive/preview as shipped
