@@ -12,6 +12,7 @@ import sessionRowTest from './SessionRow.test';
 import mergeHistoryTest from './MergeHistory.test';
 import splitChatKeyTest from './SplitChatKey.test';
 import markdownImageTest from './MarkdownImage.test';
+import sessionRoutingTest from './SessionRouting.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -28,4 +29,5 @@ export default function testsuite() {
   mergeHistoryTest();
   splitChatKeyTest();
   markdownImageTest();
+  sessionRoutingTest();
 }
