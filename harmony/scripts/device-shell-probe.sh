@@ -48,6 +48,17 @@ web_type_at() {
   hdc_ shell uitest uiInput text "$text" >/dev/null
 }
 
+# `uitest uiInput click` focuses a web <input> and raises the IME, but was
+# measured NOT to fire click handlers on web <button>s in this ArkWeb build --
+# repeated taps on 进入 / 发送 at their dumped centres did nothing, and nothing
+# reached the fixture server. A touch with a real hold (down, 80ms, up) fires
+# them every time. Used for every target inside the WebView; native ArkUI
+# controls are fine with either.
+web_tap() {
+  local x="${1%% *}" y="${1##* }"
+  hdc_ shell uinput -T -d "$x" "$y" -i 80 -u "$x" "$y" >/dev/null 2>&1
+}
+
 require_hdc_and_target
 ensure_screen_awake_and_unlocked "$LAYOUT"
 
@@ -74,9 +85,12 @@ fi
 dump_layout "$LAYOUT"
 xy="$(ui_query "$LAYOUT" hint 'https://your-server')"
 ui_type_at "$xy" "http://127.0.0.1:$SERVER_PORT"
-# Dismiss the IME first: it shrinks the page and moves the button, and the
-# bounds we are about to read must be the ones the tap will land on.
-hdc_ shell uitest uiInput keyEvent Back >/dev/null
+# NO `keyEvent Back` here, though there used to be, to dismiss the IME.
+# `uitest uiInput text` leaves the IME already closed on this emulator, so Back
+# reaches the shell instead, and §5's back handling (nothing to go back to,
+# hand it to the system) EXITS THE APP. The next dump then finds the launcher
+# and reports "连接 button not found", which reads like a UI bug and is not
+# one. The 连接 button is fully visible either way, so nothing needs dismissing.
 dump_layout "$LAYOUT"
 xy="$(ui_query_exact "$LAYOUT" text '连接')" || fail "连接 button not found on the server-address screen"
 ui_tap "$xy"
@@ -87,8 +101,11 @@ web_login_visible() {
   dump_layout_soft "$LAYOUT" || return 1
   ui_query "$LAYOUT" hint '请输入 token' >/dev/null 2>&1
 }
-if ! wait_until 30 1 web_login_visible; then
-  fail "the web app's token screen never appeared inside the WebView within 30s" \
+# 90s, not 30: on a cold-booted emulator ArkWeb's first paint of this page took
+# ~20s, and one run tripped the system's own THREAD_BLOCK_6S watchdog getting
+# there. 30s described a warm emulator, not the app.
+if ! wait_until 90 1 web_login_visible; then
+  fail "the web app's token screen never appeared inside the WebView within 90s" \
        " -- the page either did not load or did not render"
 fi
 dump_layout "$LAYOUT"
@@ -103,13 +120,13 @@ web_type_at "$xy" "$FIXTURE_TOKEN"
 # lower. Cost: three failed probe runs that looked like a timing problem.
 dump_layout "$LAYOUT"
 xy="$(ui_query_exact "$LAYOUT" text '进入')" || fail "进入 button not found on the web login screen"
-ui_tap "$xy"
+web_tap "$xy"
 
 chat_visible() {
   dump_layout_soft "$LAYOUT" || return 1
   ui_query "$LAYOUT" hint '输入消息' >/dev/null 2>&1
 }
-if ! wait_until 30 1 chat_visible; then
+if ! wait_until 90 1 chat_visible; then
   fail "the web chat screen never appeared after submitting the fixture token"
 fi
 
@@ -122,7 +139,7 @@ dump_layout "$LAYOUT"
 # '输入消息，Enter 发送，Shift+Enter 换行', so '发送' is a substring of a hint
 # and of the send button's label both.
 xy="$(ui_query_exact "$LAYOUT" text '发送')" || fail "发送 button not found after typing a message"
-ui_tap "$xy"
+web_tap "$xy"
 
 round_trip_visible() {
   dump_layout_soft "$LAYOUT" || return 1
