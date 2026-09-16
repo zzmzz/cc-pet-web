@@ -172,6 +172,13 @@ export class SessionStore {
    *
    * `bridges` is already a field of this store, so no caller has to thread
    * the manifest in to get the fallback.
+   *
+   * One caller deliberately does not come here: the session ROWS in
+   * `SessionSidebar`/`SessionSheet` (`SessionRow.rowLabel`). Fallback 2 is
+   * what makes that right for a notification title or the top bar and wrong
+   * for a list of one connection's sessions — every unlabelled row would read
+   * the same bridge name. Fallback 1, the only one that can name an
+   * individual session, reads the same `Session.label` field either way.
    */
   labelOf(chatKey: string): string {
     const session: Session | undefined = this.sessions.get(chatKey);
@@ -454,7 +461,7 @@ export class SessionStore {
   }
 
   /**
-   * Kept because most existing callers (`SessionRow.selectBridge`,
+   * Kept because most existing callers (`SessionRow.selectSession`,
    * `Index.defaultToFirstBridgeIfNoneSelected`) hold a chatKey, not a pair.
    * It is a thin adapter onto the same two writes `setActiveConnection` +
    * `setActiveSession` perform, so both entry points land in one place —

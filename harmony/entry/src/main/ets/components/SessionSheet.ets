@@ -1,14 +1,34 @@
 import { SessionStore } from '../store/SessionStore';
 import { BridgeInfo } from '../logic/normalizeEvent';
-import { chatKeyForBridge, labelForBridge, isCurrentBridge, unreadForBridge, selectBridge } from './SessionRow';
+import { Session } from '../model/Protocol';
+import {
+  chatKeyForSession, rowLabel, isCurrentSession, unreadForSession, selectSession,
+  isActiveConnection, unreadForConnection, selectConnection,
+  nonResidentSessions, activeSessionOf, visibleSessions, hiddenSessionCount,
+  openResidentSession, createAndSelectSession, applyDeleteTap,
+} from './SessionRow';
+
+const TEXT_COLOR: string = '#1F2328';
+const ACCENT_COLOR: string = '#0A59F7';
+const MUTED_COLOR: string = '#8A8F98';
+const DANGER_COLOR: string = '#E03131';
+const SELECTED_COLOR: string = '#F1F3F5';
 
 /**
  * Bottom half-modal session switcher for COMPACT windows — thumb-reachable,
  * mounted via `.bindSheet()` on the shell in `Index.ets`. Renders the exact
- * same `SessionStore` data (`bridges`, `currentChatKey`, `unreadOf`) as
- * `SessionSidebar`; only the shell differs. Row logic itself (key/label/
- * current/unread/select) is shared with `SessionSidebar` via
- * `SessionRow.ets` so the two shells can't silently drift apart.
+ * same `SessionStore` data as `SessionSidebar`, through the same
+ * `SessionRow.ets` helpers, in the same top-to-bottom order web's
+ * `SessionDropdown` uses (resident → connections → current session → recent
+ * sessions → new session); only the shell differs — this one is a modal that
+ * closes itself after a pick, and it is sized for a thumb rather than a
+ * pointer.
+ *
+ * Every rule about WHICH rows exist and WHAT a tap does lives in
+ * `SessionRow.ets`, shared with `SessionSidebar`: the first release let the
+ * two shells answer those questions separately and they drifted apart, which
+ * is why that file exists at all. What stays here is layout and the panel's
+ * own two pieces of UI state (`showAll`, `confirmDeleteKey`).
  */
 @ComponentV2
 export struct SessionSheet {
@@ -21,26 +41,129 @@ export struct SessionSheet {
    */
   @Param onSelect: () => void = (): void => {};
   @Local private session: SessionStore = SessionStore.connect();
+  /** Expands「最近会话」past `RECENT_VISIBLE`; collapses again on any switch. */
+  @Local private showAll: boolean = false;
+  /**
+   * The session key whose delete control is armed — `''` for none. Two-tap
+   * delete: the first tap arms, a second tap on the SAME row deletes (the
+   * rule itself is `SessionRow.applyDeleteTap`).
+   *
+   * It must go back to `''` whenever the row it refers to could stop being
+   * the row under the user's finger: switching session, switching
+   * connection, creating a session, and closing this sheet. Miss one and a
+   * stray second tap deletes a session the user never armed.
+   */
+  @Local private confirmDeleteKey: string = '';
 
-  private chatKeyFor(bridge: BridgeInfo): string {
-    return chatKeyForBridge(bridge);
+  /**
+   * The sheet is re-mounted by `.bindSheet()` every time it opens, but this
+   * does not lean on that: re-arming state is cleared here so that "close the
+   * panel disarms it" holds whether or not the struct survived the close.
+   */
+  aboutToAppear(): void {
+    this.resetPanelState();
   }
 
-  private labelFor(bridge: BridgeInfo): string {
-    return labelForBridge(this.session, bridge);
+  private resetPanelState(): void {
+    this.confirmDeleteKey = '';
+    this.showAll = false;
   }
 
-  private isCurrent(bridge: BridgeInfo): boolean {
-    return isCurrentBridge(this.session, bridge);
+  // -------------------------------------------------------------------
+  // Data accessors. Each one reads `@Trace` store state (or `@Local` panel
+  // state) and is called from `build()`, which is what registers this
+  // component as a render-dependency observer — no `@Monitor`, no polling.
+  // They stay one-line forwards to `SessionRow.ets`; the rules they forward
+  // to are shared with `SessionSidebar`.
+  // -------------------------------------------------------------------
+
+  private connectionId(): string {
+    return this.session.activeConnectionId();
   }
 
-  private unreadFor(bridge: BridgeInfo): number {
-    return unreadForBridge(this.session, bridge);
+  private activeKey(): string {
+    return this.session.activeSessionKeyOf(this.connectionId());
   }
 
-  private select(bridge: BridgeInfo): void {
-    selectBridge(this.session, bridge);
+  private allSessions(): Session[] {
+    return this.session.sessionsOf(this.connectionId());
+  }
+
+  private listSessions(): Session[] {
+    return nonResidentSessions(this.allSessions());
+  }
+
+  private recentSessions(): Session[] {
+    return visibleSessions(this.allSessions(), this.activeKey(), this.showAll);
+  }
+
+  private inactiveCount(): number {
+    return visibleSessions(this.allSessions(), this.activeKey(), true).length;
+  }
+
+  private hiddenCount(): number {
+    return hiddenSessionCount(this.allSessions(), this.activeKey());
+  }
+
+  /**
+   * 0-or-1 element lists, fed to `ForEach`: `build()` cannot declare the
+   * local variable a `Session | undefined` check would need (ArkUI forbids
+   * statements before/inside the UI expression), so "render this row only if
+   * it exists" is expressed as iterating an empty or single-element list.
+   */
+  private residentList(): Session[] {
+    const resident: Session | undefined = this.session.residentSession();
+    return resident === undefined ? [] : [resident];
+  }
+
+  private activeList(): Session[] {
+    const active: Session | undefined = activeSessionOf(this.allSessions(), this.activeKey());
+    return active === undefined ? [] : [active];
+  }
+
+  // -------------------------------------------------------------------
+  // Tap handlers.
+  // -------------------------------------------------------------------
+
+  private select(session: Session): void {
+    selectSession(this.session, session);
+    this.resetPanelState();
     this.onSelect();
+  }
+
+  private openResident(resident: Session): void {
+    openResidentSession(this.session, resident);
+    this.resetPanelState();
+    this.onSelect();
+  }
+
+  /** Web closes its dropdown on a connection switch too — the user lands on
+   * whatever session that connection was left on, so there is nothing left
+   * to pick here. */
+  private switchConnection(bridge: BridgeInfo): void {
+    if (isActiveConnection(this.session, bridge)) {
+      return;
+    }
+    selectConnection(this.session, bridge);
+    this.resetPanelState();
+    this.onSelect();
+  }
+
+  private onDeleteTap(sessionKey: string): void {
+    this.confirmDeleteKey =
+      applyDeleteTap(this.session, this.connectionId(), sessionKey, this.confirmDeleteKey);
+  }
+
+  /** Closes only if the session was really created — a failed POST leaves the
+   * panel open (and has already toasted), exactly like web's `createSession`,
+   * which returns before its `setOpen(false)` on error. */
+  private create(): void {
+    this.resetPanelState();
+    createAndSelectSession(this.session, this.connectionId()).then((created: boolean): void => {
+      if (created) {
+        this.onSelect();
+      }
+    });
   }
 
   build() {
@@ -49,41 +172,218 @@ export struct SessionSheet {
         .fontSize(16)
         .fontWeight(FontWeight.Medium)
         .width('100%')
-        .padding({ left: 16, right: 16, top: 4, bottom: 12 })
-      List({ space: 2 }) {
-        ForEach(this.session.bridges, (bridge: BridgeInfo) => {
-          ListItem() { this.renderRow(bridge) }
-        }, (bridge: BridgeInfo) => bridge.id)
+        .padding({ left: 16, right: 16, top: 4, bottom: 8 })
+      Scroll() {
+        Column({ space: 0 }) {
+          if (this.residentList().length > 0) {
+            this.SectionTitle('常驻')
+            ForEach(this.residentList(), (resident: Session) => {
+              this.ResidentRow(resident)
+            }, (resident: Session) => chatKeyForSession(resident))
+            Divider().color('#E5E8EB').margin({ left: 16, right: 16, top: 4, bottom: 4 })
+          }
+          if (this.session.bridges.length > 1) {
+            this.SectionTitle('连接')
+            ForEach(this.session.bridges, (bridge: BridgeInfo) => {
+              this.ConnectionRow(bridge)
+            }, (bridge: BridgeInfo) => bridge.id)
+            Divider().color('#E5E8EB').margin({ left: 16, right: 16, top: 4, bottom: 4 })
+          }
+          if (this.listSessions().length > 0) {
+            if (this.activeList().length > 0) {
+              this.SectionTitle('当前会话')
+              ForEach(this.activeList(), (active: Session) => {
+                this.ActiveRow(active)
+              }, (active: Session) => chatKeyForSession(active))
+            }
+            if (this.inactiveCount() > 0) {
+              this.SectionTitle('最近会话')
+              ForEach(this.recentSessions(), (session: Session) => {
+                this.RecentRow(session)
+              }, (session: Session) => chatKeyForSession(session))
+              if (this.hiddenCount() > 0) {
+                this.MoreToggle()
+              }
+            }
+          }
+          if (this.connectionId().length > 0) {
+            Divider().color('#E5E8EB').margin({ left: 16, right: 16, top: 4, bottom: 4 })
+            this.CreateRow()
+          }
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
       }
       .width('100%')
       .layoutWeight(1)
+      .align(Alignment.Top)
     }
     .width('100%')
     .height('100%')
   }
 
   @Builder
-  renderRow(bridge: BridgeInfo) {
+  SectionTitle(text: string) {
+    Text(text)
+      .fontSize(12)
+      .fontColor(MUTED_COLOR)
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 8, bottom: 4 })
+  }
+
+  /**
+   * The resident session, pinned above everything and reachable from any
+   * connection — tapping it can switch connection as well as session (see
+   * `SessionRow.openResidentSession`). It gets no delete control: the server
+   * refuses with 403, and offering a control that can only fail is worse than
+   * not offering it.
+   */
+  @Builder
+  ResidentRow(resident: Session) {
     Row({ space: 8 }) {
-      Text(this.labelFor(bridge))
+      Text(rowLabel(resident))
         .fontSize(16)
-        .fontColor(this.isCurrent(bridge) ? '#0A59F7' : '#1F2328')
-        .fontWeight(this.isCurrent(bridge) ? FontWeight.Medium : FontWeight.Normal)
+        .fontColor(isCurrentSession(this.session, resident) ? ACCENT_COLOR : TEXT_COLOR)
+        .fontWeight(isCurrentSession(this.session, resident) ? FontWeight.Medium : FontWeight.Normal)
         .layoutWeight(1)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
-      if (this.unreadFor(bridge) > 0) {
-        Text(this.unreadFor(bridge) > 99 ? '99+' : String(this.unreadFor(bridge)))
+      if (unreadForSession(this.session, resident) > 0) {
+        Text(unreadForSession(this.session, resident) > 99 ? '99+' : String(unreadForSession(this.session, resident)))
           .fontSize(12)
           .fontColor(Color.White)
-          .backgroundColor('#E03131')
+          .backgroundColor(DANGER_COLOR)
           .borderRadius(10)
           .padding({ left: 7, right: 7, top: 2, bottom: 2 })
       }
     }
     .width('100%')
     .padding({ left: 16, right: 16, top: 14, bottom: 14 })
-    .backgroundColor(this.isCurrent(bridge) ? '#F1F3F5' : Color.Transparent)
-    .onClick(() => { this.select(bridge); })
+    .backgroundColor(isCurrentSession(this.session, resident) ? SELECTED_COLOR : Color.Transparent)
+    .onClick(() => { this.openResident(resident); })
+  }
+
+  @Builder
+  ConnectionRow(bridge: BridgeInfo) {
+    Row({ space: 8 }) {
+      Text(bridge.name)
+        .fontSize(16)
+        .fontColor(isActiveConnection(this.session, bridge) ? ACCENT_COLOR : TEXT_COLOR)
+        .fontWeight(isActiveConnection(this.session, bridge) ? FontWeight.Medium : FontWeight.Normal)
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (unreadForConnection(this.session, bridge) > 0) {
+        Text(unreadForConnection(this.session, bridge) > 99 ? '99+' : String(unreadForConnection(this.session, bridge)))
+          .fontSize(12)
+          .fontColor(Color.White)
+          .backgroundColor(DANGER_COLOR)
+          .borderRadius(10)
+          .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+      }
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+    .backgroundColor(isActiveConnection(this.session, bridge) ? SELECTED_COLOR : Color.Transparent)
+    .onClick(() => { this.switchConnection(bridge); })
+  }
+
+  /**
+   * The session already on screen: no tap target on the label (web's active
+   * row isn't clickable either), and a delete control only when there is
+   * another session to fall back to — matching web's
+   * `listSessions.length > 1` guard.
+   */
+  @Builder
+  ActiveRow(active: Session) {
+    Row({ space: 8 }) {
+      Text(rowLabel(active))
+        .fontSize(16)
+        .fontColor(ACCENT_COLOR)
+        .fontWeight(FontWeight.Medium)
+        .layoutWeight(1)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (unreadForSession(this.session, active) > 0) {
+        Text(unreadForSession(this.session, active) > 99 ? '99+' : String(unreadForSession(this.session, active)))
+          .fontSize(12)
+          .fontColor(Color.White)
+          .backgroundColor(DANGER_COLOR)
+          .borderRadius(10)
+          .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+      }
+      if (this.listSessions().length > 1) {
+        this.DeleteControl(active.key)
+      }
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+    .backgroundColor(SELECTED_COLOR)
+  }
+
+  /**
+   * An inactive session. The delete control is a SIBLING of the tappable
+   * area, not a child of it: a nested tap target would leave it ambiguous
+   * whether a tap on ✕ also selects the row (ArkUI click events reach the
+   * parent unless hit-testing is blocked), and "arm delete" silently
+   * switching session is exactly the kind of surprise two-tap delete exists
+   * to avoid.
+   */
+  @Builder
+  RecentRow(session: Session) {
+    Row({ space: 8 }) {
+      Row({ space: 8 }) {
+        Text(rowLabel(session))
+          .fontSize(16)
+          .fontColor(TEXT_COLOR)
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (unreadForSession(this.session, session) > 0) {
+          Text(unreadForSession(this.session, session) > 99 ? '99+' : String(unreadForSession(this.session, session)))
+            .fontSize(12)
+            .fontColor(Color.White)
+            .backgroundColor(DANGER_COLOR)
+            .borderRadius(10)
+            .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+        }
+      }
+      .layoutWeight(1)
+      .onClick(() => { this.select(session); })
+      this.DeleteControl(session.key)
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+  }
+
+  @Builder
+  DeleteControl(sessionKey: string) {
+    Text(this.confirmDeleteKey === sessionKey ? '确认删除' : '✕')
+      .fontSize(this.confirmDeleteKey === sessionKey ? 13 : 15)
+      .fontColor(this.confirmDeleteKey === sessionKey ? Color.White : MUTED_COLOR)
+      .backgroundColor(this.confirmDeleteKey === sessionKey ? DANGER_COLOR : Color.Transparent)
+      .borderRadius(6)
+      .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+      .onClick(() => { this.onDeleteTap(sessionKey); })
+  }
+
+  @Builder
+  MoreToggle() {
+    Text(this.showAll ? '收起' : `显示全部（${this.hiddenCount()}）`)
+      .fontSize(14)
+      .fontColor(ACCENT_COLOR)
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+      .onClick(() => { this.showAll = !this.showAll; })
+  }
+
+  @Builder
+  CreateRow() {
+    Text('＋ 新建会话')
+      .fontSize(16)
+      .fontColor(ACCENT_COLOR)
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+      .onClick(() => { this.create(); })
   }
 }

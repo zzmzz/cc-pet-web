@@ -171,6 +171,7 @@ bash scripts/device-reconnect-probe.sh
 bash scripts/device-notification-probe.sh
 bash scripts/device-relogin-probe.sh
 bash scripts/device-slash-palette-probe.sh
+bash scripts/device-session-panel-probe.sh
 ```
 
 - `device-login-probe.sh` — launches the app and asserts it reaches either the login gate or
@@ -189,14 +190,22 @@ bash scripts/device-slash-palette-probe.sh
 
 - `device-slash-palette-probe.sh` — types `/`, then narrows to `/cl`, then clears the input,
   asserting the palette opens above the input, filters down to exactly `/clear`, and closes.
+- `device-session-panel-probe.sh` — opens the session sheet, creates two sessions through the
+  real 新建会话 entry, and asserts the panel lists **both of them under one connection**
+  (当前会话 + 最近会话), that tapping a 最近会话 row switches to it, that a first ✕ tap only arms
+  「确认删除」, that closing and reopening the panel disarms it, and that confirming deletes the
+  row. It saves two screenshots (the two-session panel, and the armed row) — pass
+  `CCPET_PROBE_SHOT` to choose where. Only the COMPACT shell (`SessionSheet`) is exercised;
+  `SessionSidebar` renders the same rows through the same `SessionRow.ets` helpers but has
+  never been reachable on this emulator (see the breakpoint honesty note below).
 
-All six target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
+All seven target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —
 this project has been verified against the emulator since Task 10, not a physical phone, and
 these probes follow that same convention. Set `CCPET_DEVICE_TARGET` to point at a real device
 instead if you need to, but nothing here assumes one is attached, and by default nothing
 touches one.
 
-The chat/reconnect/notification/relogin probes clear the target's app data (`bm clean -n
+The chat/reconnect/notification/relogin/session-panel probes clear the target's app data (`bm clean -n
 com.ccpet.client -d`) and log in fresh against a **throwaway local server + bridge fixture
 each probe starts and tears down itself** (a real, unmodified `packages/server` process on a
 scratch port, plus a minimal external-bridge stand-in that answers with a canned
