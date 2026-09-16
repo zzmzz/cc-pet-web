@@ -24,6 +24,7 @@ import dispatchSendStickyTest from './DispatchSendSticky.test';
 import autoTitleTest from './AutoTitle.test';
 import sessionCreateFlowTest from './SessionCreateFlow.test';
 import sessionColdStartTest from './SessionColdStart.test';
+import normalizeBaseUrlTest from './NormalizeBaseUrl.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -52,4 +53,5 @@ export default function testsuite() {
   autoTitleTest();
   sessionCreateFlowTest();
   sessionColdStartTest();
+  normalizeBaseUrlTest();
 }
