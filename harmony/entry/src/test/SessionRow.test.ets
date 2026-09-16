@@ -1,11 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
-  chatKeyForBridge, visibleSessions, RECENT_VISIBLE,
+  visibleSessions, RECENT_VISIBLE,
   nonResidentSessions, activeSessionOf, hiddenSessionCount, newSessionKey, rowLabel,
   formatUnread, formatSessionPhase, phaseDisplay, latestMessageTimestamp,
   fallbackActivityTimestamp, formatTime,
 } from '../main/ets/components/SessionRow';
-import { BridgeInfo } from '../main/ets/logic/normalizeEvent';
 import { ChatMessage, Session, TaskPhase } from '../main/ets/model/Protocol';
 
 /**
@@ -40,11 +39,6 @@ function makeMessage(timestamp: number): ChatMessage {
 
 export default function sessionRowTest() {
   describe('SessionRow', () => {
-    it('derives the default chatKey from a bridge id', 0, () => {
-      const bridge: BridgeInfo = { id: 'b1', name: '工作台A' };
-      expect(chatKeyForBridge(bridge)).assertEqual('b1::default');
-    });
-
     it('RECENT_VISIBLE matches web\'s SessionDropdown constant', 0, () => {
       expect(RECENT_VISIBLE).assertEqual(2);
     });

@@ -808,15 +808,19 @@ export class ConnectionGateway {
       // `packages/server/src/index.ts`) sends `bridge:manifest` on *every*
       // successful connection — first connect and every reconnect alike —
       // so this fires exactly once per connection too, with one guarantee
-      // `open()` alone can't give: `SessionStore.currentChatKey` is only
-      // ever non-empty starting from a bridge list, and `applyManifest`
-      // just supplied that list. On a cold start (no session ever picked),
-      // `currentChatKey` was still `''` at `open()` time — Index.ets's
-      // `@Monitor('session.bridges')` (which runs its own default-session
-      // pick) fires synchronously off the `@Trace` write `applyManifest`
-      // just made, so by the next line `currentChatKey` already reflects
-      // that pick if one just happened, and is otherwise already whatever
-      // the user had selected before this reconnect.
+      // `open()` alone can't give: on a FIRST-EVER launch (nothing
+      // restored from preferences, no session ever picked)
+      // `currentChatKey` is still `''` at `open()` time and only a bridge
+      // list can fill it — Index.ets's `@Monitor('session.bridges')` (which
+      // calls `SessionStore.applyDefaultFocus()`) fires off the `@Trace`
+      // write `applyManifest` just made, so by the next line
+      // `currentChatKey` already reflects that landing pick. On every later
+      // launch it is non-empty BEFORE this frame arrives — Task 9b made
+      // `initPersistence()` restore `activeConnection` alongside the two
+      // pointer maps, so the key already names the session the user left,
+      // and `applyDefaultFocus()` only validates it against this manifest's
+      // bridges (see that method). On a reconnect it is, as before, simply
+      // whatever the user had selected.
       // `setTimeout(..., 0)`, not a direct call: `applyManifest` above is a
       // synchronous `@Trace` write, but Index.ets's own
       // `@Monitor('session.bridges')` (which does the actual default-session

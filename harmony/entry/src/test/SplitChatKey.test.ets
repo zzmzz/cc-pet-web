@@ -47,7 +47,7 @@ export default function splitChatKeyTest() {
   });
 
   describe('DEFAULT_SESSION_KEY', () => {
-    it('is declared once and is what chatKeyForBridge builds on', 0, () => {
+    it('is declared once and is the key every unpicked connection falls back to', 0, () => {
       expect(DEFAULT_SESSION_KEY).assertEqual('default');
       expect(chatKeyOf('b1', DEFAULT_SESSION_KEY)).assertEqual('b1::default');
     });

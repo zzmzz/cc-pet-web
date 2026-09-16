@@ -23,6 +23,7 @@ import dispatchTypingRoutingTest from './DispatchTypingRouting.test';
 import dispatchSendStickyTest from './DispatchSendSticky.test';
 import autoTitleTest from './AutoTitle.test';
 import sessionCreateFlowTest from './SessionCreateFlow.test';
+import sessionColdStartTest from './SessionColdStart.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -50,4 +51,5 @@ export default function testsuite() {
   dispatchSendStickyTest();
   autoTitleTest();
   sessionCreateFlowTest();
+  sessionColdStartTest();
 }

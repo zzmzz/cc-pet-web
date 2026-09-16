@@ -202,10 +202,12 @@ bash scripts/device-session-switch-probe.sh
 - `device-session-switch-probe.sh` — asserts what only a device can show about session
   switching: a session created and talked in **renames itself** to its first message
   (truncated to 15 chars + `…`, the same rule `packages/server` uses); a session created
-  after it opens with an **empty** transcript; and — after a full app force-stop, which
-  empties `ChatStore` and lands the app on a blank `default` chat — **tapping a session's row
-  pulls that session's history off the server**. That restart is the load-bearing part:
-  without it, seeing the messages proves only that they were still in memory. Saves a
+  after it opens with an **empty** transcript; that a full app force-stop and relaunch
+  **comes back into the session it was left in** (Task 9b — the real `preferences` round trip
+  has no unit coverage, `hvigorw test` having no `UIAbilityContext`); and that **tapping the
+  OTHER session's row pulls that session's history off the server**. That restart is the
+  load-bearing part twice over: it empties `ChatStore`, so the other session's messages
+  cannot still be in memory, and only the restored session is backfilled. Saves a
   screenshot (`CCPET_PROBE_SHOT` to choose where). COMPACT shell only, same caveat as above.
 
 All eight target the **emulator** (`127.0.0.1:5555`) by default via `CCPET_DEVICE_TARGET` —

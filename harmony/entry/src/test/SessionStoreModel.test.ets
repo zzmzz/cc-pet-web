@@ -139,7 +139,11 @@ export default function sessionStoreModelTest() {
       // coverage of the preferences write path. That path has no unit
       // coverage at all — there is no real UIAbilityContext under
       // `hvigorw test`, the same accepted gap as AuthStore.init/save — and
-      // is covered on device by scripts/device-session-probe.sh instead.
+      // is covered on device by scripts/device-session-switch-probe.sh
+      // instead, whose step 3 force-stops the app and asserts the relaunch
+      // comes back into the session it was left in (Task 9b). The read side
+      // of the same seam is `restoreFromSnapshot`; see
+      // SessionColdStart.test.ets.
       expect(store.persistedSnapshot().activeSessionKeysJson).assertEqual('{}');
       expect(store.persistedSnapshot().stickySessionsJson).assertEqual('{}');
     });

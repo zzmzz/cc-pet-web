@@ -7,7 +7,7 @@ import { TaskStore } from '../store/TaskStore';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
 import { SessionApi } from '../gateway/SessionApi';
 import { UnauthorizedError } from '../gateway/RestClient';
-import { BridgeInfo, chatKeyOf, DEFAULT_SESSION_KEY } from '../logic/normalizeEvent';
+import { BridgeInfo, chatKeyOf } from '../logic/normalizeEvent';
 import { ChatMessage, Session, TaskPhase } from '../model/Protocol';
 
 const DOMAIN = 0x0000;
@@ -23,7 +23,7 @@ const TAG = 'SessionRow';
  * server — so this isn't a pure, store-independent function set.
  *
  * The pure functions here (plain data in, plain data out, no store:
- * `chatKeyForBridge`, `rowLabel`, `nonResidentSessions`, `activeSessionOf`,
+ * `rowLabel`, `nonResidentSessions`, `activeSessionOf`,
  * `visibleSessions`, `hiddenSessionCount`, `newSessionKey`, `formatUnread`,
  * `formatSessionPhase`, `phaseDisplay`, `latestMessageTimestamp`,
  * `fallbackActivityTimestamp`, `formatTime`) are covered by
@@ -49,19 +49,22 @@ const TAG = 'SessionRow';
  * chatKey-shaped bridge helpers (`labelForBridge`, `isCurrentBridge`,
  * `unreadForBridge`, `selectBridge`) are replaced below by the
  * connection-shaped `isActiveConnection`/`unreadForConnection`/
- * `selectConnection`. `chatKeyForBridge` stays: `Index.ets` still uses it for
- * the cold-start landing pick, which genuinely does mean "that bridge's
- * default session".
+ * `selectConnection`. `chatKeyForBridge` went with them in Task 9b: its one
+ * remaining caller was `Index.ets`'s cold-start landing pick, and that call
+ * was the bug — `${bridgeId}::default` overwrote (and persisted) the
+ * per-connection session pointer `initPersistence()` had just restored, on
+ * every single launch. The landing pick is now
+ * `SessionStore.applyDefaultFocus()`, which picks a CONNECTION and lets
+ * `activeSessionKeyOf` supply the session, exactly as `selectConnection`
+ * does for a tap.
  *
- * `DEFAULT_SESSION_KEY` is imported, not declared: `pages/Index.ets` used to
- * declare its own copy of the same constant alongside its own copy of the
- * label rule, so it now lives once, next to `chatKeyOf`/`splitChatKey` in
- * `logic/normalizeEvent.ets`.
+ * `DEFAULT_SESSION_KEY` is no longer imported here either — with
+ * `chatKeyForBridge` gone, this file has no reason to name the default
+ * session at all. It still lives once, next to `chatKeyOf`/`splitChatKey`
+ * in `logic/normalizeEvent.ets` (`pages/Index.ets` used to declare its own
+ * copy), and `SessionStore.activeSessionKeyOf` is its one substituting
+ * reader.
  */
-
-export function chatKeyForBridge(bridge: BridgeInfo): string {
-  return chatKeyOf(bridge.id, DEFAULT_SESSION_KEY);
-}
 
 // ---------------------------------------------------------------------
 // One row per connection — the panel's "switch connection" section.

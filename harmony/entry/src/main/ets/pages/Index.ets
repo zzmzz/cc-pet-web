@@ -9,7 +9,6 @@ import { SessionSheet } from '../components/SessionSheet';
 import { ResponsiveLayout } from '../components/ResponsiveLayout';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
 import { SessionStore } from '../store/SessionStore';
-import { chatKeyForBridge } from '../components/SessionRow';
 import { common } from '@kit.AbilityKit';
 
 @Entry
@@ -39,10 +38,13 @@ struct Index {
 
   async aboutToAppear(): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    // Read back `activeSessionKeys`/`stickySessions` before anything can
-    // route an inbound frame or restore the on-screen chat — a late reply
-    // arriving before this resolves is exactly the "cold start, no
-    // sessionKey" misroute task-3-brief.md exists to close.
+    // Read back `activeSessionKeys`/`stickySessions`/`activeConnection`
+    // before anything can route an inbound frame or restore the on-screen
+    // chat — a late reply arriving before this resolves is exactly the
+    // "cold start, no sessionKey" misroute task-3-brief.md exists to close,
+    // and `activeConnection` landing here (not at the first manifest) is
+    // what makes `currentChatKey` already point at the session the user
+    // left when the manifest does arrive.
     await this.session.initPersistence(context);
     await this.auth.init(context);
     this.ready = true;
@@ -91,26 +93,20 @@ struct Index {
    */
   @Monitor('session.bridges')
   onBridgesChanged(_monitor: IMonitor): void {
-    this.defaultToFirstBridgeIfNoneSelected();
-  }
-
-  /**
-   * Product default: as soon as the manifest lists at least one bridge and
-   * nothing is selected yet, preselect that first advertised bridge's
-   * 'default' session, so the chat surface isn't blank on first launch.
-   * `SessionSidebar`/`SessionSheet` (Task 16) are the always-available way
-   * to switch away from it afterwards. A no-op once `currentChatKey` is
-   * already set, so calling this more than once (see both call sites
-   * below) is safe.
-   */
-  private defaultToFirstBridgeIfNoneSelected(): void {
-    if (this.session.currentChatKey.length > 0) {
-      return;
-    }
-    if (this.session.bridges.length === 0) {
-      return;
-    }
-    this.session.setCurrent(chatKeyForBridge(this.session.bridges[0]));
+    // The landing pick itself lives in the store (`applyDefaultFocus`, which
+    // mirrors web's `applyDefaultFocusAfterHydrate`) — every input it needs
+    // (`bridges`, `activeConnection`, the restored per-connection session
+    // pointers) is store state, and keeping it there is what lets a unit
+    // test reach it at all: this struct is `@Entry` and cannot be
+    // instantiated under `hvigorw test`.
+    //
+    // It used to be a private method here that called
+    // `setCurrent(chatKeyForBridge(bridges[0]))` whenever `currentChatKey`
+    // was empty. That is Task 9b's bug: on a cold start the key is empty
+    // only because `activeConnection` hadn't been restored yet, and the
+    // "fix" for the blank screen overwrote the just-restored per-connection
+    // session pointer with `default` AND persisted it.
+    this.session.applyDefaultFocus();
   }
 
   private startGatewayOnce(): void {
@@ -129,7 +125,10 @@ struct Index {
     // component's own construction), so this checks synchronously,
     // immediately after kicking off the connection, instead of relying on
     // the Monitor alone to catch a change that may already have happened.
-    this.defaultToFirstBridgeIfNoneSelected();
+    // Safe to run before any manifest: `applyDefaultFocus` is a no-op while
+    // `bridges` is empty, precisely so this call cannot clobber the pointer
+    // `initPersistence()` restored a moment ago.
+    this.session.applyDefaultFocus();
   }
 
   private onAreaChanged(newArea: Area): void {

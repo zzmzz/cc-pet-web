@@ -12,15 +12,26 @@ const APP_STORAGE_KEY: string = 'SessionStore';
 const STORE_NAME: string = 'cc_pet_sessions';
 const KEY_ACTIVE_SESSION_KEYS: string = 'activeSessionKeys';
 const KEY_STICKY_SESSIONS: string = 'stickySessions';
+const KEY_ACTIVE_CONNECTION: string = 'activeConnection';
 
 /**
- * What `persist()` writes to preferences and what `persistedSnapshot()`
- * hands to a unit test -- see that method's doc for why a plain snapshot
- * object, rather than the preferences store itself, is the testable seam.
+ * What `persist()` writes to preferences, what `persistedSnapshot()` hands
+ * to a unit test, and what `restoreFromSnapshot()` reads back -- see those
+ * methods' docs for why a plain snapshot object, rather than the
+ * preferences store itself, is the testable seam on both sides.
+ *
+ * Exported for the tests that build one (`SessionColdStart.test.ets`);
+ * nothing in `main/` constructs it outside this file.
  */
-interface PersistedSessionSnapshot {
+export interface PersistedSessionSnapshot {
   activeSessionKeysJson: string;
   stickySessionsJson: string;
+  /**
+   * Stored raw, not as JSON: it is one id, not a map. `''` is the honest
+   * first-run value and the same thing `preferences.get(..., '')` hands back
+   * for a key that was never written, so no separate "missing" case exists.
+   */
+  activeConnection: string;
 }
 
 /** Carries a session's position in the incoming list through `sortSessions`. */
@@ -233,17 +244,57 @@ export class SessionStore {
    * so a connectionId this run never calls `setActiveSession` on again
    * still reads back as `''` from `activeSessionKeyRawOf` — the "never
    * picked" sentinel survives the round trip, not just the substituted
-   * `'default'` value. `activeConnection`/`currentChatKey` are NOT
-   * restored here: this task persists only the two per-connection pointer
-   * maps (task-3-brief.md's stated scope); which bridge lands on screen at
-   * cold start is `Index.defaultToFirstBridgeIfNoneSelected`'s job.
+   * `'default'` value.
+   *
+   * `activeConnection` is restored too (Task 9b), which is what makes the
+   * two maps above worth anything at cold start: web persists its own
+   * `activeConnectionId` the same way
+   * (`packages/web/src/lib/store/connection.ts`, localStorage key
+   * `cc-pet-active-connection-id`, read back in the store's initial state
+   * before any manifest), so a relaunch restores "which connection, and
+   * which session on it" rather than only the second half. Restoring it
+   * here also means `currentChatKey` is already correct by the time
+   * `bridge:manifest` arrives — `applyDefaultFocus()` below then only has
+   * to VALIDATE it against the advertised bridges, instead of overwriting
+   * it with `${bridgeId}::default` the way
+   * `Index.defaultToFirstBridgeIfNoneSelected` used to (Task 9b's brief:
+   * the pointer wasn't merely un-restored, it was restored and then
+   * destroyed, and the destruction was written back to disk on every
+   * launch).
    */
   async initPersistence(context: common.UIAbilityContext): Promise<void> {
     this.store = await preferences.getPreferences(context, STORE_NAME);
     const activeRaw: string = await this.store.get(KEY_ACTIVE_SESSION_KEYS, '') as string;
     const stickyRaw: string = await this.store.get(KEY_STICKY_SESSIONS, '') as string;
-    this.activeSessionKeys = deserializeStringMap(activeRaw);
-    this.stickySessions = deserializeStringMap(stickyRaw);
+    const connectionRaw: string = await this.store.get(KEY_ACTIVE_CONNECTION, '') as string;
+    this.restoreFromSnapshot({
+      activeSessionKeysJson: activeRaw,
+      stickySessionsJson: stickyRaw,
+      activeConnection: connectionRaw,
+    });
+  }
+
+  /**
+   * Everything `initPersistence()` does AFTER the preferences reads — the
+   * read-side twin of `persistedSnapshot()`, and public for the same
+   * reason: `preferences.Preferences` cannot be exercised under
+   * `hvigorw test` (no `UIAbilityContext`), but what the restored BYTES do
+   * to this store is a pure function and must not go untested. It is the
+   * only part of the cold-start path a unit test can reach; the real
+   * preferences I/O is covered on device by
+   * `scripts/device-session-switch-probe.sh`.
+   *
+   * `recomputeCurrentChatKey()` at the end is the whole point of restoring
+   * `activeConnection`: without it the restored pointers would sit in the
+   * maps while `currentChatKey` stayed `''`, which is the state
+   * `Index`'s landing pick used to read as "the user has never picked
+   * anything".
+   */
+  restoreFromSnapshot(snapshot: PersistedSessionSnapshot): void {
+    this.activeSessionKeys = deserializeStringMap(snapshot.activeSessionKeysJson);
+    this.stickySessions = deserializeStringMap(snapshot.stickySessionsJson);
+    this.activeConnection = snapshot.activeConnection;
+    this.recomputeCurrentChatKey();
   }
 
   /**
@@ -265,17 +316,20 @@ export class SessionStore {
     return {
       activeSessionKeysJson: serializeStringMap(this.activeSessionKeys),
       stickySessionsJson: serializeStringMap(this.stickySessions),
+      activeConnection: this.activeConnection,
     };
   }
 
   /**
-   * Writes both pointer maps to preferences. Called after every mutator
-   * that can change either map, and from `clearAll()` -- there, it runs
-   * AFTER both maps have already been reset to empty, so the write that
+   * Writes both pointer maps AND the active connection to preferences.
+   * Called after every mutator that can change any of the three, and from
+   * `clearAll()` -- there, it runs
+   * AFTER all three have already been reset to empty, so the write that
    * follows persists the wipe rather than the account that just logged
    * out. Without this call in `clearAll()`, the next `initPersistence()`
    * (the next app launch, now under a different account) would read the
-   * previous account's pointers straight back off disk, undoing the
+   * previous account's pointers -- including, since Task 9b, the connection
+   * they were last on -- straight back off disk, undoing the
    * in-memory clear a moment after it happened -- the exact leak this
    * task's brief warns `clearAll()` must not reintroduce.
    *
@@ -296,6 +350,7 @@ export class SessionStore {
   private async writeSnapshot(store: preferences.Preferences, snapshot: PersistedSessionSnapshot): Promise<void> {
     await store.put(KEY_ACTIVE_SESSION_KEYS, snapshot.activeSessionKeysJson);
     await store.put(KEY_STICKY_SESSIONS, snapshot.stickySessionsJson);
+    await store.put(KEY_ACTIVE_CONNECTION, snapshot.activeConnection);
     await store.flush();
   }
 
@@ -353,9 +408,18 @@ export class SessionStore {
     return this.activeConnection;
   }
 
+  /**
+   * Persists, exactly like `setActiveSession` -- web's own
+   * `setActiveConnection` (`packages/web/src/lib/store/connection.ts`)
+   * calls `persistActiveConnectionId(id)` on every switch, and a pointer
+   * that is only written when the SESSION changes would forget which
+   * connection you were on whenever your last action was a connection
+   * switch.
+   */
   setActiveConnection(connectionId: string): void {
     this.activeConnection = connectionId;
     this.recomputeCurrentChatKey();
+    this.persist();
   }
 
   setActiveSession(connectionId: string, sessionKey: string): void {
@@ -607,9 +671,14 @@ export class SessionStore {
    * already drops the outbox and the transcript so account A's data cannot
    * reach account B, but `currentChatKey` and `bridges` used to survive that
    * same boundary. A stale `currentChatKey` pointing at a bridge the next
-   * account does not have makes `Index.defaultToFirstBridgeIfNoneSelected()`
-   * return early (it only fires when the key is empty), so B would land on a
+   * account does not have used to make `Index`'s landing pick return early
+   * (it only fired when the key was empty), so B would land on a
    * permanently blank chat surface until it picked a session by hand.
+   * `applyDefaultFocus()` now re-checks the ACTIVE CONNECTION against every
+   * manifest instead of checking `currentChatKey` for emptiness, so that
+   * particular blank screen can no longer outlive one manifest — but
+   * clearing the fields here is still what stops account A's chat from
+   * being on screen in the window before B's first manifest arrives.
    *
    * `skillCommands` goes too: slash commands are advertised per account.
    *
@@ -642,6 +711,55 @@ export class SessionStore {
 
   applyManifest(frame: WsFrame): void {
     this.bridges = frame.bridges ?? [];
+  }
+
+  /**
+   * Land on a connection this manifest actually advertises — and, through
+   * `setActiveConnection`, on the session that was last open THERE.
+   *
+   * Web's `applyDefaultFocusAfterHydrate`
+   * (`packages/web/src/lib/hydrateFromServer.ts`) reduced to what this
+   * client can answer at the moment it runs:
+   *
+   *   - restored/current `activeConnection` still in the bridge list → keep
+   *     it, exactly web's `if (activeConnectionId && connectionIds.includes(
+   *     activeConnectionId))` branch;
+   *   - otherwise → the first advertised bridge, which is also web's own
+   *     final fallback (`pickGlobalActiveConnection`'s `?? connectionIds[0]`).
+   *     Web's preceding tie-break (the connection whose newest session is
+   *     globally newest) is deliberately NOT reproduced: web runs this
+   *     AFTER `hydrateSessionsAndHistory`, so it has every connection's
+   *     session list; this runs off `bridge:manifest`, where
+   *     `/api/sessions` has only just been asked for (see
+   *     `ConnectionGateway.fetchSessions`) and `sessionsOf` is still empty
+   *     for every bridge. First-advertised is what the previous
+   *     implementation picked too, so nothing regresses.
+   *
+   * No bridges → NOTHING, where web sets its active connection to `null`.
+   * The difference is the call site, not the intent: web only ever calls
+   * its version with a bridge list a manifest just delivered, while
+   * `Index.startGatewayOnce` calls this one synchronously at launch, before
+   * any manifest can have arrived. Clearing here would therefore wipe the
+   * pointer `initPersistence()` had just restored, one line after the
+   * gateway was told to connect.
+   *
+   * What it must never do again is route through `${bridgeId}::default`.
+   * That is the Task 9b bug: `setCurrent(chatKeyForBridge(bridges[0]))`
+   * wrote `default` into `activeSessionKeys` for that connection and
+   * `persist()`ed it, so every launch overwrote the restored pointer on
+   * disk with `default` — the same reason Task 8 made web's connection-row
+   * tap `setActiveConnection` ALONE (see `SessionRow.selectConnection`).
+   */
+  applyDefaultFocus(): void {
+    if (this.bridges.length === 0) {
+      return;
+    }
+    for (const bridge of this.bridges) {
+      if (bridge.id === this.activeConnection) {
+        return;
+      }
+    }
+    this.setActiveConnection(this.bridges[0].id);
   }
 
   /**

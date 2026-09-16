@@ -17,23 +17,32 @@
 # THE LOAD-BEARING TRICK is the app restart. Without it, seeing A's messages
 # after switching back to A proves nothing -- they could still be sitting in
 # `ChatStore` from when they were sent. After a force-stop the store is empty,
-# and a cold start backfills ONLY `currentChatKey`, which this client lands on
-# the bridge's `default` session (measured: the top bar reads the BRIDGE name,
-# not a session label, and the transcript is blank -- `initPersistence`
-# restores the per-connection session pointer but `Index`'s landing pick has
-# already run by then). So neither created session is loaded, and if A's text
-# appears after tapping A's row, the ONLY thing that can have put it there is
-# the `ConnectionGateway.ensureHistory` call this task added to
-# `SessionRow.selectSession`.
+# and a cold start backfills ONLY `currentChatKey` -- ONE session. Everything
+# else opens empty, so if A's text appears after tapping A's row, the ONLY
+# thing that can have put it there is the `ConnectionGateway.ensureHistory`
+# call Task 9 added to `SessionRow.selectSession`.
+#
+# WHICH session that one is changed in Task 9b, and step 3 below changed with
+# it. It used to be the bridge's `default` (the transcript came back blank,
+# and this probe asserted the blankness): `initPersistence` restored the
+# per-connection session pointer, then `Index`'s landing pick overwrote it
+# with `${bridgeId}::default` -- and persisted the overwrite. Now the landing
+# pick validates the restored connection instead of replacing it
+# (`SessionStore.applyDefaultFocus`), so a relaunch comes back to the session
+# you left, which here is B. Step 3 therefore asserts B's text IS on screen
+# and A's is NOT -- the same guarantee step 4 rests on (A's history cannot
+# already be loaded), plus the cold-start restore itself, which no unit test
+# can reach: `hvigorw test` has no `UIAbilityContext`, so the real
+# `preferences` round trip is only ever exercised here.
 #
 # What it asserts, in order:
 #   1. a session created and then talked in renames itself to its first
 #      message, truncated to web's 15 chars + '…' (`logic/autoTitle.ets`);
 #   2. a session created AFTER that one opens with an empty transcript --
 #      none of the previous session's text follows the switch;
-#   3. after an app restart the app lands on the bridge's `default` session
-#      with an EMPTY transcript -- neither created session's text is loaded;
-#   4. tapping a session's row makes its history appear -> the switch really
+#   3. after a full force-stop the app RELAUNCHES INTO SESSION B -- the one
+#      it was left in -- with B's transcript refetched and A's still absent;
+#   4. tapping session A's row makes its history appear -> the switch really
 #      fetched it from the server.
 #
 # Step 1 is a genuinely CLIENT-side assertion even though `packages/server`
@@ -202,18 +211,30 @@ if ! wait_until 20 1 transcript_has "probe-echo: $MSG_B"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Cold restart: ChatStore is empty and the landing pick loads nothing.
+# 3. Cold restart: come back to session B, and to B ONLY.
 # ---------------------------------------------------------------------------
+# `ChatStore` is empty after a force-stop, so B's text can only be on screen
+# because the relaunch restored `${connectionId}::B` out of preferences and
+# backfilled it. Before Task 9b this assertion read the other way round (both
+# messages had to be ABSENT, because the landing pick threw the restored
+# pointer away and landed on `default`); the second assertion below is the
+# part that survived, and it is the one step 4 depends on.
 hdc_ shell aa force-stop "$BUNDLE_NAME" >/dev/null 2>&1 || true
 sleep 2
 launch_app
 if ! wait_until 30 1 transcript_has '已连接'; then
   fail "the app never got back to a connected chat screen after the restart -- layout at $LAYOUT"
 fi
+if ! wait_until 30 1 transcript_has "probe-echo: $MSG_B"; then
+  fail "after a full restart the app did not come back to session B ('$MSG_B' never reappeared)." \
+       " The per-connection session pointer did not survive the relaunch -- this is exactly the" \
+       " Task 9b bug (restored, then overwritten with 'default' and persisted). Layout at $LAYOUT"
+fi
 dump_layout "$LAYOUT"
-if ui_contains "$LAYOUT" "$MSG_A" || ui_contains "$LAYOUT" "$MSG_B"; then
-  fail "a created session's text is on screen right after a cold start -- this probe cannot then" \
-       " tell a switch-triggered fetch from leftover state; the assumption it rests on is wrong"
+if ui_contains "$LAYOUT" "$MSG_A"; then
+  fail "session A's text is on screen right after a cold start -- only the session the app landed" \
+       " in may be backfilled; this probe cannot then tell a switch-triggered fetch from leftover" \
+       " state, and the assumption step 4 rests on is wrong"
 fi
 
 # ---------------------------------------------------------------------------
@@ -222,8 +243,9 @@ fi
 # Rows read the SERVER's own label here (`/api/sessions` ran on this run's
 # manifest and `applySessions` replaced the local records), and the server
 # derives the same title from the same first message -- so the row is still
-# findable by $TITLE_A. With the transcript blank there is nothing else on
-# screen carrying that string.
+# findable by $TITLE_A. The on-screen transcript is B's, and $TITLE_A is
+# derived from A's first message (truncated, which the transcript never
+# shows), so nothing else on screen carries that string.
 open_sheet
 dump_layout "$LAYOUT"
 ROW_XY="$(ui_query "$LAYOUT" text "$TITLE_A")" \
@@ -238,5 +260,6 @@ fi
 grab_screenshot "$SHOT"
 
 pass "a new session named itself '$TITLE_A' from its first message, a session created after it" \
-     " opened clean, and after a full app restart (blank transcript) tapping that session's row" \
-     " pulled its history ('$MSG_A') off the server. Screenshot: $SHOT"
+     " opened clean, a full app restart came back into session B ('$MSG_B' refetched, A's text" \
+     " absent), and tapping A's row then pulled A's history ('$MSG_A') off the server." \
+     " Screenshot: $SHOT"
