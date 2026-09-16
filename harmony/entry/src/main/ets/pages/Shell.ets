@@ -1,6 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
-import { picker } from '@kit.CoreFileKit';
+import { fileIo, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { promptAction } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -143,10 +143,136 @@ struct Shell {
   }
 
   /**
+   * guid → the document-provider URI the user picked for that download.
+   * `onBeforeDownload` and `onDownloadFinish` are handed different
+   * `WebDownloadItem` objects for the same download, so the destination has to
+   * be carried across by `getGuid()`, which is stable for the download's life.
+   * Entries are removed in `publishDownload`; a cancelled pick never adds one.
+   */
+  private downloadTargets: Map<string, string> = new Map<string, string>();
+
+  /**
+   * §3 follow-up: the first version called `item.start()` on a sandbox path
+   * synchronously inside `onBeforeDownload` and then toasted "已保存 <name>" —
+   * true about the write finishing, false about the user being able to reach
+   * it, because `filesDir` is owned by the app's uid and no file manager can
+   * open it. So the shell asks the user where to put it, with the same
+   * `DocumentViewPicker` already used for uploads in `pickFiles` — no new
+   * permission is declared.
+   *
+   * MEASURED ON THE EMULATOR, and it is the reason this is two steps rather
+   * than one: `item.start(<the picker's uri>)` does NOT work. Passing
+   * `file://docs/storage/Users/currentUser/Download/x.txt` straight to
+   * `start()` throws nothing and reports success —
+   * `download finish ... totalBytes=380 receivedBytes=380` — but
+   * `getFullPath()` comes back as
+   * `/data/storage/el2/base/cache/web/Temp/x.txt` and the file the picker
+   * created in Download stays **0 bytes**. `start()` wants a filesystem path,
+   * not a document URI; given a URI it silently keeps the bytes in ArkWeb's
+   * own temp dir. A shell that stopped there would toast 已保存 over an empty
+   * file, which is worse than the sandbox it was meant to fix.
+   *
+   * So: pick the destination, `start()` into the sandbox (a path `start()`
+   * does honour), and copy sandbox → picked URI in `publishDownload` once the
+   * bytes are actually there. The copy is the load-bearing half — measured,
+   * `start(<uri>)` followed by the same copy also lands the right bytes,
+   * because the copy reads from `getFullPath()` either way. `start()` is given
+   * the sandbox path anyway so the source is a path this file chose and can
+   * delete, rather than ArkWeb's undocumented Temp directory.
+   *
+   * See `harmony/scripts/device-download-probe.sh`: it asserts on the
+   * destination file's *size*, and was run against a build with the copy
+   * removed to confirm it fails there.
+   */
+  private async chooseDownloadDestination(item: webview.WebDownloadItem): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const name: string = item.getSuggestedFileName();
+    const options: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
+    options.newFileNames = [name];
+    try {
+      const documentPicker: picker.DocumentViewPicker = new picker.DocumentViewPicker(context);
+      const uris: Array<string> = await documentPicker.save(options);
+      if (uris.length === 0) {
+        // Observed on the emulator when the save sheet is dismissed without
+        // an explicit cancel error — treat "nothing chosen" the same as a
+        // cancellation rather than starting a download with no destination.
+        hilog.info(DOMAIN, TAG, 'download destination: picker returned no uri, cancelling');
+        item.cancel();
+        return;
+      }
+      const target: string = uris[0];
+      hilog.info(DOMAIN, TAG, 'download destination chosen: name=%{public}s uri=%{public}s', name, target);
+      this.downloadTargets.set(item.getGuid(), target);
+      item.start(`${context.filesDir}/downloads/${name}`);
+    } catch (err) {
+      // The user backing out of the save sheet lands here (BusinessError),
+      // not in onDownloadFailed — the download never started, so there is
+      // nothing for the delegate's other callbacks to report.
+      const businessError: BusinessError = err as BusinessError;
+      hilog.info(DOMAIN, TAG, 'download destination cancelled or failed: name=%{public}s code=%{public}d message=%{public}s',
+        name, businessError.code, businessError.message);
+      item.cancel();
+    }
+  }
+
+  /**
+   * The second half of the download: the bytes are in the sandbox, the user's
+   * chosen destination is a document-provider URI, and `fileIo.openSync`
+   * accepts that URI where `WebDownloadItem.start` does not. Only after the
+   * copy lands does the shell say 已保存 — the toast has to describe a file
+   * the user can actually open, which is the whole point of the picker.
+   */
+  private publishDownload(item: webview.WebDownloadItem): void {
+    const name: string = item.getSuggestedFileName();
+    const guid: string = item.getGuid();
+    const sandboxPath: string = item.getFullPath();
+    const target: string | undefined = this.downloadTargets.get(guid);
+    this.downloadTargets.delete(guid);
+    if (target === undefined) {
+      // Nothing recorded means the download was never routed through the
+      // picker, so there is nowhere reachable to put it. Do not claim 已保存.
+      hilog.error(DOMAIN, TAG, 'download finished with no recorded destination: name=%{public}s', name);
+      promptAction.showToast({ message: `下载失败：${name}` });
+      return;
+    }
+    let file: fileIo.File | undefined = undefined;
+    try {
+      file = fileIo.openSync(target, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      fileIo.copyFileSync(sandboxPath, file.fd);
+      hilog.info(DOMAIN, TAG, 'download saved: name=%{public}s uri=%{public}s', name, target);
+      promptAction.showToast({ message: `已保存 ${name}` });
+    } catch (err) {
+      const businessError: BusinessError = err as BusinessError;
+      hilog.error(DOMAIN, TAG, 'download copy to picked destination failed: name=%{public}s code=%{public}d message=%{public}s',
+        name, businessError.code, businessError.message);
+      promptAction.showToast({ message: `下载失败：${name}` });
+    } finally {
+      if (file !== undefined) {
+        try {
+          fileIo.closeSync(file);
+        } catch (closeErr) {
+          hilog.warn(DOMAIN, TAG, 'closing the download destination threw: code=%{public}d',
+            (closeErr as BusinessError).code);
+        }
+      }
+      // The sandbox copy has served its purpose; leaving it behind would grow
+      // the app's data directory by every file the user ever downloaded.
+      try {
+        fileIo.unlinkSync(sandboxPath);
+      } catch (unlinkErr) {
+        hilog.warn(DOMAIN, TAG, 'removing the sandbox copy threw: code=%{public}d',
+          (unlinkErr as BusinessError).code);
+      }
+    }
+  }
+
+  /**
    * §3: a download started inside the WebView has nowhere to go unless the
-   * shell names a destination. Files land in the app's own sandbox so no
-   * storage permission is needed — `module.json5` still declares exactly the
-   * two permissions Task 10 added, and this must not change that.
+   * shell names a destination. `onBeforeDownload`'s callback type is
+   * synchronous (`Callback<WebDownloadItem>`), so `chooseDownloadDestination`
+   * is fired without an `await` here — the same pattern `onShowFileSelector`
+   * already uses for `pickFiles` below, which also has to run a picker beyond
+   * the event's own synchronous return.
    *
    * Exercised end to end by `harmony/scripts/device-download-probe.sh`, which
    * drives the real path: the bridge fixture sends a file, `packages/server`
@@ -154,34 +280,26 @@ struct Shell {
    * `<a href="blob:…" download target="_blank">`. ArkWeb turns that anchor into
    * a download and this delegate catches it. Same-origin hrefs and `data:` URLs
    * were measured too; all five shapes reach `onBeforeDownload`.
-   *
-   * KNOWN LIMIT, deliberately not fixed here: `filesDir` is inside the app
-   * sandbox, so "已保存 <name>" names a file the user cannot open from any file
-   * manager. Making it useful means routing through
-   * `picker.DocumentViewPicker.save()` (which needs no new permission, unlike
-   * writing to the public Downloads directory) and deferring `item.start()`
-   * until the user picks a location. That is a behaviour change, not a fix to
-   * an unverified code path, so it is left as a named follow-up rather than
-   * smuggled in here.
    */
   private installDownloadDelegate(): void {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const delegate: webview.WebDownloadDelegate = new webview.WebDownloadDelegate();
     delegate.onBeforeDownload((item: webview.WebDownloadItem) => {
-      const name: string = item.getSuggestedFileName();
-      const path: string = `${context.filesDir}/downloads/${name}`;
-      // Logged, not silent: the sandbox directory this writes to is not
-      // readable by `hdc shell` (the app's uid owns it), so hilog is the only
-      // way anyone can see whether a download actually started. Without these
-      // three lines this whole delegate is unobservable on a device, which is
-      // exactly how it shipped unverified the first time.
-      hilog.info(DOMAIN, TAG, 'download start: name=%{public}s path=%{public}s', name, path);
-      item.start(path);
+      // Logged, not silent: once start() targets a user-chosen document
+      // provider URI instead of the sandbox, `hdc shell` still cannot list
+      // it, so hilog remains the only outside view of what happened.
+      hilog.info(DOMAIN, TAG, 'download start: name=%{public}s', item.getSuggestedFileName());
+      this.chooseDownloadDestination(item);
     });
     delegate.onDownloadFinish((item: webview.WebDownloadItem) => {
-      hilog.info(DOMAIN, TAG, 'download finish: name=%{public}s size=%{public}s',
-        item.getSuggestedFileName(), `${item.getTotalBytes()}`);
-      promptAction.showToast({ message: `已保存 ${item.getSuggestedFileName()}` });
+      // getFullPath()/getReceivedBytes() logged alongside getTotalBytes(), and
+      // they earned their place: it was exactly this triple that exposed
+      // `start(<uri>)` reporting receivedBytes=380 while fullPath pointed at
+      // ArkWeb's Temp dir and the user's file stayed empty. The
+      // suggested-name + totalBytes pair alone could not tell those apart.
+      hilog.info(DOMAIN, TAG,
+        'download finish: name=%{public}s totalBytes=%{public}s receivedBytes=%{public}s fullPath=%{public}s',
+        item.getSuggestedFileName(), `${item.getTotalBytes()}`, `${item.getReceivedBytes()}`, item.getFullPath());
+      this.publishDownload(item);
     });
     delegate.onDownloadFailed((item: webview.WebDownloadItem) => {
       hilog.error(DOMAIN, TAG, 'download failed: name=%{public}s code=%{public}s',
