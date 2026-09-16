@@ -23,6 +23,16 @@ export default function sessionMapsTest() {
       expect(deserializeStringMap('[1,2,3]').size).assertEqual(0);
     });
 
+    it('does not throw on json that parses to a non-object', 0, () => {
+      // `JSON.parse('null')` succeeds, so this never reaches the try/catch --
+      // without an explicit guard `Object.keys(null)` throws and breaks the
+      // documented "never throws" contract.
+      expect(deserializeStringMap('null').size).assertEqual(0);
+      expect(deserializeStringMap('42').size).assertEqual(0);
+      expect(deserializeStringMap('"a string"').size).assertEqual(0);
+      expect(deserializeStringMap('true').size).assertEqual(0);
+    });
+
     it('drops non-string values instead of importing them', 0, () => {
       expect(deserializeStringMap('{"c1":"s1","c2":5}').get('c1')).assertEqual('s1');
       expect(deserializeStringMap('{"c1":"s1","c2":5}').size).assertEqual(1);

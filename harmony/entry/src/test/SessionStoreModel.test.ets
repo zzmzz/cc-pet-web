@@ -126,14 +126,16 @@ export default function sessionStoreModelTest() {
       expect(store.residentSession() === undefined).assertTrue();
       expect(store.bridges.length).assertEqual(0);
       expect(store.skillCommands.length).assertEqual(0);
-
-      // The persisted half of the same leak (task 3): `persistedSnapshot()`
-      // is exactly the JSON `persist()` would have just written to
-      // preferences. If `clearAll()` ever stopped resetting
-      // `activeSessionKeys` or `stickySessions`, this would still show
-      // account A's connectionId/sessionKey pair instead of `'{}'`, even
-      // though `preferences.Preferences` itself can't run inside
-      // `hvigorw test` (see SessionStore.persistedSnapshot's doc).
+      // These two assert the SNAPSHOT THAT WOULD BE WRITTEN, not that it was
+      // written. The Task 3 review proved the difference: deleting the
+      // `this.persist()` call from `clearAll()` leaves the suite at 121/121,
+      // because `persistedSnapshot()` serialises the in-memory maps — which
+      // the two assertions above already cover. Keeping them is still worth
+      // it (they pin the serialised SHAPE), but nobody should read them as
+      // coverage of the preferences write path. That path has no unit
+      // coverage at all — there is no real UIAbilityContext under
+      // `hvigorw test`, the same accepted gap as AuthStore.init/save — and
+      // is covered on device by scripts/device-session-probe.sh instead.
       expect(store.persistedSnapshot().activeSessionKeysJson).assertEqual('{}');
       expect(store.persistedSnapshot().stickySessionsJson).assertEqual('{}');
     });

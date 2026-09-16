@@ -45,6 +45,13 @@ export function deserializeStringMap(text: string): Map<string, string> {
   } catch (e) {
     return result;
   }
+  // `JSON.parse('null')` SUCCEEDS -- it does not reach the catch above -- and
+  // `Object.keys(null)` then throws, which would break this function's
+  // "never throws" contract on genuinely corrupted preferences data. Same
+  // for a persisted scalar or array. Found by the Task 3 review.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return result;
+  }
   const obj: Record<string, Object> = parsed as Record<string, Object>;
   const keys: string[] = Object.keys(obj);
   for (const key of keys) {
