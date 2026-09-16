@@ -339,11 +339,13 @@ export class ConnectionGateway {
    * send, would introduce exactly that gap; reading the argument instead of
    * store state keeps this correct either way).
    *
-   * Unconditional, matching web: `noteStickySession` itself short-circuits
-   * when the value is unchanged (see its doc), so this never needs its own
-   * guard, and gating it further (e.g. only-if-empty) would diverge from
-   * every one of web's three call sites, none of which checks the existing
-   * pin before writing.
+   * Unconditional, matching web: gating this further (e.g. only-if-empty)
+   * would diverge from every one of web's three call sites, none of which
+   * checks the existing pin before writing. The no-op-on-unchanged guard
+   * lives in `SessionStore.noteStickySession`, mirroring web's — an earlier
+   * version of this comment claimed that guard as an existing fact when
+   * harmony's store had no such check, so every send wrote the same value
+   * back to preferences. Found by the Task 6c review; the guard is real now.
    */
   sendMessage(chatKey: string, text: string): string {
     const clientMsgId: string = util.generateRandomUUID(true);

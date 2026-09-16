@@ -365,6 +365,16 @@ export class SessionStore {
     if (connectionId.length === 0 || sessionKey.length === 0) {
       return;
     }
+    // Unchanged value is a no-op, matching web's own guard
+    // (`packages/web/src/lib/store/session.ts`: `if (s.stickySession...
+    // === sessionKey) return s`). Not cosmetic: Task 6c made every outgoing
+    // message call this, and without the guard each send wrote the same
+    // value straight back to preferences. Skipping it also avoids a
+    // pointless `@Trace` write, which would wake every observer of this
+    // store for a change that isn't one.
+    if (this.stickySessions.get(connectionId) === sessionKey) {
+      return;
+    }
     this.stickySessions.set(connectionId, sessionKey);
     this.persist();
   }
