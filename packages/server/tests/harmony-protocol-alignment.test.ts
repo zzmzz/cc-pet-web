@@ -144,7 +144,7 @@ describe("harmony REST endpoint alignment", () => {
    * silently counted as called by `sessionsUrl()`, which serves a different
    * HTTP method on the same path. Task 5 wires all three.
    */
-  const PENDING_CALLER_ENDPOINTS = new Set(["SESSION_CREATE", "SESSION_DELETE", "SESSION_READ"]);
+  const PENDING_CALLER_ENDPOINTS = new Set<string>();
 
   it("declares no endpoint the client never calls (except endpoints named in PENDING_CALLER_ENDPOINTS)", () => {
     const endpoints = declaredEndpoints();
