@@ -22,6 +22,12 @@ The shell owns exactly: the server-address screen, the back key, the file picker
 and a load-failure screen. Everything else — login, sessions, messages, the WebSocket,
 notifications-in-page — belongs to `packages/web`.
 
+Downloads land in the app's own sandbox (`filesDir/downloads`), which keeps the permission
+list at the two entries Task 10 added but also means the "已保存 <name>" toast names a file
+the user cannot open from any file manager. Making it useful means routing through
+`picker.DocumentViewPicker.save()` — no new permission either — and deferring `item.start()`
+until the user picks a location. Named follow-up, not done.
+
 **No background notifications.** The app suspends when backgrounded and the page's WebSocket
 drops with it. That was accepted when this direction was chosen.
 
@@ -182,12 +188,14 @@ that it compiles and unit-tests pass. Each one prints an explicit `PASS: [...]` 
 `FAIL: [...]` line and exits non-zero on failure — never rely on the exit code alone, and
 never assume silence means success.
 
-### The one probe that applies to the shell
+### The three probes that apply to the shell
 
 ```bash
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 cd harmony
 bash scripts/device-shell-probe.sh
+bash scripts/device-download-probe.sh
+bash scripts/device-paint-repro.sh     # a measurement, not a gate — see below
 ```
 
 `device-shell-probe.sh` wipes the target's app data, launches the shell, types a server
@@ -217,11 +225,37 @@ Two gotchas that cost real time and are now encoded in the probe:
   to back, which is fine for a native `TextInput` but drops characters into an ArkWeb
   `<input>`; the probe's local `web_type_at` sleeps 1s between the two.
 
-One more trap, not shell-specific: `start_fixture_stack` only waits for the port to *open*,
-not for the listener to be the server it just started. A stale server left over from an
-earlier run answering on the same port will pass that check and then reject every token,
-which presents as "the login screen just sits there". Check `lsof -nP -iTCP:19411 -sTCP:LISTEN`
-before believing the app is at fault.
+`device-download-probe.sh` drives the one path nothing else reaches. The bridge fixture
+answers a message containing `SENDFILE` with a bridge `file` frame; `packages/server`
+persists it under `/api/files/*`; `packages/web` fetches the bytes with the bearer token and
+renders `<a href="blob:…" download target="_blank">`. Tapping that anchor is what has to
+reach the shell's `WebDownloadDelegate`, and it does — the probe asserts on the shell's own
+`download finish` hilog line, because `filesDir/downloads` is owned by the app's uid and
+answers "Permission denied" to `hdc shell ls`. Two consecutive green runs.
+
+Two things that will bite whoever touches it:
+
+- **The filename is in the tree twice.** `packages/server` sets the file message's *content*
+  to the file name, so the bubble caption and the download anchor carry the same string.
+  `ui_query` returns the caption — a non-interactive paragraph — and tapping it looks exactly
+  like a broken download. The probe's `ui_query_smallest` takes the smallest-area match
+  instead, which is always the anchor.
+- **Rebuild `packages/web/dist` before trusting any on-device result.** `dist` is gitignored
+  build output; the first attempt at this probe failed for an hour against a four-month-old
+  bundle whose `FileAttachmentView` predates the blob-URL anchor entirely, so there was no
+  link to tap. `pnpm --filter @cc-pet/web build`.
+
+`device-paint-repro.sh` measures the ArkWeb dropped-background-fill defect (see the §7.3 note
+below) against a plain HTML page with none of the product's CSS, and prints
+`RESULT: <missing> of <total>`. It exits 0 either way. Run it on a physical device to settle
+whether the defect is emulator-only.
+
+One more trap, not shell-specific: `start_fixture_stack` used to only wait for the port to
+*open*, not for the listener to be the server it just started, so a stale server from an
+earlier run would pass that check and then reject every token — which presents as "the login
+screen just sits there" and cost three probe runs. It now refuses to start when either port
+is already listening, and names `lsof -nP -iTCP:<port> -sTCP:LISTEN` in the failure. If a
+probe fails that way, kill the squatter; do not assume the app is broken.
 
 ### The eight native-port probes are dead under this architecture
 
@@ -332,17 +366,47 @@ evidence for the report, not artifacts of the build).
    `WebKeyboardAvoidMode.RESIZE_CONTENT` shrinks the component to `[0,137][1256,1661]` when the
    IME opens, so the composer, the 文件 button and 发送 all stay fully visible above the
    keyboard. Verified on both the web login field and the chat composer.
-3. **Scrolling works; painting does not always keep up.** Fling and inertia are fine, and the
-   web app's own scroll logic works inside ArkWeb (its 回到最新 pill appears and behaves).
-   **But after scrolling, the right-aligned user message bubbles frequently fail to repaint
-   their background**: `bg-indigo-500` collapses to a thin bar at the bubble's bottom edge and
-   the `text-white` label is left on a near-white page, effectively unreadable. It persists
-   (still wrong 5s later, and through further slow scrolling) and only clears on a full
-   relayout — opening the keyboard repaints them correctly. Assistant bubbles and the file
-   attachment bubble are never affected. Not fixable from the shell: setting
-   `renderMode: RenderMode.SYNC_RENDER` was tried and changed nothing (reverted). Whether
-   this is ArkWeb or the emulator's software renderer cannot be told apart without a physical
-   device, which this project does not use.
+3. **Scrolling works. There is an ArkWeb painting defect nearby, and it is not ours.**
+   Fling and inertia are fine and the web app's own scroll logic works inside ArkWeb (its
+   回到最新 pill appears and behaves).
+
+   Some boxes in a tall scrolling layer render their text — and their `outline`, if they have
+   one — while their `background-color` fill is simply not painted. On a chat transcript that
+   reads as a user bubble losing its indigo and leaving white-on-near-white text.
+   `scripts/device-paint-repro.sh` reproduces it deterministically (12 of 145 bubbles on the
+   emulator) against ~60 lines of plain HTML with **no framework and none of the product's
+   CSS**, which is the point: it is not a `packages/web` bug.
+
+   What was measured:
+   - `getComputedStyle().backgroundColor` reads back correctly on the bubbles that do not
+     paint. Style resolution is fine; rasterization is not.
+   - The same declaration paints on one row and not on the row above it. Colour, colour
+     notation (`#hex`, `rgb()`, `oklch()`, named), `border-radius`, `overflow`, alignment and
+     width were each varied and none of them predicts which bubbles are hit.
+   - Failures are anchored to CONTENT coordinates: scroll and the same bubbles stay wrong at
+     every screen position. So it is neither a screen-tile artifact nor an
+     `hdc snapshot_display` capture artifact.
+   - Deterministic — force-stop and relaunch reproduces the same set.
+   - It needs a tall scroller **and** heterogeneous paint properties: 140 identical bubbles
+     lose nothing (0 of 74), the same at randomised widths loses nothing (0 of 107), and a
+     short non-scrolling page loses nothing.
+   - `renderMode: RenderMode.SYNC_RENDER` changes nothing (tried, reverted) — consistent with
+     the defect living inside the WebView's own raster rather than in how ArkUI presents the
+     surface.
+
+   **Probably emulator-only.** This emulator's ArkWeb has no GPU path at all:
+   `canvas.getContext('webgl')`, `'experimental-webgl'` and `'webgl2'` all return `null`
+   (2d and bitmaprenderer work), on 4 cores with `deviceMemory=4`. Real hardware gives ArkWeb
+   a GPU. Run `scripts/device-paint-repro.sh` on a physical device to settle it: `RESULT: 0`
+   means it is an emulator artifact.
+
+   **The product does not currently trip it.** A freshly built `packages/web` with an
+   18-message transcript, and a second run with a deliberately heterogeneous one (attachment
+   bubbles, link-preview cards, short/long/wrapping messages), rendered every bubble
+   correctly across 20 scroll positions. The original sighting was against a
+   **four-month-old** `packages/web/dist`; it has not been reproduced on the current build.
+   Do not "fix" this in `packages/web` CSS — no property predicts it, so any such change
+   would be a guess shipped to every desktop and mobile browser.
 4. **`<input type="file">` works end to end.** `onShowFileSelector` → `DocumentViewPicker` →
    `handleFileList` puts a real `File` in the page: the system picker opens, the chosen file
    shows up as `📎 pickme.txt` in the composer, and sending it round-trips through the real
@@ -400,8 +464,10 @@ acceptance list is human-eye work. Run it on the emulator after any change to `e
    above — but confirm it is an exit and not a crash.
 3. Tap 文件, pick a file, send it: the chip appears in the composer and the message lands in
    the transcript.
-4. Scroll a long transcript up and down and look at the user bubbles. The repaint defect in
-   item 3 above is the thing to watch for regressions against.
+4. Scroll a long transcript up and down and look at the user bubbles. If one loses its indigo
+   background and leaves white text on the near-white page, that is the ArkWeb painting
+   defect in item 3 — run `scripts/device-paint-repro.sh` to quantify it before touching any
+   CSS.
 5. From the error page (only reachable per the PWA note above), 更换服务器 → the address is
    prefilled and a 取消 button appears; entering a different valid address reloads the page
    there, and the new address survives a restart.
@@ -409,8 +475,10 @@ acceptance list is human-eye work. Run it on the emulator after any change to `e
 ## Constraints
 
 - **服务端零改动 (zero server changes).** This client only consumes the existing WebSocket
-  bridge protocol already used by `packages/web`; no code under `packages/` in this repo is
-  modified to support it, at any point in this project — not even for test fixtures. The
+  bridge protocol already used by `packages/web`; no code under `packages/server` in this
+  repo is modified to support it, at any point in this project — not even for test fixtures.
+  (`packages/web` *may* be changed for ArkWeb compatibility — see §2 of the design doc — as
+  long as desktop and mobile-browser behaviour does not get worse. Nothing has needed it yet.) The
   probes above start a real, unmodified `packages/server` process against a scratch data
   directory for exactly this reason, rather than special-casing anything inside `packages/`
   for HarmonyOS.
