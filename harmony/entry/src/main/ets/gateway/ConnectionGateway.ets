@@ -3,11 +3,12 @@ import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { backoffDelayMs } from '../logic/backoff';
 import {
-  normalizeEvent, WsFrame, NormalizedEvent, splitChatKey, ChatKeyParts, BridgeInfo,
+  normalizeEvent, WsFrame, NormalizedEvent, splitChatKey, ChatKeyParts, BridgeInfo, chatKeyOf,
 } from '../logic/normalizeEvent';
+import { resolveIncomingSessionRouting, SessionRouteDecision } from '../logic/sessionRouting';
 import { assistantMessageFromFrame } from '../logic/assistantMessageFromFrame';
 import { Outbox, OutboxStatus, RetryPolicy } from '../logic/outbox';
-import { WsEvents, ChatMessage, Session } from '../model/Protocol';
+import { WsEvents, ChatMessage, Session, isRoutedEventType } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
 import { TaskStore } from '../store/TaskStore';
@@ -448,7 +449,89 @@ export class ConnectionGateway {
     return chatKey !== SessionStore.connect().currentChatKey || !this.foreground;
   }
 
-  private dispatch(event: NormalizedEvent): void {
+  /**
+   * Decides which session an inbound frame belongs to, before any store sees
+   * it.
+   *
+   * A reply that arrives without a `sessionKey` belongs to the session that
+   * ASKED, not to whichever session the user has since switched to. That
+   * sentence is the whole feature: without it, sending into one chat,
+   * switching to another while the model thinks, and getting the answer in
+   * the second chat is indistinguishable, from the user's side, from the
+   * message having been sent to the wrong place.
+   *
+   * Only the 11 types in `ROUTED_EVENT_TYPES` go through this; everything
+   * else keeps the `sessionKey` that was on the wire (`bridge:manifest` is
+   * connection-wide, `message-ack` is addressed by `clientMsgId`,
+   * `resident:unread` names its own chatKey and is server-authoritative).
+   *
+   * `activeSessionKeyRawOf`, NOT `activeSessionKeyOf`. The raw accessor
+   * answers `''` for a connection the user has never opened, which is the
+   * `undefined` web passes in (`activeSessionKey: s.activeSessionKey[
+   * connectionId]` in `packages/web/src/lib/web-adapter.ts`) and which lets
+   * the router fall through to `knownSessions[0]`. The substituting accessor
+   * would hand back `'default'`, making `active.length > 0` permanently true
+   * — the router's `'known'` and `'fallback'` branches would become dead
+   * code and a keyless frame would land in `c1::default`, a chat that may not
+   * exist, while web put the same frame in the connection's first real
+   * session. `activeSessionKeyRawOf` exists for no other reason; see its doc.
+   *
+   * Sticky is written when the frame TOLD us its session (`'payload'`,
+   * `'reply_ctx'`) and only read when we GUESSED (`'active'`, `'known'`,
+   * `'fallback'`) — mirroring `packages/web/src/App.tsx`. Letting a guess
+   * write the pin would let one mis-guessed frame drag the rest of the turn
+   * after it, and the pin would no longer mean "where this turn came from".
+   *
+   * Public, not private, purely as a test seam (same rationale as
+   * `SessionStore.persistedSnapshot`): it is the one part of `dispatch` that
+   * can be exercised without a socket, a notification manager or a clock, and
+   * `DispatchRouting.test.ets` is what proves the accessor above is the raw
+   * one. It has exactly one production caller, the first line of `dispatch`.
+   */
+  routeIncoming(event: NormalizedEvent): NormalizedEvent {
+    if (event.connectionId.length === 0 || !isRoutedEventType(event.type)) {
+      return event;
+    }
+    const sessions: SessionStore = SessionStore.connect();
+    const connectionId: string = event.connectionId;
+    const decision: SessionRouteDecision = resolveIncomingSessionRouting({
+      payloadSessionKey: event.frame.sessionKey,
+      // Whichever spelling the upstream bridge chose — see `WsFrame.replyCtx`.
+      replyCtx: event.frame.replyCtx ?? event.frame.reply_ctx,
+      knownSessions: sessions.knownSessionKeysOf(connectionId),
+      activeSessionKey: sessions.activeSessionKeyRawOf(connectionId),
+    });
+
+    let sessionKey: string = decision.sessionKey;
+    if (decision.source === 'payload' || decision.source === 'reply_ctx') {
+      sessions.noteStickySession(connectionId, sessionKey);
+    } else {
+      const sticky: string = sessions.stickySessionOf(connectionId);
+      if (sticky.length > 0) {
+        sessionKey = sticky;
+      }
+    }
+
+    if (sessionKey === event.sessionKey) {
+      return event;
+    }
+    return {
+      type: event.type,
+      connectionId: connectionId,
+      sessionKey: sessionKey,
+      chatKey: chatKeyOf(connectionId, sessionKey),
+      // The same frame object, not a rebuilt one: every consumer below reads
+      // its raw fields (`content`, `msgId`, `seq`, `delta`) straight off it.
+      frame: event.frame,
+    };
+  }
+
+  private dispatch(incoming: NormalizedEvent): void {
+    // Routing runs before anything reads `chatKey`, because `chatKey` is what
+    // every branch below stores against — `normalizeEvent` can only build it
+    // from the `sessionKey` that was on the wire, and the frames this task
+    // exists for have none.
+    const event: NormalizedEvent = this.routeIncoming(incoming);
     if (event.type === WsEvents.MESSAGE_ACK) {
       const clientMsgId: string = event.frame.clientMsgId ?? '';
       if (clientMsgId.length === 0) {

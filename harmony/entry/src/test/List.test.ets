@@ -17,6 +17,8 @@ import sessionStoreModelTest from './SessionStoreModel.test';
 import sessionMapsTest from './SessionMaps.test';
 import endpointsTest from './Endpoints.test';
 import requestHeadersTest from './RequestHeaders.test';
+import routingEventSetTest from './RoutingEventSet.test';
+import dispatchRoutingTest from './DispatchRouting.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -38,4 +40,6 @@ export default function testsuite() {
   sessionMapsTest();
   endpointsTest();
   requestHeadersTest();
+  routingEventSetTest();
+  dispatchRoutingTest();
 }

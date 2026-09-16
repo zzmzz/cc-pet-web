@@ -20,6 +20,25 @@ export interface WsFrame {
   type: string;
   connectionId?: string;
   sessionKey?: string;
+  /**
+   * The bridge's opaque reply context, `ccpet:<sessionKey>:<turnId>` -- the
+   * only thing that identifies the target session on a frame that carries no
+   * `sessionKey`. `sessionRouting.ets` parses it.
+   *
+   * BOTH spellings are declared, and the router reads `replyCtx ?? reply_ctx`,
+   * because the client does not get to pick one: nothing in `packages/`
+   * produces this field. It originates in the upstream bridge process and
+   * reaches us only because `hub.broadcast` spreads an untyped
+   * `Record<string, any>` payload onto the frame verbatim
+   * (`packages/server/src/ws/hub.ts`), so whichever spelling that bridge uses
+   * is the spelling that arrives. Web accepts both
+   * (`packages/web/src/lib/web-adapter.ts`) and has an integration test for
+   * each; accepting only one here would route correctly on web and silently
+   * mis-route on device for the exact same frame.
+   */
+  replyCtx?: string;
+  /** See `replyCtx` -- the snake_case spelling of the same field. */
+  reply_ctx?: string;
   /** bridge:message */
   content?: string;
   /** bridge:stream-delta */

@@ -29,6 +29,65 @@ describe("harmony protocol alignment", () => {
   });
 });
 
+const webAdapterPath = resolve(here, "../../web/src/lib/web-adapter.ts");
+
+/**
+ * The inbound events each client resolves a session for, read out of the two
+ * declarations themselves.
+ *
+ * This guard exists because the two lists have no shared source: web builds a
+ * `Set` from `WS_EVENTS`, harmony builds a `string[]` from its own `WsEvents`
+ * class, and nothing links them. The design (section 4.3 of
+ * docs/superpowers/specs/2026-09-16-harmony-session-management-design.md)
+ * makes the sets being IDENTICAL the whole contract — including the two
+ * content-bearing events (`bridge:card`, `bridge:audio`) both clients
+ * deliberately leave out — so that a keyless frame lands in the same chat on
+ * both. Drift here is invisible at runtime and only surfaces as a user saying
+ * a reply went to the wrong conversation on one client and not the other.
+ */
+function routedEventNames(source: string, declaration: RegExp): string[] {
+  const block = source.match(declaration);
+  if (!block) return [];
+  return Array.from(block[1].matchAll(/WS_EVENTS\.([A-Z_]+)|WsEvents\.([A-Z_]+)/g)).map(
+    (m) => m[1] ?? m[2],
+  );
+}
+
+describe("harmony inbound session-routing set alignment", () => {
+  it("routes exactly the events web routes, by shared-constant name", () => {
+    const harmony = routedEventNames(
+      readFileSync(protocolPath, "utf8"),
+      /export const ROUTED_EVENT_TYPES: string\[\] = \[([\s\S]*?)\];/,
+    );
+    const web = routedEventNames(
+      readFileSync(webAdapterPath, "utf8"),
+      /const INCOMING_SESSION_ROUTING_TYPES = new Set<string>\(\[([\s\S]*?)\]\);/,
+    );
+
+    expect(web.length).toBe(11);
+    expect(harmony.length).toBe(11);
+    // Sorted: the two files are free to list them in a different order, but
+    // not to disagree about the membership.
+    expect([...harmony].sort()).toEqual([...web].sort());
+  });
+
+  it("keeps both clients agreeing that bridge:card and bridge:audio are not routed", () => {
+    // Not redundant with the set comparison above: that one only proves the
+    // two clients match. This one proves WHICH way they match, so "web widened
+    // its set and harmony silently followed" still fails, and whoever widens
+    // it has to state that the web-side bug from section 4.3 was actually
+    // resolved rather than copied.
+    const harmony = routedEventNames(
+      readFileSync(protocolPath, "utf8"),
+      /export const ROUTED_EVENT_TYPES: string\[\] = \[([\s\S]*?)\];/,
+    );
+    expect(harmony).not.toContain("BRIDGE_CARD");
+    expect(harmony).not.toContain("BRIDGE_AUDIO");
+    expect(WS_EVENTS.BRIDGE_CARD).toBe("bridge:card");
+    expect(WS_EVENTS.BRIDGE_AUDIO).toBe("bridge:audio");
+  });
+});
+
 const endpointsPath = resolve(here, "../../../harmony/entry/src/main/ets/model/Endpoints.ets");
 const serverSrc = resolve(here, "../src");
 

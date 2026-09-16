@@ -22,6 +22,54 @@ export class WsEvents {
   static readonly MESSAGE_ACK: string = 'message-ack';
 }
 
+/**
+ * The inbound events whose target session is resolved by
+ * `resolveIncomingSessionRouting` (logic/sessionRouting.ets) before they
+ * reach any store. Everything else keeps the `sessionKey` the server put on
+ * the wire.
+ *
+ * Exactly the 11 types web routes -- `INCOMING_SESSION_ROUTING_TYPES` in
+ * `packages/web/src/lib/web-adapter.ts` -- and every one of them was read
+ * back off `packages/shared/src/constants/events.ts`, which is the only
+ * source of truth for these spellings (a name copied from a design doc is a
+ * name nothing verifies).
+ *
+ * This client does not consume all 11 yet: `bridge:buttons`,
+ * `bridge:file-received` and the three `bridge:preview-*` have no branch in
+ * `ConnectionGateway.dispatch`. They are listed anyway, because the failure
+ * mode of adding them later is silent -- a rich-message branch wired up
+ * against an unrouted event type would put keyless frames in the wrong chat
+ * and nothing would report it.
+ *
+ * `bridge:card` and `bridge:audio` carry session content too and are
+ * deliberately NOT here. Web does not route them; this client mirrors web
+ * rather than forking silently (spec section 4.3 of
+ * docs/superpowers/specs/2026-09-16-harmony-session-management-design.md).
+ * That may well be a web-side oversight, in which case it gets reported as a
+ * web bug and fixed on both sides at once -- what it must not become is a
+ * one-sided fix that makes two clients disagree about where a frame belongs.
+ * `RoutingEventSet.test.ets` pins the count at 11 and pins those two out, so
+ * widening this list means editing a test that explains the decision.
+ */
+export const ROUTED_EVENT_TYPES: string[] = [
+  WsEvents.BRIDGE_MESSAGE,
+  WsEvents.BRIDGE_STREAM_DELTA,
+  WsEvents.BRIDGE_STREAM_DONE,
+  WsEvents.BRIDGE_BUTTONS,
+  WsEvents.BRIDGE_FILE_RECEIVED,
+  WsEvents.BRIDGE_TYPING_START,
+  WsEvents.BRIDGE_TYPING_STOP,
+  WsEvents.BRIDGE_PREVIEW_START,
+  WsEvents.BRIDGE_PREVIEW_UPDATE,
+  WsEvents.BRIDGE_PREVIEW_DELETE,
+  WsEvents.BRIDGE_ERROR,
+];
+
+/** True when this event type's target session must be resolved before dispatch. */
+export function isRoutedEventType(type: string): boolean {
+  return ROUTED_EVENT_TYPES.includes(type);
+}
+
 export type ChatRole = 'user' | 'assistant' | 'system';
 
 export interface ChatMessage {
