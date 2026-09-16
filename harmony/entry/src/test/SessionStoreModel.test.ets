@@ -91,6 +91,43 @@ export default function sessionStoreModelTest() {
       expect(store.stickySessionOf('c1')).assertEqual('');
     });
 
+    it('returns a raw active key that is empty until a session is picked', 0, () => {
+      // Routing must be able to tell "never looked at" from "looking at
+      // default" -- see activeSessionKeyRawOf's doc for what breaks otherwise.
+      const store: SessionStore = SessionStore.connect();
+      expect(store.activeSessionKeyRawOf('c1')).assertEqual('');
+      expect(store.activeSessionKeyOf('c1')).assertEqual('default');
+      store.setActiveSession('c1', 's1');
+      expect(store.activeSessionKeyRawOf('c1')).assertEqual('s1');
+    });
+
+    it('clearAll wipes every field a logout must not leak', 0, () => {
+      // This assertion exists because clearAll() was previously used only as
+      // beforeEach SETUP and never asserted: it could have silently stopped
+      // clearing any of these four and all 11 tests would still have passed.
+      // Account A's state reaching account B is a bug this project already
+      // shipped once.
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 's1', 100), session('c2', 'r', 100, true)]);
+      store.setActiveConnection('c1');
+      store.setActiveSession('c1', 's1');
+      store.noteStickySession('c1', 's1');
+      store.incrementUnread('c1::s1');
+
+      store.clearAll();
+
+      expect(store.activeConnectionId()).assertEqual('');
+      expect(store.currentChatKey).assertEqual('');
+      expect(store.activeSessionKeyRawOf('c1')).assertEqual('');
+      expect(store.stickySessionOf('c1')).assertEqual('');
+      expect(store.sessionsOf('c1').length).assertEqual(0);
+      expect(store.sessionsOf('c2').length).assertEqual(0);
+      expect(store.totalUnread()).assertEqual(0);
+      expect(store.residentSession() === undefined).assertTrue();
+      expect(store.bridges.length).assertEqual(0);
+      expect(store.skillCommands.length).assertEqual(0);
+    });
+
     it('falls the active session back to default when the active one is removed', 0, () => {
       const store: SessionStore = SessionStore.connect();
       store.applySessions([session('c1', 'a', 100), session('c1', 'b', 200)]);

@@ -213,6 +213,26 @@ export class SessionStore {
     return this.activeSessionKeys.get(connectionId) ?? DEFAULT_SESSION_KEY;
   }
 
+  /**
+   * The same pointer WITHOUT the `'default'` substitution — `''` means "this
+   * connection has never been looked at".
+   *
+   * Inbound session routing must use this one, not `activeSessionKeyOf`.
+   * Web passes the raw value into the router
+   * (`packages/web/src/lib/web-adapter.ts`: `activeSessionKey:
+   * s.activeSessionKey[connectionId]`), so on a connection the user has
+   * never touched it arrives as `undefined` and the router falls through to
+   * its `'known'` branch. Feeding the `'default'`-substituted value in
+   * instead makes `active.length > 0` always true, which would render
+   * `resolveIncomingSessionRouting`'s `'known'` AND `'fallback'` branches
+   * unreachable — an unlabelled frame would land in `default` here while web
+   * put it in `knownSessions[0]`. Found by the Task 2 review before Task 6
+   * could wire the wrong accessor in.
+   */
+  activeSessionKeyRawOf(connectionId: string): string {
+    return this.activeSessionKeys.get(connectionId) ?? '';
+  }
+
   activeConnectionId(): string {
     return this.activeConnection;
   }
