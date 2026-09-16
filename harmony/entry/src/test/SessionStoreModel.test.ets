@@ -9,6 +9,10 @@ function session(connectionId: string, key: string, lastActiveAt: number, reside
   };
 }
 
+function labelled(connectionId: string, key: string, label: string): Session {
+  return { key: key, connectionId: connectionId, label: label, createdAt: 1000, lastActiveAt: 100 };
+}
+
 export default function sessionStoreModelTest() {
   describe('SessionStore two-level model', () => {
     beforeEach(() => { SessionStore.connect().clearAll(); });
@@ -148,6 +152,65 @@ export default function sessionStoreModelTest() {
       store.removeSession('c1', 'b');
       expect(store.activeSessionKeyOf('c1')).assertEqual('a');
       expect(store.currentChatKey).assertEqual('c1::a');
+    });
+  });
+
+  describe('SessionStore.touchSessionAutoTitle', () => {
+    beforeEach(() => { SessionStore.connect().clearAll(); });
+
+    it('names an unlabelled session after the first thing said in it', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 's1', 100)]);
+      store.touchSessionAutoTitle('c1', 's1', '  hello world  ');
+      expect(store.sessionsOf('c1')[0].label).assertEqual('hello world');
+    });
+
+    it('truncates a long first message the way web does', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 's1', 100)]);
+      store.touchSessionAutoTitle('c1', 's1', '123456789012345678901234567890');
+      expect(store.sessionsOf('c1')[0].label).assertEqual('123456789012345\u2026');
+    });
+
+    it('refuses to overwrite a label that is already set', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([labelled('c1', 's1', 'Pinned title')]);
+      store.touchSessionAutoTitle('c1', 's1', 'new text');
+      expect(store.sessionsOf('c1')[0].label).assertEqual('Pinned title');
+    });
+
+    it('treats a label that merely echoes the session key as still unnamed', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([labelled('c1', 's1', 's1')]);
+      store.touchSessionAutoTitle('c1', 's1', 'real title');
+      expect(store.sessionsOf('c1')[0].label).assertEqual('real title');
+    });
+
+    it('declines on blank text rather than blanking the row', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 's1', 100)]);
+      store.touchSessionAutoTitle('c1', 's1', '   ');
+      expect(store.sessionsOf('c1')[0].label === undefined).assertTrue();
+    });
+
+    it('ignores a session this store has never heard of', 0, () => {
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 's1', 100)]);
+      store.touchSessionAutoTitle('c1', 'ghost', 'nope');
+      expect(store.sessionsOf('c1').length).assertEqual(1);
+      expect(store.sessionsOf('c1')[0].label === undefined).assertTrue();
+    });
+
+    it('keeps the renamed session visible in the connection index', 0, () => {
+      // The title is written into `sessions`; `sessionsByConnection` is what
+      // the rows actually render, so the rebuild has to happen or the new
+      // name never reaches the screen.
+      const store: SessionStore = SessionStore.connect();
+      store.applySessions([session('c1', 'a', 100), session('c1', 'b', 200)]);
+      store.touchSessionAutoTitle('c1', 'a', 'named');
+      const keys: string[] = store.sessionsOf('c1').map((s: Session) => s.key);
+      expect(keys.join(',')).assertEqual('b,a');
+      expect(store.sessionsOf('c1')[1].label).assertEqual('named');
     });
   });
 }

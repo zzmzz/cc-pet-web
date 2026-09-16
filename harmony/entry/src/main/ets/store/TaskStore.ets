@@ -32,4 +32,17 @@ export class TaskStore {
   setPhase(chatKey: string, phase: TaskPhase): void {
     this.phases.set(chatKey, phase);
   }
+
+  /**
+   * Forget this chat's phase entirely, so `phaseOf` falls back to `'idle'`.
+   *
+   * `delete`, not `setPhase(chatKey, 'idle')`: the two are indistinguishable
+   * through `phaseOf`, but only the delete stops a session key that is about
+   * to be reused from carrying an entry for a conversation that no longer
+   * exists. Web's `clearSessionTaskState` deletes for the same reason.
+   * `ConnectionGateway.resetSessionResidue` is the only caller.
+   */
+  clearPhase(chatKey: string): void {
+    this.phases.delete(chatKey);
+  }
 }

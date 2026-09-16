@@ -5,7 +5,7 @@ import { RestClient, UnauthorizedError } from '../gateway/RestClient';
 import { bridgeConnectUrl } from '../model/Endpoints';
 import { SlashCommandSpec } from '../model/Protocol';
 import { isSlashInput, matchCommands, mergeCommands } from '../logic/slashCommands';
-import { splitChatKey } from '../logic/normalizeEvent';
+import { splitChatKey, ChatKeyParts } from '../logic/normalizeEvent';
 import { AuthStore } from '../store/AuthStore';
 import { ChatStore } from '../store/ChatStore';
 import { SessionStore } from '../store/SessionStore';
@@ -54,6 +54,16 @@ export struct MessageInput {
     if (trimmed.length === 0) {
       return;
     }
+    // Auto-title BEFORE the send, matching web's three send sites
+    // (`ChatWindow.tsx`: `touchSessionAutoTitle` then `noteStickySession`
+    // then the send). Order is not arbitrary — the title rule keys off
+    // "does this session still have no label", and `sendMessage` is what
+    // starts the turn that will eventually mutate this session's state.
+    // Doing it here rather than inside `sendMessage` keeps the gateway's
+    // send path about the wire: this is a naming rule with no network
+    // component at all (no server call is made for it, by design).
+    const parts: ChatKeyParts = splitChatKey(this.chatKey);
+    this.session.touchSessionAutoTitle(parts.connectionId, parts.sessionKey, trimmed);
     ConnectionGateway.instance.sendMessage(this.chatKey, trimmed);
     this.text = '';
   }

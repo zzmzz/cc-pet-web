@@ -1,8 +1,11 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { mergeHistoryMessages } from '../logic/mergeHistory';
+import { firstUserText } from '../logic/autoTitle';
+import { splitChatKey, ChatKeyParts } from '../logic/normalizeEvent';
 import { ChatMessage } from '../model/Protocol';
 import { ChatStore } from '../store/ChatStore';
 import { ConnectionStore } from '../store/ConnectionStore';
+import { SessionStore } from '../store/SessionStore';
 import { HistoryApi, HistoryBatch } from './HistoryApi';
 import { UnauthorizedError } from './RestClient';
 
@@ -104,7 +107,28 @@ export class HistoryBackfill {
     const historyApi: HistoryApi = new HistoryApi(this.baseUrl, this.token);
     historyApi.fetch(chatKey, cursor).then((batch: HistoryBatch) => {
       const current: ChatMessage[] = ChatStore.connect().messagesOf(chatKey);
-      ChatStore.connect().replaceAll(chatKey, mergeHistoryMessages(current, batch.messages));
+      const merged: ChatMessage[] = mergeHistoryMessages(current, batch.messages);
+      ChatStore.connect().replaceAll(chatKey, merged);
+      // Re-derive the session's auto-title from the transcript, mirroring
+      // web's lazy loader (`fetchAndStoreHistory` ->
+      // `syncAutoTitleFromHistoryMessages`). It closes the window between a
+      // chat's history arriving and `/api/sessions` arriving, in which a
+      // session record carries no label at all.
+      //
+      // Measured on the emulator while writing this task's probe, so nobody
+      // has to guess: THIS SERVER ALREADY AUTO-TITLES, with the identical
+      // rule (`packages/server/src/storage/messages.ts`, `AUTO_TITLE_MAX_LEN
+      // = 15`, set-if-missing on insert), so `/api/sessions` does come back
+      // with the same label rather than none — `GET /api/sessions` returned
+      // `"label":"probe-beta-mess…"` for a session this client never sent a
+      // label for. That makes this line belt-and-braces against a server
+      // whose record has no label, not the sole source of the name. It is
+      // kept for web parity and because `touchSessionAutoTitle` refuses to
+      // overwrite a real label, so it can never clobber a server-side or
+      // user-set one.
+      const parts: ChatKeyParts = splitChatKey(chatKey);
+      SessionStore.connect().touchSessionAutoTitle(
+        parts.connectionId, parts.sessionKey, firstUserText(merged));
       if (batch.truncated) {
         // The drain loop ran out of iterations with the server still
         // reporting `hasMore`. The messages above are real and are kept, but

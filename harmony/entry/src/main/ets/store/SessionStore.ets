@@ -6,6 +6,7 @@ import {
   WsFrame, BridgeInfo, ChatKeyParts, chatKeyOf, splitChatKey, DEFAULT_SESSION_KEY,
 } from '../logic/normalizeEvent';
 import { serializeStringMap, deserializeStringMap } from '../logic/sessionMaps';
+import { autoSessionTitle } from '../logic/autoTitle';
 
 const APP_STORAGE_KEY: string = 'SessionStore';
 const STORE_NAME: string = 'cc_pet_sessions';
@@ -427,6 +428,62 @@ export class SessionStore {
     } else {
       this.residentKeys.delete(key);
     }
+    this.rebuildConnectionIndex();
+  }
+
+  /**
+   * Names an unnamed session after the first thing said in it — web's
+   * `touchSessionAutoTitle` (`packages/web/src/lib/store/session.ts`), rule
+   * for rule, including all three of its refusals:
+   *
+   *   1. blank text (`autoSessionTitle` returns `''`) — nothing to name it;
+   *   2. a session this store has never heard of — a title with no record to
+   *      hang on would be silently dropped by the next `rebuildConnectionIndex`
+   *      anyway;
+   *   3. a label that is already set AND is not just the session key echoed
+   *      back. Web treats `label === key` as "still unnamed" and so does
+   *      this, because `SessionApi.create` sends no label and some server
+   *      records come back with the key in that slot.
+   *
+   * LOCAL ONLY, by design (the brief is explicit): there is no
+   * `PATCH /api/sessions/.../label` call here and none is wanted. What makes
+   * that safe rather than lossy is a fact measured on the emulator for this
+   * task: `packages/server` runs the SAME rule server-side
+   * (`storage/messages.ts`, `AUTO_TITLE_MAX_LEN = 15`, set-if-missing when a
+   * message is inserted), so the name this writes locally is the name
+   * `/api/sessions` hands back later — `applySessions` replacing every record
+   * wholesale does not lose it. This call is what makes the row rename
+   * IMMEDIATELY, on the send, instead of at the next manifest.
+   *
+   * Not persisted: `persist()` covers the two pointer maps only, and a title
+   * the server and the transcript can both regenerate is not worth a third.
+   */
+  touchSessionAutoTitle(connectionId: string, sessionKey: string, userText: string): void {
+    const title: string = autoSessionTitle(userText);
+    if (title.length === 0) {
+      return;
+    }
+    const key: string = chatKeyOf(connectionId, sessionKey);
+    const session: Session | undefined = this.sessions.get(key);
+    if (session === undefined) {
+      return;
+    }
+    const current: string = session.label === undefined ? '' : session.label.trim();
+    if (current.length > 0 && current !== session.key) {
+      return;
+    }
+    // Rebuilt field by field rather than spread: ArkTS has no object spread,
+    // and a new object (not a mutation of the stored one) is what makes the
+    // `@Trace` write observable to the rows rendering this list.
+    this.sessions.set(key, {
+      key: session.key,
+      connectionId: session.connectionId,
+      label: title,
+      createdAt: session.createdAt,
+      lastActiveAt: session.lastActiveAt,
+      isResident: session.isResident,
+      unreadCount: session.unreadCount,
+    });
     this.rebuildConnectionIndex();
   }
 

@@ -352,8 +352,20 @@ export function formatTime(ts: number, now: number): string {
  * active connection together, in that order, so `currentChatKey` is never
  * momentarily pointed at the new connection's previous session. That is what
  * `openResidentSession` below relies on.
+ *
+ * The history fetch lives HERE, in the shared helper, rather than at each
+ * shell's call site the brief suggested: the two shells exist to render the
+ * same rows, and a trigger duplicated in both is exactly the drift this file
+ * was extracted to stop. It is web's own arrangement too — the loader hangs
+ * off `setActiveSession` in the store, not off `SessionDropdown`.
+ *
+ * `loadHistory` has exactly one `false` caller, `applyCreatedSession` below,
+ * and it is a genuine correctness rule rather than an optimisation: a key the
+ * client minted a moment ago has no server history, and asking for it would
+ * at best waste a round trip and at worst raise `ErrorBanner`'s "history
+ * failed" over a session that never had any.
  */
-export function selectSession(store: SessionStore, session: Session): void {
+export function selectSession(store: SessionStore, session: Session, loadHistory: boolean = true): void {
   const key: string = chatKeyForSession(session);
   store.setCurrent(key);
   // Switching to a session is how the user acknowledges it — mark it read.
@@ -361,6 +373,9 @@ export function selectSession(store: SessionStore, session: Session): void {
   // only ever comes from the server via `resident:unread`), so this is
   // safe to call unconditionally.
   store.clearUnread(key);
+  if (loadHistory) {
+    ConnectionGateway.instance.ensureHistory(key);
+  }
 }
 
 /**
@@ -449,16 +464,59 @@ export function newSessionKey(now: number): string {
 }
 
 /**
+ * Everything web's `createSession` does AFTER its `POST /api/sessions`
+ * resolves, in web's order (`packages/web/src/components/SessionDropdown.tsx`).
+ * Split out from `createAndSelectSession` below so the four store effects are
+ * unit-testable without a server; `now` is a parameter for the same reason
+ * `newSessionKey`/`formatTime` take one.
+ *
+ * The order is load-bearing:
+ *
+ * 1. **Pin the session being LEFT** if nothing is pinned. Web's own comment:
+ *    anything still in flight belongs to the session the user is leaving, and
+ *    sticky is only written by an outgoing send or a keyed reply — so it can
+ *    legitimately be empty (e.g. right after a cold start while a turn from
+ *    before it is still unfinished). Without this pin, a keyless reply landing
+ *    after the switch follows the ACTIVE pointer straight into the session
+ *    created on the next line. This is the sixth of web's six sticky writers
+ *    and the last one this client was missing.
+ *    `activeSessionKeyRawOf` (not `activeSessionKeyOf`) because web reads the
+ *    raw map: a connection the user has never picked a session on must pin
+ *    nothing, not `'default'`.
+ * 2. **Clear the new key's residue** BEFORE it becomes the active session, so
+ *    nothing from another conversation is ever on screen under it — see
+ *    `ConnectionGateway.resetSessionResidue`, including why the outbox is
+ *    left alone.
+ * 3. Seed the record locally rather than waiting for the server's copy: it
+ *    arrives with the next `/api/sessions` fetch, and `upsertSession` is
+ *    keyed on the same chatKey, so that later copy replaces this one instead
+ *    of doubling it. Same fields web seeds.
+ * 4. Select it WITHOUT a history fetch — see `selectSession`'s `loadHistory`.
+ */
+export function applyCreatedSession(
+  store: SessionStore,
+  connectionId: string,
+  key: string,
+  now: number,
+): void {
+  const leavingKey: string = store.activeSessionKeyRawOf(connectionId);
+  if (leavingKey.length > 0 && leavingKey !== key && store.stickySessionOf(connectionId).length === 0) {
+    store.noteStickySession(connectionId, leavingKey);
+  }
+  ConnectionGateway.instance.resetSessionResidue(connectionId, key);
+  const created: Session = { key: key, connectionId: connectionId, createdAt: now, lastActiveAt: now };
+  store.upsertSession(created);
+  selectSession(store, created, false);
+}
+
+/**
  * `POST /api/sessions`, then show the new session — resolves `true` only if
  * the server actually created it (the shells close the sheet on `true`, the
  * same way web only closes its dropdown after the awaited POST resolves).
  *
- * Deliberately NOT here, because both belong to Task 9: clearing the new
- * key's client-side residue, and pinning the session being left so a keyless
- * reply to its in-flight turn doesn't follow the active pointer into this
- * brand-new session. Web's `createSession` does both between the POST and
- * the switch (`resetSessionResidue`, `noteStickySession`), and until Task 9
- * lands this client doesn't.
+ * The local half is `applyCreatedSession` above, which is where the two
+ * behaviours Task 8 deferred to Task 9 (residue clearing, pinning the session
+ * being left) now live.
  */
 export async function createAndSelectSession(store: SessionStore, connectionId: string): Promise<boolean> {
   if (connectionId.length === 0) {
@@ -471,14 +529,7 @@ export async function createAndSelectSession(store: SessionStore, connectionId: 
     reportSessionApiFailure('新建会话', err as Error);
     return false;
   }
-  const now: number = Date.now();
-  // Seeded locally rather than waited for: the server's own copy arrives
-  // with the next `/api/sessions` fetch, and `upsertSession` is keyed on the
-  // same chatKey, so that later copy replaces this one instead of doubling
-  // it. Same fields web seeds (`{ key, connectionId, createdAt, lastActiveAt }`).
-  const created: Session = { key: key, connectionId: connectionId, createdAt: now, lastActiveAt: now };
-  store.upsertSession(created);
-  selectSession(store, created);
+  applyCreatedSession(store, connectionId, key, Date.now());
   return true;
 }
 

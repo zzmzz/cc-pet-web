@@ -451,6 +451,78 @@ export class ConnectionGateway {
   }
 
   /**
+   * "Show me this chat's transcript" — called on every session switch
+   * (`SessionRow.selectSession`), which is the trigger web gets from its
+   * lazy loader (`setActiveSession` -> `lazyLoadChat`, see
+   * `packages/web/src/lib/hydrateFromServer.ts`). Before this, the only
+   * backfill trigger in this client was the single `currentChatKey` known at
+   * `bridge:manifest` time, so every session except the one you landed on
+   * opened empty and stayed empty until the next reconnect.
+   *
+   * Idempotent and cheap to call on every switch, which is why the
+   * shared row helper can call it unconditionally: `HistoryBackfill` skips a
+   * chatKey it is already fetching, and reads `ChatStore.maxSeqOf(chatKey)`
+   * as an `afterSeq` cursor — so returning to an already-loaded chat asks
+   * only for what arrived since, not the whole transcript. There is no
+   * "already loaded" flag to keep in step (web needs one because its loader
+   * always fetches from zero).
+   *
+   * Separate from `retryHistory` despite the identical body: they are
+   * different contracts with different callers (a user tapping 重试 on the
+   * error banner vs. the shells switching session), and only one of them is
+   * allowed to grow a "don't refetch" guard later.
+   *
+   * NOT called for a session this client just created — see
+   * `SessionRow.applyCreatedSession`.
+   */
+  ensureHistory(chatKey: string): void {
+    this.backfillHistory(chatKey);
+  }
+
+  /**
+   * Drops every client-only leftover under one session key: its messages and
+   * half-streamed text (`ChatStore.clear`), its task phase, its unread count.
+   * Web's `resetSessionResidue` (`packages/web/src/lib/store/session.ts`),
+   * same three things.
+   *
+   * Lives on the gateway, not on `SessionStore`: it spans three stores, and
+   * the stores in this codebase deliberately do not import one another
+   * (dependency direction is Gateway -> Store). The gateway is already the
+   * place that writes all three in `dispatch`.
+   *
+   * Called for a freshly created key and nothing else. That is the whole
+   * justification for it being safe: a `session-${Date.now()}` key the server
+   * has never heard of can only hold state that leaked in from another
+   * conversation — a keyless reply mis-routed into it, say — so there is
+   * nothing here to lose.
+   *
+   * THE OUTBOX IS DELIBERATELY NOT TOUCHED. A queued-but-unacked message is
+   * the one piece of state in this client that exists nowhere else: the
+   * server has not seen it, so no backfill can bring it back, and dropping it
+   * would be silent, permanent data loss of something the user typed. (This
+   * codebase has shipped that shape of bug before; see the first-release
+   * cold-start report.) Under the only key this is called with, the outbox is
+   * always empty anyway — and if a future caller ever points it at a live
+   * chat, the queued text still goes out on the next flush and comes back
+   * with the next backfill, rather than disappearing. `ChatStore.clear` does
+   * make its bubble vanish from the transcript until then; that is the price
+   * of not deleting it, and it is the right way round.
+   *
+   * `ConnectionStore.historyErrorOf` is left alone for the same "only ever a
+   * brand-new key" reason: nothing can have fetched history for a key that
+   * did not exist a moment ago, so there is no banner to clear.
+   */
+  resetSessionResidue(connectionId: string, sessionKey: string): void {
+    const chatKey: string = chatKeyOf(connectionId, sessionKey);
+    if (chatKey.length === 0) {
+      return;
+    }
+    ChatStore.connect().clear(chatKey);
+    TaskStore.connect().clearPhase(chatKey);
+    SessionStore.connect().clearUnread(chatKey);
+  }
+
+  /**
    * The ~90 lines that used to live here are now `HistoryBackfill.run` —
    * all that is left is the forward, plus the `undefined` guard for the
    * window between `stop()` and the next `start()` (a manifest frame can
