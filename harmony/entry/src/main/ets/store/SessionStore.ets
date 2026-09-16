@@ -1,8 +1,42 @@
 import { AppStorageV2 } from '@kit.ArkUI';
 import { Session, SlashCommandSpec } from '../model/Protocol';
-import { WsFrame, BridgeInfo, chatKeyOf, splitChatKey } from '../logic/normalizeEvent';
+import {
+  WsFrame, BridgeInfo, ChatKeyParts, chatKeyOf, splitChatKey, DEFAULT_SESSION_KEY,
+} from '../logic/normalizeEvent';
 
 const APP_STORAGE_KEY: string = 'SessionStore';
+
+/** Carries a session's position in the incoming list through `sortSessions`. */
+interface OrderedSession {
+  session: Session;
+  index: number;
+}
+
+/**
+ * Newest-active first, `createdAt` as the tie-break, original order last.
+ *
+ * The index decoration is not decoration. ArkTS's `Array.sort` publishes no
+ * stability guarantee, and two sessions with an identical `lastActiveAt`
+ * AND `createdAt` is exactly what a pair of sessions seeded in the same
+ * request looks like — without the index they could swap places between two
+ * renders of an otherwise unchanged list, which a `ForEach` keyed on
+ * position would render as the two rows trading places by themselves.
+ */
+function sortSessions(list: Session[]): Session[] {
+  const ordered: OrderedSession[] = list.map((session: Session, index: number): OrderedSession => {
+    return { session: session, index: index };
+  });
+  ordered.sort((a: OrderedSession, b: OrderedSession): number => {
+    if (b.session.lastActiveAt !== a.session.lastActiveAt) {
+      return b.session.lastActiveAt - a.session.lastActiveAt;
+    }
+    if (b.session.createdAt !== a.session.createdAt) {
+      return b.session.createdAt - a.session.createdAt;
+    }
+    return a.index - b.index;
+  });
+  return ordered.map((entry: OrderedSession): Session => entry.session);
+}
 
 /**
  * Must be obtained through `AppStorageV2.connect()` — see Global Constraints
@@ -24,12 +58,57 @@ export class SessionStore {
     return instance;
   }
 
+  /**
+   * Derived state, never assigned from outside this class.
+   *
+   * It stays a plain `@Trace` FIELD, recomputed and written by
+   * `recomputeCurrentChatKey()`, rather than becoming a getter over
+   * `activeConnection` + `activeSessionKeys`. ArkUI V2 collects a
+   * component's render dependencies from the `@Trace` fields its `build()`
+   * READS; a getter reads the backing fields inside the store's own method
+   * frame, where no observer is registered, so every component that shows
+   * the current chat (`ChatWindow`, `MessageList`, `MessageInput`,
+   * `PetMini`, `Index`'s top bar, both session shells) would silently stop
+   * re-rendering on a session switch.
+   */
   @Trace currentChatKey: string = '';
   @Trace skillCommands: SlashCommandSpec[] = [];
   /** Populated from bridge:manifest's `bridges` field. */
   @Trace bridges: BridgeInfo[] = [];
 
+  /** chatKey (`${connectionId}::${sessionKey}`) → Session. */
   @Trace private sessions: Map<string, Session> = new Map<string, Session>();
+  /**
+   * connectionId → that connection's sessions, pre-sorted by `sortSessions`.
+   *
+   * A second index over the same records as `sessions`, not a second source
+   * of truth: every writer (`applySessions`, `upsertSession`,
+   * `removeSession`) updates `sessions` and then calls
+   * `rebuildConnectionIndex()` in the same method, so the two can never
+   * disagree. Sorting happens on write because `sessionsOf()` is called
+   * from `build()`, where a per-render sort would also hand back a new
+   * array identity every frame.
+   */
+  @Trace private sessionsByConnection: Map<string, Session[]> = new Map<string, Session[]>();
+  /**
+   * connectionId → the session the user last looked at ON THAT CONNECTION.
+   *
+   * Per-connection rather than global so switching bridges and switching
+   * back returns to the conversation you left, instead of resetting to
+   * 'default'.
+   */
+  @Trace private activeSessionKeys: Map<string, string> = new Map<string, string>();
+  /**
+   * connectionId → the session a pending turn is pinned to.
+   *
+   * Separate from `activeSessionKeys` because the two answer different
+   * questions: "what is on screen" versus "where does an unlabelled reply
+   * belong". They diverge exactly when the user sends into one session and
+   * switches away before the reply lands.
+   */
+  @Trace private stickySessions: Map<string, string> = new Map<string, string>();
+  @Trace private activeConnection: string = '';
+
   @Trace private unread: Map<string, number> = new Map<string, number>();
   @Trace private residentKeys: Set<string> = new Set<string>();
 
@@ -100,8 +179,190 @@ export class SessionStore {
     return this.residentKeys.has(chatKey);
   }
 
+  // ---------------------------------------------------------------------
+  // Two-level model: connection → sessions
+  // ---------------------------------------------------------------------
+
+  /**
+   * That connection's sessions, newest-active first.
+   *
+   * Returns the stored array by reference (not a defensive copy) so a
+   * `ForEach` over it sees a stable identity across renders that did not
+   * change the list. Treat it as read-only: mutating it would desync this
+   * index from `sessions` without going through a writer.
+   */
+  sessionsOf(connectionId: string): Session[] {
+    return this.sessionsByConnection.get(connectionId) ?? [];
+  }
+
+  /** `sessionsOf` reduced to keys — the shape `resolveIncomingSessionRouting` wants. */
+  knownSessionKeysOf(connectionId: string): string[] {
+    return this.sessionsOf(connectionId).map((session: Session): string => session.key);
+  }
+
+  /**
+   * 'default' for a connection the user has never picked a session on.
+   *
+   * Deliberately NOT "first known session": a connection's session list
+   * arrives asynchronously (`/api/sessions`), and answering with whatever
+   * happened to be first would make the active session change under the
+   * user when that response lands. `resolveIncomingSessionRouting` already
+   * owns the known-session fallback for inbound frames.
+   */
+  activeSessionKeyOf(connectionId: string): string {
+    return this.activeSessionKeys.get(connectionId) ?? DEFAULT_SESSION_KEY;
+  }
+
+  activeConnectionId(): string {
+    return this.activeConnection;
+  }
+
+  setActiveConnection(connectionId: string): void {
+    this.activeConnection = connectionId;
+    this.recomputeCurrentChatKey();
+  }
+
+  setActiveSession(connectionId: string, sessionKey: string): void {
+    if (connectionId.length === 0 || sessionKey.length === 0) {
+      return;
+    }
+    this.activeSessionKeys.set(connectionId, sessionKey);
+    this.recomputeCurrentChatKey();
+  }
+
+  /** '' when no turn is pinned on this connection. */
+  stickySessionOf(connectionId: string): string {
+    return this.stickySessions.get(connectionId) ?? '';
+  }
+
+  noteStickySession(connectionId: string, sessionKey: string): void {
+    if (connectionId.length === 0 || sessionKey.length === 0) {
+      return;
+    }
+    this.stickySessions.set(connectionId, sessionKey);
+  }
+
+  clearStickySession(connectionId: string): void {
+    this.stickySessions.delete(connectionId);
+  }
+
+  /**
+   * The single config-declared resident session, wherever it lives.
+   *
+   * Searched across connections, not within one, because the resident
+   * session is a property of the account: callers (notification taps, the
+   * cold-start landing pick) know they want "the resident chat" without
+   * knowing which bridge declares it.
+   */
+  residentSession(): Session | undefined {
+    const all: Session[] = [];
+    this.sessions.forEach((session: Session) => {
+      all.push(session);
+    });
+    for (const session of all) {
+      if (session.isResident === true) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  /** Inserts or replaces one session without waiting for the next `applySessions`. */
+  upsertSession(session: Session): void {
+    const key: string = chatKeyOf(session.connectionId, session.key);
+    if (key.length === 0) {
+      return;
+    }
+    this.sessions.set(key, session);
+    if (session.isResident === true) {
+      this.residentKeys.add(key);
+    } else {
+      this.residentKeys.delete(key);
+    }
+    this.rebuildConnectionIndex();
+  }
+
+  /**
+   * Forgets a session everywhere it is referenced.
+   *
+   * The active-session fallback is the reason this can't just be two
+   * `Map.delete` calls: deleting the session the user is looking at would
+   * otherwise leave `currentChatKey` pointing at a chat that no longer
+   * exists, and every history fetch for it comes back empty — the exact
+   * "history never loads" symptom this task exists to remove.
+   */
+  removeSession(connectionId: string, sessionKey: string): void {
+    const key: string = chatKeyOf(connectionId, sessionKey);
+    if (key.length === 0) {
+      return;
+    }
+    this.sessions.delete(key);
+    this.residentKeys.delete(key);
+    this.unread.delete(key);
+    this.rebuildConnectionIndex();
+
+    if (this.stickySessions.get(connectionId) === sessionKey) {
+      this.stickySessions.delete(connectionId);
+    }
+    if (this.activeSessionKeys.get(connectionId) === sessionKey) {
+      const remaining: Session[] = this.sessionsOf(connectionId);
+      this.activeSessionKeys.set(
+        connectionId,
+        remaining.length > 0 ? remaining[0].key : DEFAULT_SESSION_KEY,
+      );
+    }
+    this.recomputeCurrentChatKey();
+  }
+
+  /**
+   * Kept because most existing callers (`SessionRow.selectBridge`,
+   * `Index.defaultToFirstBridgeIfNoneSelected`) hold a chatKey, not a pair.
+   * It is a thin adapter onto the same two writes `setActiveConnection` +
+   * `setActiveSession` perform, so both entry points land in one place —
+   * a second assignment straight to `currentChatKey` here is what would let
+   * the field and `activeSessionKeys` drift apart.
+   */
   setCurrent(chatKey: string): void {
-    this.currentChatKey = chatKey;
+    const parts: ChatKeyParts = splitChatKey(chatKey);
+    if (parts.connectionId.length === 0 || parts.sessionKey.length === 0) {
+      // Not a chat key at all (`splitChatKey` yields two empty strings for
+      // anything without a `::`). Preserve the pre-two-level behaviour of
+      // storing it verbatim rather than silently dropping the call.
+      this.currentChatKey = chatKey;
+      return;
+    }
+    this.setActiveSession(parts.connectionId, parts.sessionKey);
+    this.setActiveConnection(parts.connectionId);
+  }
+
+  private recomputeCurrentChatKey(): void {
+    if (this.activeConnection.length === 0) {
+      this.currentChatKey = '';
+      return;
+    }
+    this.currentChatKey = chatKeyOf(this.activeConnection, this.activeSessionKeyOf(this.activeConnection));
+  }
+
+  /**
+   * Re-derives `sessionsByConnection` from `sessions`. Every writer of
+   * `sessions` calls this before returning, which is what makes the two
+   * maps one piece of state rather than two that have to be kept in step.
+   */
+  private rebuildConnectionIndex(): void {
+    const buckets: Map<string, Session[]> = new Map<string, Session[]>();
+    this.sessions.forEach((session: Session) => {
+      const bucket: Session[] | undefined = buckets.get(session.connectionId);
+      if (bucket === undefined) {
+        buckets.set(session.connectionId, [session]);
+      } else {
+        bucket.push(session);
+      }
+    });
+    const next: Map<string, Session[]> = new Map<string, Session[]>();
+    buckets.forEach((list: Session[], connectionId: string) => {
+      next.set(connectionId, sortSessions(list));
+    });
+    this.sessionsByConnection = next;
   }
 
   /**
@@ -145,12 +406,22 @@ export class SessionStore {
    * permanently blank chat surface until it picked a session by hand.
    *
    * `skillCommands` goes too: slash commands are advertised per account.
+   *
+   * The two-level state (`sessionsByConnection`, `activeSessionKeys`,
+   * `stickySessions`, `activeConnection`) crosses the same boundary for the
+   * same reason: an `activeConnection` left pointing at account A's bridge
+   * would be recomputed straight back into `currentChatKey` the moment B
+   * selected anything.
    */
   clearAll(): void {
     this.currentChatKey = '';
     this.skillCommands = [];
     this.bridges = [];
     this.sessions = new Map<string, Session>();
+    this.sessionsByConnection = new Map<string, Session[]>();
+    this.activeSessionKeys = new Map<string, string>();
+    this.stickySessions = new Map<string, string>();
+    this.activeConnection = '';
     this.unread = new Map<string, number>();
     this.residentKeys = new Set<string>();
   }
@@ -159,6 +430,18 @@ export class SessionStore {
     this.bridges = frame.bridges ?? [];
   }
 
+  /**
+   * Called ONCE with every bridge's sessions aggregated (see
+   * `SessionApi.fetchAll` / `ConnectionGateway.fetchSessions`), never once
+   * per bridge — so rebuilding both maps globally here is correct, and a
+   * per-connection merge would be wrong: a connection absent from the
+   * payload has no sessions, it has not merely "gone unmentioned".
+   *
+   * `activeSessionKeys` and `stickySessions` are deliberately left alone. A
+   * session can be selected locally (a just-created one) before the server
+   * lists it, and pruning here would yank the user out of it mid-flight.
+   * `removeSession` owns the explicit-deletion path.
+   */
   applySessions(sessions: Session[]): void {
     const nextSessions: Map<string, Session> = new Map<string, Session>();
     const nextResidents: Set<string> = new Set<string>();
@@ -189,6 +472,7 @@ export class SessionStore {
     this.sessions = nextSessions;
     this.residentKeys = nextResidents;
     this.unread = nextUnread;
+    this.rebuildConnectionIndex();
   }
 
   /** `bridge:skills-updated`'s command list (`WsFrame.commands`, see normalizeEvent.ets). */
