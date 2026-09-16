@@ -143,7 +143,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 工作区
               </button>
             </div>
-            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+            {/* overflow-y-auto, not overflow-hidden: on a short viewport the
+                session list was clipped with no way to scroll to the rest of
+                it. Found on an unfolded foldable, where the screen gets wider
+                but ~1000px shorter, but a desktop window dragged short does
+                the same thing.
+
+                pb-32 clears the PetFull mascot below, which is fixed at
+                left-4 bottom-4 and h-28 (16 + 112 = 128px) — it sits over
+                this column, so without the padding it covers the last rows of
+                the very list it shares a corner with. */}
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-y-auto pb-32">
               {sidebarTab === "connections" ? <SessionDropdown variant="panel" /> : <WorkspacePanel />}
             </div>
           </aside>
