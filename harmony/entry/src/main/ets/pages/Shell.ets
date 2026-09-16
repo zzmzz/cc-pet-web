@@ -147,18 +147,45 @@ struct Shell {
    * shell names a destination. Files land in the app's own sandbox so no
    * storage permission is needed — `module.json5` still declares exactly the
    * two permissions Task 10 added, and this must not change that.
+   *
+   * Exercised end to end by `harmony/scripts/device-download-probe.sh`, which
+   * drives the real path: the bridge fixture sends a file, `packages/server`
+   * persists it, and `packages/web` renders
+   * `<a href="blob:…" download target="_blank">`. ArkWeb turns that anchor into
+   * a download and this delegate catches it. Same-origin hrefs and `data:` URLs
+   * were measured too; all five shapes reach `onBeforeDownload`.
+   *
+   * KNOWN LIMIT, deliberately not fixed here: `filesDir` is inside the app
+   * sandbox, so "已保存 <name>" names a file the user cannot open from any file
+   * manager. Making it useful means routing through
+   * `picker.DocumentViewPicker.save()` (which needs no new permission, unlike
+   * writing to the public Downloads directory) and deferring `item.start()`
+   * until the user picks a location. That is a behaviour change, not a fix to
+   * an unverified code path, so it is left as a named follow-up rather than
+   * smuggled in here.
    */
   private installDownloadDelegate(): void {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const delegate: webview.WebDownloadDelegate = new webview.WebDownloadDelegate();
     delegate.onBeforeDownload((item: webview.WebDownloadItem) => {
-      const path: string = `${context.filesDir}/downloads/${item.getSuggestedFileName()}`;
+      const name: string = item.getSuggestedFileName();
+      const path: string = `${context.filesDir}/downloads/${name}`;
+      // Logged, not silent: the sandbox directory this writes to is not
+      // readable by `hdc shell` (the app's uid owns it), so hilog is the only
+      // way anyone can see whether a download actually started. Without these
+      // three lines this whole delegate is unobservable on a device, which is
+      // exactly how it shipped unverified the first time.
+      hilog.info(DOMAIN, TAG, 'download start: name=%{public}s path=%{public}s', name, path);
       item.start(path);
     });
     delegate.onDownloadFinish((item: webview.WebDownloadItem) => {
+      hilog.info(DOMAIN, TAG, 'download finish: name=%{public}s size=%{public}s',
+        item.getSuggestedFileName(), `${item.getTotalBytes()}`);
       promptAction.showToast({ message: `已保存 ${item.getSuggestedFileName()}` });
     });
     delegate.onDownloadFailed((item: webview.WebDownloadItem) => {
+      hilog.error(DOMAIN, TAG, 'download failed: name=%{public}s code=%{public}s',
+        item.getSuggestedFileName(), `${item.getLastErrorCode()}`);
       promptAction.showToast({ message: `下载失败：${item.getSuggestedFileName()}` });
     });
     try {
