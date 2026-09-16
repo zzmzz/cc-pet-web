@@ -2,11 +2,13 @@ import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SessionStore } from '../store/SessionStore';
 import { AuthStore } from '../store/AuthStore';
+import { ChatStore } from '../store/ChatStore';
+import { TaskStore } from '../store/TaskStore';
 import { ConnectionGateway } from '../gateway/ConnectionGateway';
 import { SessionApi } from '../gateway/SessionApi';
 import { UnauthorizedError } from '../gateway/RestClient';
 import { BridgeInfo, chatKeyOf, DEFAULT_SESSION_KEY } from '../logic/normalizeEvent';
-import { Session } from '../model/Protocol';
+import { ChatMessage, Session, TaskPhase } from '../model/Protocol';
 
 const DOMAIN = 0x0000;
 const TAG = 'SessionRow';
@@ -22,7 +24,9 @@ const TAG = 'SessionRow';
  *
  * The pure functions here (plain data in, plain data out, no store:
  * `chatKeyForBridge`, `rowLabel`, `nonResidentSessions`, `activeSessionOf`,
- * `visibleSessions`, `hiddenSessionCount`, `newSessionKey`) are covered by
+ * `visibleSessions`, `hiddenSessionCount`, `newSessionKey`, `formatUnread`,
+ * `formatSessionPhase`, `phaseDisplay`, `latestMessageTimestamp`,
+ * `fallbackActivityTimestamp`, `formatTime`) are covered by
  * `SessionRow.test.ets`; the rest are covered by on-device verification of
  * the two shells.
  *
@@ -150,6 +154,190 @@ export function isCurrentSession(store: SessionStore, session: Session): boolean
 
 export function unreadForSession(store: SessionStore, session: Session): number {
   return store.unreadOf(chatKeyForSession(session));
+}
+
+/**
+ * Web's `formatUnread` — Task 8's review found the `>99 ? '99+' : String(n)`
+ * rule inlined once per unread badge across both shells (resident, connection,
+ * active and recent rows: eight sites, not the six the badge count alone
+ * would suggest, once the connection-row badge is counted too). One place,
+ * matching every other display rule `SessionRow.ets` exists to hold.
+ */
+export function formatUnread(count: number): string {
+  return count > 99 ? '99+' : String(count);
+}
+
+// ---------------------------------------------------------------------
+// Phase dot + phase text — web's `isActivePhaseCss` and `formatSessionPhase`
+// (`packages/web/src/components/SessionDropdown.tsx`). Narrowed to the 7
+// `TaskPhase` values this client's `TaskStore` can actually hold: web's
+// functions also branch on legacy bridge strings ('processing',
+// 'waiting_confirm', 'possibly_stuck') that predate the shared `TaskPhase`
+// union and never reach this client's store, so those branches have no
+// counterpart here.
+//
+// Web additionally distinguishes a spinning border (thinking/working) from a
+// pulsing dot (awaiting_confirmation) from a solid one (stalled/failed) via
+// CSS animation classes. This client renders a plain solid `Circle` for all
+// of them, like `ConnectionBadge` already does for `ConnectionStore.phase` —
+// color and label carry the same information the animation would, and no
+// animated dot exists anywhere else in this codebase to make that consistent
+// with. If a reviewer wants the spin/pulse restored, `PhaseDisplay` is the
+// one place a `spin`/`pulse` flag would need to be added.
+// ---------------------------------------------------------------------
+
+const PHASE_COLOR_ACCENT: string = '#0A59F7';
+const PHASE_COLOR_AMBER: string = '#F59E0B';
+const PHASE_COLOR_RED: string = '#E03131';
+/** Web's "text-gray-600" — used both for the default phase text AND the row
+ * timestamp text, since both are that exact web class. */
+export const ROW_MUTED_TEXT_COLOR: string = '#4B5563';
+const PHASE_COLOR_GRAY_DOT: string = '#6B7280';
+
+/** Web's `formatSessionPhase`, minus the legacy-alias branches (see above). */
+export function formatSessionPhase(phase: TaskPhase): string {
+  if (phase === 'thinking') {
+    return '思考中';
+  }
+  if (phase === 'working') {
+    return '处理中';
+  }
+  if (phase === 'awaiting_confirmation') {
+    return '待确认';
+  }
+  if (phase === 'completed') {
+    return '已完成';
+  }
+  if (phase === 'failed') {
+    return '失败';
+  }
+  if (phase === 'stalled') {
+    return '可能卡住';
+  }
+  return '空闲';
+}
+
+/** What `phaseDisplay` hands back — a row's dot color, phase-text color, and label. */
+export interface PhaseDisplay {
+  dotColor: string;
+  textColor: string;
+  label: string;
+}
+
+/**
+ * Web's `isActivePhaseCss` + `formatSessionPhase`, merged into one struct a
+ * row needs. `activeAccent` is web's own parameter, true only for the「当前
+ * 会话」row so its dot reads accent-blue instead of gray even in the
+ * `idle`/`completed` default branch — the branch's TEXT color stays gray
+ * either way, matching web's `text: "text-gray-600"` in that same branch.
+ */
+export function phaseDisplay(phase: TaskPhase, activeAccent: boolean): PhaseDisplay {
+  const label: string = formatSessionPhase(phase);
+  if (phase === 'thinking' || phase === 'working') {
+    return { dotColor: PHASE_COLOR_ACCENT, textColor: PHASE_COLOR_ACCENT, label: label };
+  }
+  if (phase === 'awaiting_confirmation') {
+    return { dotColor: PHASE_COLOR_AMBER, textColor: PHASE_COLOR_AMBER, label: label };
+  }
+  if (phase === 'stalled') {
+    return { dotColor: PHASE_COLOR_AMBER, textColor: PHASE_COLOR_AMBER, label: label };
+  }
+  if (phase === 'failed') {
+    return { dotColor: PHASE_COLOR_RED, textColor: PHASE_COLOR_RED, label: label };
+  }
+  return {
+    dotColor: activeAccent ? PHASE_COLOR_ACCENT : PHASE_COLOR_GRAY_DOT,
+    textColor: ROW_MUTED_TEXT_COLOR,
+    label: label,
+  };
+}
+
+/** Store-dependent one-liner pairing `TaskStore.phaseOf` with `phaseDisplay`, same shape as `unreadForSession`. */
+export function phaseDisplayForSession(task: TaskStore, session: Session, activeAccent: boolean): PhaseDisplay {
+  return phaseDisplay(task.phaseOf(chatKeyForSession(session)), activeAccent);
+}
+
+// ---------------------------------------------------------------------
+// Last-activity timestamp — web's `lastMessageOrCreatedAt` and `formatTime`
+// (same file). Split into two pure halves (`latestMessageTimestamp`,
+// `fallbackActivityTimestamp`) plus one store-dependent join
+// (`lastActivityOf`), the same pattern `formatUnread`/phase display use.
+// ---------------------------------------------------------------------
+
+/** The max `timestamp` in `messages`, or `undefined` for an empty transcript. */
+export function latestMessageTimestamp(messages: ChatMessage[]): number | undefined {
+  if (messages.length === 0) {
+    return undefined;
+  }
+  let latest: number = messages[0].timestamp;
+  for (const message of messages) {
+    if (message.timestamp > latest) {
+      latest = message.timestamp;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Web's `session.lastActiveAt ?? session.createdAt` — for a session whose
+ * history hasn't been lazy-loaded yet, so `latestMessageTimestamp` above has
+ * nothing to work with. Takes `lastActiveAt` as `number | undefined` rather
+ * than reading `Session.lastActiveAt` directly: that field's static type is
+ * non-optional, but session records here ultimately come from
+ * `JSON.parse(...) as Session` (`SessionApi.fetch`), which validates
+ * nothing, so a malformed payload could still omit it at runtime. Kept
+ * pure and separate from `lastActivityOf` so this fallback rule alone is
+ * unit-testable without a live `ChatStore`.
+ */
+export function fallbackActivityTimestamp(lastActiveAt: number | undefined, createdAt: number): number {
+  return lastActiveAt ?? createdAt;
+}
+
+/** Store-dependent join of the two pure halves above — what a row's timestamp actually shows. */
+export function lastActivityOf(chat: ChatStore, session: Session): number {
+  const latest: number | undefined = latestMessageTimestamp(chat.messagesOf(chatKeyForSession(session)));
+  if (latest !== undefined) {
+    return latest;
+  }
+  return fallbackActivityTimestamp(session.lastActiveAt, session.createdAt);
+}
+
+const DAY_MS: number = 86_400_000;
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
+}
+
+/**
+ * Web's `formatTime`, reimplemented without `Intl`/`toLocaleString` — this
+ * runtime's ICU support is unverified (see the ArkTS/HarmonyOS gotchas
+ * this project has already hit elsewhere), and manual formatting is
+ * trivially testable without depending on locale data at all. Output
+ * shapes match web's zh-CN formatting exactly (`HH:MM` 24-hour, `M/D` with
+ * no year), verified against Node's own `Intl` output while writing this.
+ *
+ * `now` is a parameter, not `Date.now()` read internally, so this stays a
+ * pure function a test can pin — the same reason `newSessionKey` above
+ * takes `now` rather than calling `Date.now()` itself.
+ */
+export function formatTime(ts: number, now: number): string {
+  const target: Date = new Date(ts);
+  const current: Date = new Date(now);
+  const todayStart: Date = new Date(current.getFullYear(), current.getMonth(), current.getDate());
+  const yesterdayStart: Date = new Date(todayStart.getTime() - DAY_MS);
+  const targetDay: Date = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+
+  if (targetDay.getTime() >= todayStart.getTime()) {
+    return `${pad2(target.getHours())}:${pad2(target.getMinutes())}`;
+  }
+  if (targetDay.getTime() >= yesterdayStart.getTime()) {
+    return '昨天';
+  }
+  const daysDiff: number = Math.floor((todayStart.getTime() - targetDay.getTime()) / DAY_MS);
+  if (daysDiff < 7) {
+    return `${daysDiff}天前`;
+  }
+  return `${target.getMonth() + 1}/${target.getDate()}`;
 }
 
 /**

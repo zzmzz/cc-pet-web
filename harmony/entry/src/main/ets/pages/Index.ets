@@ -214,8 +214,10 @@ struct Index {
     Row({ space: 8 }) {
       PetMini()
       // `labelOf` owns the whole naming rule now, bridge-name fallback
-      // included — this file used to carry a third copy of it alongside
-      // `SessionRow.labelForBridge` and the store's own lookup.
+      // included — this file used to carry a third copy of it alongside the
+      // session shells' own bridge-keyed row-label helper (deleted from
+      // `SessionRow.ets` in Task 7/8, replaced there by the session-keyed
+      // `rowLabel`) and the store's own lookup.
       Text(this.session.labelOf(this.session.currentChatKey))
         .fontSize(16)
         .fontWeight(FontWeight.Medium)

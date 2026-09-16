@@ -153,9 +153,12 @@ export class SessionStore {
 
   /**
    * The ONE place that decides what a chat is called. Three files used to
-   * answer this question separately — `SessionRow.labelForBridge` (both
-   * session shells), `Index.currentSessionLabel()` (the top bar), and this
-   * method (notification titles) — and only the first two knew about the
+   * answer this question separately — the two session shells' own
+   * bridge-keyed row-label helper (a function long since deleted from
+   * `SessionRow.ets`; Task 7/8 replaced it with the session-keyed `rowLabel`,
+   * which deliberately does NOT come here — see that function's doc),
+   * `Index.currentSessionLabel()` (the top bar), and this method
+   * (notification titles) — and only the first two knew about the
    * bridge-name fallback below. The third is what a lock screen actually
    * rendered: a literal `b1::default` next to the reply text, because
    * `/api/sessions` was never called, so `sessions` was always empty and

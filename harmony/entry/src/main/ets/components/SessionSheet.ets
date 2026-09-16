@@ -1,4 +1,6 @@
 import { SessionStore } from '../store/SessionStore';
+import { ChatStore } from '../store/ChatStore';
+import { TaskStore } from '../store/TaskStore';
 import { BridgeInfo } from '../logic/normalizeEvent';
 import { Session } from '../model/Protocol';
 import {
@@ -6,6 +8,8 @@ import {
   isActiveConnection, unreadForConnection, selectConnection,
   nonResidentSessions, activeSessionOf, visibleSessions, hiddenSessionCount,
   openResidentSession, createAndSelectSession, applyDeleteTap,
+  formatUnread, phaseDisplayForSession, lastActivityOf, formatTime,
+  ROW_MUTED_TEXT_COLOR,
 } from './SessionRow';
 
 const TEXT_COLOR: string = '#1F2328';
@@ -13,6 +17,7 @@ const ACCENT_COLOR: string = '#0A59F7';
 const MUTED_COLOR: string = '#8A8F98';
 const DANGER_COLOR: string = '#E03131';
 const SELECTED_COLOR: string = '#F1F3F5';
+const PHASE_DOT_SIZE: number = 8;
 
 /**
  * Bottom half-modal session switcher for COMPACT windows — thumb-reachable,
@@ -41,6 +46,8 @@ export struct SessionSheet {
    */
   @Param onSelect: () => void = (): void => {};
   @Local private session: SessionStore = SessionStore.connect();
+  @Local private task: TaskStore = TaskStore.connect();
+  @Local private chat: ChatStore = ChatStore.connect();
   /** Expands「最近会话」past `RECENT_VISIBLE`; collapses again on any switch. */
   @Local private showAll: boolean = false;
   /**
@@ -241,6 +248,12 @@ export struct SessionSheet {
   @Builder
   ResidentRow(resident: Session) {
     Row({ space: 8 }) {
+      // Phase dot only — web's resident row calls `isActivePhaseCss` with no
+      // `activeAccent` argument (defaults `false`, unlike the「当前会话」row),
+      // and renders neither `phaseForSession` text nor a timestamp (see
+      // `SessionDropdown.tsx`'s resident block), so those two stay out here.
+      Circle().width(PHASE_DOT_SIZE).height(PHASE_DOT_SIZE)
+        .fill(phaseDisplayForSession(this.task, resident, false).dotColor)
       Text(rowLabel(resident))
         .fontSize(16)
         .fontColor(isCurrentSession(this.session, resident) ? ACCENT_COLOR : TEXT_COLOR)
@@ -249,7 +262,7 @@ export struct SessionSheet {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (unreadForSession(this.session, resident) > 0) {
-        Text(unreadForSession(this.session, resident) > 99 ? '99+' : String(unreadForSession(this.session, resident)))
+        Text(formatUnread(unreadForSession(this.session, resident)))
           .fontSize(12)
           .fontColor(Color.White)
           .backgroundColor(DANGER_COLOR)
@@ -274,7 +287,7 @@ export struct SessionSheet {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (unreadForConnection(this.session, bridge) > 0) {
-        Text(unreadForConnection(this.session, bridge) > 99 ? '99+' : String(unreadForConnection(this.session, bridge)))
+        Text(formatUnread(unreadForConnection(this.session, bridge)))
           .fontSize(12)
           .fontColor(Color.White)
           .backgroundColor(DANGER_COLOR)
@@ -297,6 +310,11 @@ export struct SessionSheet {
   @Builder
   ActiveRow(active: Session) {
     Row({ space: 8 }) {
+      // `true`: web's active row passes `activeAccent = true` to
+      // `isActivePhaseCss`, so an idle/completed phase still reads accent-blue
+      // here even though the same phase would read gray on a recent row.
+      Circle().width(PHASE_DOT_SIZE).height(PHASE_DOT_SIZE)
+        .fill(phaseDisplayForSession(this.task, active, true).dotColor)
       Text(rowLabel(active))
         .fontSize(16)
         .fontColor(ACCENT_COLOR)
@@ -304,13 +322,29 @@ export struct SessionSheet {
         .layoutWeight(1)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
+      // Web hardcodes this span's color to accent (`text-accent/90`), NOT
+      // `phaseCss.text` — the active row is always styled as "this is the
+      // chat you're in", so its status text never turns amber/red even when
+      // a recent row showing the same phase would.
+      Text(phaseDisplayForSession(this.task, active, true).label)
+        .fontSize(12)
+        .fontColor(ACCENT_COLOR)
       if (unreadForSession(this.session, active) > 0) {
-        Text(unreadForSession(this.session, active) > 99 ? '99+' : String(unreadForSession(this.session, active)))
+        Text(formatUnread(unreadForSession(this.session, active)))
           .fontSize(12)
           .fontColor(Color.White)
           .backgroundColor(DANGER_COLOR)
           .borderRadius(10)
           .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+      }
+      // Hidden only while THIS row's delete is armed — web's touch
+      // equivalent of `group-hover/active:hidden` (no hover on a touch
+      // panel, so the delete control stays put and the timestamp is what
+      // yields instead, on the one row that's actually armed).
+      if (this.confirmDeleteKey !== active.key) {
+        Text(formatTime(lastActivityOf(this.chat, active), Date.now()))
+          .fontSize(12)
+          .fontColor(ROW_MUTED_TEXT_COLOR)
       }
       if (this.listSessions().length > 1) {
         this.DeleteControl(active.key)
@@ -333,19 +367,31 @@ export struct SessionSheet {
   RecentRow(session: Session) {
     Row({ space: 8 }) {
       Row({ space: 8 }) {
+        Circle().width(PHASE_DOT_SIZE).height(PHASE_DOT_SIZE)
+          .fill(phaseDisplayForSession(this.task, session, false).dotColor)
         Text(rowLabel(session))
           .fontSize(16)
           .fontColor(TEXT_COLOR)
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(phaseDisplayForSession(this.task, session, false).label)
+          .fontSize(12)
+          .fontColor(phaseDisplayForSession(this.task, session, false).textColor)
         if (unreadForSession(this.session, session) > 0) {
-          Text(unreadForSession(this.session, session) > 99 ? '99+' : String(unreadForSession(this.session, session)))
+          Text(formatUnread(unreadForSession(this.session, session)))
             .fontSize(12)
             .fontColor(Color.White)
             .backgroundColor(DANGER_COLOR)
             .borderRadius(10)
             .padding({ left: 7, right: 7, top: 2, bottom: 2 })
+        }
+        // Armed rows hide the timestamp so the「确认删除」control has room —
+        // this row's touch equivalent of web's hover-only reveal.
+        if (this.confirmDeleteKey !== session.key) {
+          Text(formatTime(lastActivityOf(this.chat, session), Date.now()))
+            .fontSize(12)
+            .fontColor(ROW_MUTED_TEXT_COLOR)
         }
       }
       .layoutWeight(1)
