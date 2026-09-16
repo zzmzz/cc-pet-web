@@ -1,6 +1,7 @@
 import { http } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { buildRequestHeaders } from './RequestHeaders';
 
 const DOMAIN = 0x0000;
 const TAG = 'RestClient';
@@ -46,10 +47,7 @@ export class RestClient {
       try {
         response = await request.request(url, {
           method: method,
-          header: {
-            'Authorization': `Bearer ${this.token}`,
-            'Content-Type': 'application/json',
-          },
+          header: buildRequestHeaders(this.token, body),
           extraData: body.length > 0 ? body : undefined,
           expectDataType: http.HttpDataType.STRING,
           connectTimeout: 10000,

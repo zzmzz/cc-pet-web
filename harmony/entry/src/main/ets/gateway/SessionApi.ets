@@ -133,10 +133,18 @@ export class SessionApi {
 
   /**
    * `POST /api/sessions/:connectionId/:key/read` — `Endpoints.SESSION_READ`.
-   * Clears a resident session's server-side unread count; no body needed.
-   * Same "no 401 handling here" posture as `create`/`fetch`/`fetchAll`.
+   * Clears a resident session's server-side unread count. Same "no 401
+   * handling here" posture as `create`/`fetch`/`fetchAll`.
+   *
+   * `'{}'`, not `''`: same fix, same reason, as `MessageInput.toggleBridge`
+   * — confirmed empirically (Task 5 fix round 1) that a genuinely empty
+   * body 400s here (`FST_ERR_CTP_EMPTY_JSON_BODY`), because `postJson`
+   * still sends `Content-Type: application/json` whenever the body is
+   * non-empty. The route reads no field off the body (only
+   * `req.params.connectionId`/`key`), so an empty JSON object satisfies the
+   * parser without implying any payload the server actually consumes.
    */
   async markRead(connectionId: string, key: string): Promise<void> {
-    await new RestClient(this.baseUrl, this.token).postJson(sessionReadUrl(connectionId, key), '');
+    await new RestClient(this.baseUrl, this.token).postJson(sessionReadUrl(connectionId, key), '{}');
   }
 }
