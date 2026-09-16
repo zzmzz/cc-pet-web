@@ -70,8 +70,15 @@ export function resolveIncomingSessionRouting(input: SessionRouteInput): Session
     return { sessionKey: active, source: 'active' };
   }
 
-  if (input.knownSessions.length > 0) {
-    return { sessionKey: input.knownSessions[0], source: 'known' };
+  // Web writes this as `if (knownSessions[0])` -- a truthiness check on the
+  // VALUE, not on the array length. The two only differ when the first known
+  // key is itself an empty string: web falls through to `fallback`, a length
+  // check would return '' under source 'known'. Session keys are never empty
+  // in practice, but this function's whole job is to agree with web branch
+  // for branch, so it agrees here too.
+  const firstKnown: string = input.knownSessions.length > 0 ? input.knownSessions[0] : '';
+  if (firstKnown.length > 0) {
+    return { sessionKey: firstKnown, source: 'known' };
   }
 
   return { sessionKey: fallback, source: 'fallback' };

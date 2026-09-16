@@ -84,6 +84,14 @@ export default function sessionRoutingTest() {
       expect(out.source).assertEqual('known');
     });
 
+    it('treats an empty first known session as absent, like web does', 0, () => {
+      // Web's branch is `if (knownSessions[0])`, so an empty first key falls
+      // through to fallback rather than being returned under 'known'.
+      const out: SessionRouteDecision = resolveIncomingSessionRouting(input(undefined, undefined, ['']));
+      expect(out.sessionKey).assertEqual('default');
+      expect(out.source).assertEqual('fallback');
+    });
+
     it('falls back to default last', 0, () => {
       const out: SessionRouteDecision = resolveIncomingSessionRouting(input());
       expect(out.sessionKey).assertEqual('default');
