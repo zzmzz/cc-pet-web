@@ -126,6 +126,16 @@ export default function sessionStoreModelTest() {
       expect(store.residentSession() === undefined).assertTrue();
       expect(store.bridges.length).assertEqual(0);
       expect(store.skillCommands.length).assertEqual(0);
+
+      // The persisted half of the same leak (task 3): `persistedSnapshot()`
+      // is exactly the JSON `persist()` would have just written to
+      // preferences. If `clearAll()` ever stopped resetting
+      // `activeSessionKeys` or `stickySessions`, this would still show
+      // account A's connectionId/sessionKey pair instead of `'{}'`, even
+      // though `preferences.Preferences` itself can't run inside
+      // `hvigorw test` (see SessionStore.persistedSnapshot's doc).
+      expect(store.persistedSnapshot().activeSessionKeysJson).assertEqual('{}');
+      expect(store.persistedSnapshot().stickySessionsJson).assertEqual('{}');
     });
 
     it('falls the active session back to default when the active one is removed', 0, () => {

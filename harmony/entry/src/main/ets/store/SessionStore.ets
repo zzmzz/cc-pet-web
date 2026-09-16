@@ -1,10 +1,26 @@
 import { AppStorageV2 } from '@kit.ArkUI';
+import { preferences } from '@kit.ArkData';
+import { common } from '@kit.AbilityKit';
 import { Session, SlashCommandSpec } from '../model/Protocol';
 import {
   WsFrame, BridgeInfo, ChatKeyParts, chatKeyOf, splitChatKey, DEFAULT_SESSION_KEY,
 } from '../logic/normalizeEvent';
+import { serializeStringMap, deserializeStringMap } from '../logic/sessionMaps';
 
 const APP_STORAGE_KEY: string = 'SessionStore';
+const STORE_NAME: string = 'cc_pet_sessions';
+const KEY_ACTIVE_SESSION_KEYS: string = 'activeSessionKeys';
+const KEY_STICKY_SESSIONS: string = 'stickySessions';
+
+/**
+ * What `persist()` writes to preferences and what `persistedSnapshot()`
+ * hands to a unit test -- see that method's doc for why a plain snapshot
+ * object, rather than the preferences store itself, is the testable seam.
+ */
+interface PersistedSessionSnapshot {
+  activeSessionKeysJson: string;
+  stickySessionsJson: string;
+}
 
 /** Carries a session's position in the incoming list through `sortSessions`. */
 interface OrderedSession {
@@ -112,6 +128,17 @@ export class SessionStore {
   @Trace private unread: Map<string, number> = new Map<string, number>();
   @Trace private residentKeys: Set<string> = new Set<string>();
 
+  /**
+   * Not `@Trace`: a preferences handle isn't render state, and (unlike
+   * `activeSessionKeys`/`stickySessions`) nothing in `build()` ever reads
+   * it. `undefined` until `initPersistence()` runs, exactly like
+   * `AuthStore.store` -- `persist()` below is a deliberate no-op until then
+   * (there's nothing to write to yet, and unit tests never call
+   * `initPersistence`, so `persist()` staying a no-op is what keeps every
+   * existing `SessionStore` test working unchanged).
+   */
+  private store: preferences.Preferences | undefined = undefined;
+
   unreadOf(chatKey: string): number {
     return this.unread.get(chatKey) ?? 0;
   }
@@ -184,6 +211,84 @@ export class SessionStore {
   // ---------------------------------------------------------------------
 
   /**
+   * Reads back `activeSessionKeys`/`stickySessions` from a previous run,
+   * mirroring `AuthStore.init()`'s pattern (same preferences channel, same
+   * "no store yet" guard on every write). Call once at startup, before
+   * anything routes an inbound frame — a cold start followed by a
+   * `sessionKey`-less reply is exactly the case web's localStorage mirror
+   * of these two maps exists to fix; see task-3-brief.md.
+   *
+   * `deserializeStringMap` only inserts keys that were actually persisted,
+   * so a connectionId this run never calls `setActiveSession` on again
+   * still reads back as `''` from `activeSessionKeyRawOf` — the "never
+   * picked" sentinel survives the round trip, not just the substituted
+   * `'default'` value. `activeConnection`/`currentChatKey` are NOT
+   * restored here: this task persists only the two per-connection pointer
+   * maps (task-3-brief.md's stated scope); which bridge lands on screen at
+   * cold start is `Index.defaultToFirstBridgeIfNoneSelected`'s job.
+   */
+  async initPersistence(context: common.UIAbilityContext): Promise<void> {
+    this.store = await preferences.getPreferences(context, STORE_NAME);
+    const activeRaw: string = await this.store.get(KEY_ACTIVE_SESSION_KEYS, '') as string;
+    const stickyRaw: string = await this.store.get(KEY_STICKY_SESSIONS, '') as string;
+    this.activeSessionKeys = deserializeStringMap(activeRaw);
+    this.stickySessions = deserializeStringMap(stickyRaw);
+  }
+
+  /**
+   * The JSON `persist()` would write for each map RIGHT NOW, computed
+   * straight off the live `activeSessionKeys`/`stickySessions` fields.
+   *
+   * Public only so a unit test can assert the persisted half of
+   * `clearAll()`'s contract. `preferences.Preferences` itself can't be
+   * exercised inside `hvigorw test`'s host runtime -- `AuthStore.init` /
+   * `save` / `clear` are the existing, permanently-uncovered precedent for
+   * that -- but the BYTES `persist()` computes are a pure function of
+   * in-memory state, so a test can check those without a real store. If
+   * `clearAll()` ever stops resetting one of the two maps, this method's
+   * output for that map stops being `'{}'` and the test that reads it
+   * fails, exactly as if the real on-disk copy had leaked into the next
+   * account.
+   */
+  persistedSnapshot(): PersistedSessionSnapshot {
+    return {
+      activeSessionKeysJson: serializeStringMap(this.activeSessionKeys),
+      stickySessionsJson: serializeStringMap(this.stickySessions),
+    };
+  }
+
+  /**
+   * Writes both pointer maps to preferences. Called after every mutator
+   * that can change either map, and from `clearAll()` -- there, it runs
+   * AFTER both maps have already been reset to empty, so the write that
+   * follows persists the wipe rather than the account that just logged
+   * out. Without this call in `clearAll()`, the next `initPersistence()`
+   * (the next app launch, now under a different account) would read the
+   * previous account's pointers straight back off disk, undoing the
+   * in-memory clear a moment after it happened -- the exact leak this
+   * task's brief warns `clearAll()` must not reintroduce.
+   *
+   * A no-op until `initPersistence()` has run (`this.store` still
+   * `undefined`), same guard as every `AuthStore` write. Fire-and-forget,
+   * same as `AuthStore.connect().clear()`'s callers: nothing here needs to
+   * wait for the flush to land before returning, and every call site above
+   * is a synchronous method.
+   */
+  private persist(): void {
+    if (this.store === undefined) {
+      return;
+    }
+    const snapshot: PersistedSessionSnapshot = this.persistedSnapshot();
+    this.writeSnapshot(this.store, snapshot);
+  }
+
+  private async writeSnapshot(store: preferences.Preferences, snapshot: PersistedSessionSnapshot): Promise<void> {
+    await store.put(KEY_ACTIVE_SESSION_KEYS, snapshot.activeSessionKeysJson);
+    await store.put(KEY_STICKY_SESSIONS, snapshot.stickySessionsJson);
+    await store.flush();
+  }
+
+  /**
    * That connection's sessions, newest-active first.
    *
    * Returns the stored array by reference (not a defensive copy) so a
@@ -248,6 +353,7 @@ export class SessionStore {
     }
     this.activeSessionKeys.set(connectionId, sessionKey);
     this.recomputeCurrentChatKey();
+    this.persist();
   }
 
   /** '' when no turn is pinned on this connection. */
@@ -260,10 +366,12 @@ export class SessionStore {
       return;
     }
     this.stickySessions.set(connectionId, sessionKey);
+    this.persist();
   }
 
   clearStickySession(connectionId: string): void {
     this.stickySessions.delete(connectionId);
+    this.persist();
   }
 
   /**
@@ -332,6 +440,7 @@ export class SessionStore {
       );
     }
     this.recomputeCurrentChatKey();
+    this.persist();
   }
 
   /**
@@ -432,6 +541,13 @@ export class SessionStore {
    * same reason: an `activeConnection` left pointing at account A's bridge
    * would be recomputed straight back into `currentChatKey` the moment B
    * selected anything.
+   *
+   * `persist()` runs LAST, after both pointer maps are already empty --
+   * without it, the on-disk copy `initPersistence()` reads on the next
+   * launch would still hold account A's pointers, and B's fresh login would
+   * silently reload them the moment `initPersistence()` ran. That is the
+   * same class of leak this method already exists to close for in-memory
+   * state; see `persist()`'s doc for why it can and cannot be unit-tested.
    */
   clearAll(): void {
     this.currentChatKey = '';
@@ -444,6 +560,7 @@ export class SessionStore {
     this.activeConnection = '';
     this.unread = new Map<string, number>();
     this.residentKeys = new Set<string>();
+    this.persist();
   }
 
   applyManifest(frame: WsFrame): void {
@@ -493,6 +610,7 @@ export class SessionStore {
     this.residentKeys = nextResidents;
     this.unread = nextUnread;
     this.rebuildConnectionIndex();
+    this.persist();
   }
 
   /** `bridge:skills-updated`'s command list (`WsFrame.commands`, see normalizeEvent.ets). */

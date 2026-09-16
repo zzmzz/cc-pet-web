@@ -38,7 +38,13 @@ struct Index {
   @Local sessionSheetVisible: boolean = false;
 
   async aboutToAppear(): Promise<void> {
-    await this.auth.init(getContext(this) as common.UIAbilityContext);
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    // Read back `activeSessionKeys`/`stickySessions` before anything can
+    // route an inbound frame or restore the on-screen chat — a late reply
+    // arriving before this resolves is exactly the "cold start, no
+    // sessionKey" misroute task-3-brief.md exists to close.
+    await this.session.initPersistence(context);
+    await this.auth.init(context);
     this.ready = true;
     // No poll needed here (see onAuthorizedChanged below): `auth.init()`
     // assigning `this.auth.authorized = true` above (the "already logged in
