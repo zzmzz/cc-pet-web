@@ -127,7 +127,30 @@ describe("harmony REST endpoint alignment", () => {
    * constant (`Endpoints.SESSIONS`) or calls a URL-builder helper that
    * builds that endpoint's path.
    */
-  it("declares no endpoint the client never calls", () => {
+  /**
+   * Harmony session-management Task 4 (2026-09-16) declares
+   * SESSION_CREATE/SESSION_DELETE/SESSION_READ deliberately ahead of their
+   * callers — Task 4 is scoped to the endpoint + RestClient.deleteJson
+   * declarations only, Task 5 is the one that wires UI/store callers to
+   * them. Rather than silently drop the "no endpoint the client never
+   * calls" guard for the gap, this is an exact-match allowlist: if Task 5
+   * adds a caller for one of these, this list stops matching `uncalled`
+   * (see the assertion below) and the test fails until the now-satisfied
+   * entry is deleted from here. It must never grow to cover an endpoint
+   * that isn't actively mid-rollout like this.
+   *
+   * SESSION_CREATE ('POST /api/sessions') is deliberately NOT listed here:
+   * the "uncalled" scan below matches by path *prefix* only, blind to HTTP
+   * method, and SESSION_CREATE's prefix ('/api/sessions') is identical to
+   * the pre-existing `Endpoints.SESSIONS` ('GET /api/sessions'), which
+   * `sessionsUrl()` already calls. So the scan already (incorrectly, from a
+   * strict reading) counts SESSION_CREATE as "called" today, ahead of any
+   * real Task 5 caller — see the Task 4 report for why this was left
+   * as-is rather than patched here.
+   */
+  const PENDING_CALLER_ENDPOINTS = new Set(["SESSION_DELETE", "SESSION_READ"]);
+
+  it("declares no endpoint the client never calls (except endpoints named in PENDING_CALLER_ENDPOINTS)", () => {
     const endpoints = declaredEndpoints();
     const helpers = urlHelpers();
     const sources = clientSources();
@@ -145,6 +168,10 @@ describe("harmony REST endpoint alignment", () => {
       })
       .map((endpoint) => endpoint.name);
 
-    expect(uncalled).toEqual([]);
+    // Exact match, not a subtraction: this fails the moment a
+    // PENDING_CALLER_ENDPOINTS entry gets a caller (it drops out of
+    // `uncalled`) or the moment any other endpoint goes uncalled (it's not
+    // in the allowlist), so the allowlist can't silently absorb new gaps.
+    expect(new Set(uncalled)).toEqual(PENDING_CALLER_ENDPOINTS);
   });
 });

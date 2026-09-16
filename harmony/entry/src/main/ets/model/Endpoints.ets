@@ -25,6 +25,9 @@ export class Endpoints {
   // back silently.
   static readonly BRIDGE_CONNECT: Endpoint = { method: 'POST', path: '/api/bridges/:id/connect' };
   static readonly BRIDGE_DISCONNECT: Endpoint = { method: 'POST', path: '/api/bridges/:id/disconnect' };
+  static readonly SESSION_CREATE: Endpoint = { method: 'POST', path: '/api/sessions' };
+  static readonly SESSION_DELETE: Endpoint = { method: 'DELETE', path: '/api/sessions/:connectionId/:key' };
+  static readonly SESSION_READ: Endpoint = { method: 'POST', path: '/api/sessions/:connectionId/:key/read' };
 }
 
 /** `/api/history/:chatKey` → `/api/history/c1%3A%3As1` */
@@ -50,4 +53,12 @@ export function petImageUrl(state: string): string {
 export function bridgeConnectUrl(bridgeId: string, connect: boolean): string {
   const action: string = connect ? 'connect' : 'disconnect';
   return `/api/bridges/${encodeURIComponent(bridgeId)}/${action}`;
+}
+
+export function sessionDeleteUrl(connectionId: string, key: string): string {
+  return `/api/sessions/${encodeURIComponent(connectionId)}/${encodeURIComponent(key)}`;
+}
+
+export function sessionReadUrl(connectionId: string, key: string): string {
+  return `${sessionDeleteUrl(connectionId, key)}/read`;
 }

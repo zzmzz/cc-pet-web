@@ -82,6 +82,10 @@ export class RestClient {
     return this.request(path, http.RequestMethod.POST, body);
   }
 
+  deleteJson(path: string): Promise<string> {
+    return this.request(path, http.RequestMethod.DELETE, '');
+  }
+
   /**
    * Binary GET — for `Endpoints.PET_IMAGE` (and anything else that isn't
    * JSON). Kept separate from `request()` above rather than generalizing it:
