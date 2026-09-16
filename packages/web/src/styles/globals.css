@@ -63,6 +63,14 @@ body {
   font-weight: 600;
   line-height: 1.2rem;
   word-break: break-word;
+  /* The copy button is absolutely positioned over the card's top-right
+     (.link-preview-copy-btn), so a title long enough to reach it — or short
+     enough that the button lands mid-word — renders underneath it. Reserving
+     the button's footprint here is what keeps them apart; the button is
+     ~2rem wide plus its 0.45rem right offset. Found at a 359px viewport,
+     where it reproduced identically in desktop Chrome, so this is not an
+     ArkWeb-specific workaround. */
+  padding-right: 2.75rem;
 }
 
 .link-preview-main {
