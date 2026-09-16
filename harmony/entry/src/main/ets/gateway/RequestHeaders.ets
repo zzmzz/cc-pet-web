@@ -4,12 +4,17 @@
  *
  * Kept in its own file, with zero imports, deliberately: `RestClient.ets`
  * itself imports `@kit.NetworkKit`/`@kit.PerformanceAnalysisKit`/
- * `@kit.BasicServicesKit`, none of which this logic needs and none of which
- * have any precedent of being importable from `hvigorw test`'s
- * `localUnitTest` target (no existing test does it). Splitting the pure
- * header-construction rule out — the same way `Endpoints.ets` is
- * import-free so `Endpoints.test.ets` can pin its URL builders — is what
- * makes this rule testable at all in this harness.
+ * `@kit.BasicServicesKit`, none of which this logic needs.
+ *
+ * CORRECTION (Task 6): an earlier version of this comment claimed those kits
+ * had no precedent of being importable from `hvigorw test`'s `localUnitTest`
+ * target. That is FALSE — `DispatchRouting.test.ets` imports
+ * `ConnectionGateway`, which pulls in `@kit.NetworkKit`, and the suite runs
+ * it fine. Do not split a file merely because it touches a kit; that reason
+ * does not exist. The split here still stands on its own merit: the header
+ * rule is pure, and keeping it import-free — the same way `Endpoints.ets` is
+ * import-free so `Endpoints.test.ets` can pin its URL builders — keeps the
+ * test honest about what it exercises.
  */
 export interface RequestHeaders {
   Authorization: string;
