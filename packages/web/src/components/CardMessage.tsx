@@ -23,7 +23,14 @@ const HEADER_COLORS: Record<string, string> = {
   white: "border-gray-300 bg-gray-100 text-gray-800",
 };
 
-function sendCardAction(value: string) {
+/**
+ * Exported so `MessageList` can reuse it for `bridge:buttons` instead of
+ * growing a second copy of "send a choice back to the bridge". Both paths need
+ * the same four steps in the same order — resolve the active connection/session,
+ * pin sticky, send, echo locally under the returned clientMsgId so the outbox
+ * can find it — and a second implementation is exactly how those drift.
+ */
+export function sendCardAction(value: string) {
   const connectionId = useConnectionStore.getState().activeConnectionId;
   if (!connectionId) return;
   const sessionKey = useSessionStore.getState().activeSessionKey[connectionId] ?? "default";

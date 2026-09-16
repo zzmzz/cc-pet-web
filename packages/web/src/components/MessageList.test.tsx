@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import type { ChatMessage } from "@cc-pet/shared";
 import { MessageList } from "./MessageList.js";
 import { useOutboxStore } from "../lib/store/outbox.js";
+import { useConnectionStore } from "../lib/store/connection.js";
 import { useSessionStore } from "../lib/store/session.js";
 import { getPlatform } from "../lib/platform.js";
 
@@ -27,7 +28,56 @@ describe("MessageList", () => {
     if (!window.HTMLElement.prototype.scrollIntoView) {
       window.HTMLElement.prototype.scrollIntoView = vi.fn();
     }
+    // `clearAllMocks` only clears call records, not implementations, so a
+    // `mockReturnValue` set by one test leaks into every later one. The suite
+    // was passing on declaration order rather than on isolation; adding a test
+    // near the top made four preview tests fail without touching them.
+    vi.mocked(getPlatform).mockReset();
+    useConnectionStore.setState({ activeConnectionId: null });
+    useSessionStore.setState({ activeSessionKey: {} });
     vi.clearAllMocks();
+  });
+
+  // Regression: ButtonCard.tsx existed, ChatMessage.buttons was typed, and
+  // App.tsx stored the payload -- but MessageList never read it, so a
+  // bridge:buttons prompt rendered as bare text in every browser. The suite was
+  // fully green throughout, because the only test touching that event asserted
+  // the task phase and never that anything rendered.
+  it("renders bridge:buttons options and sends the chosen value", async () => {
+    const sendWsMessage = vi.fn(() => "client-msg-1");
+    vi.mocked(getPlatform).mockReturnValue({
+      sendWsMessage,
+      flushOutbox: vi.fn(),
+      fetchApi: vi.fn(),
+    } as unknown as ReturnType<typeof getPlatform>);
+    useConnectionStore.setState({ activeConnectionId: "c1" });
+    useSessionStore.setState({ activeSessionKey: { "c1": "s1" } });
+
+    const withButtons: ChatMessage = {
+      id: "m-buttons",
+      role: "assistant",
+      content: "选一个",
+      timestamp: 1,
+      connectionId: "c1",
+      sessionKey: "s1",
+      buttons: [
+        { id: "b1", label: "同意", value: "approve" },
+        { id: "b2", label: "拒绝", value: "reject" },
+      ],
+    };
+
+    render(<MessageList messages={[withButtons]} />);
+
+    expect(screen.getByRole("button", { name: "同意" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+
+    // `value`, not `label` -- the bridge matches on value and the two differ
+    // whenever a button is shown in one language and acted on in another.
+    await waitFor(() => expect(sendWsMessage).toHaveBeenCalled());
+    const sent = sendWsMessage.mock.calls[0][0] as { content?: string };
+    expect(sent.content).toBe("reject");
   });
 
   it("shows 回到最新 when new message arrives away from bottom", async () => {

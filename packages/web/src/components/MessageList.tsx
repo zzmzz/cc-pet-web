@@ -15,7 +15,8 @@ import { groupMessages } from "../lib/group-messages.js";
 import { buildAskAnswerMap } from "../lib/ask-answers.js";
 import { splitUsageFooter } from "../lib/footer.js";
 import { ActivityBlock } from "./ActivityBlock.js";
-import { CardMessage } from "./CardMessage.js";
+import { ButtonCard } from "./ButtonCard.js";
+import { CardMessage, sendCardAction } from "./CardMessage.js";
 import { AudioMessage } from "./AudioMessage.js";
 
 export function formatMessageTime(ts: number, now?: Date): string {
@@ -676,6 +677,34 @@ function MessageBubble({ message, answeredWith }: { message: ChatMessage; answer
       </button>
     )
   ) : null;
+
+  // `bridge:buttons` was stored on the message by App.tsx and typed on
+  // ChatMessage from the start, but nothing ever rendered it — ButtonCard.tsx
+  // had no importer, so a bridge that asked the user to pick an option showed
+  // only its text, in every browser. Found while verifying rich messages
+  // through the HarmonyOS shell; the shell was faithfully reproducing a gap
+  // that was already here.
+  if (message.buttons && message.buttons.length > 0) {
+    return (
+      <div className="flex justify-start px-3 py-1">
+        <ButtonCard
+          content={message.content}
+          buttons={message.buttons}
+          onSelect={(buttonId, customInput) => {
+            if (buttonId === "custom") {
+              if (customInput) sendCardAction(customInput);
+              return;
+            }
+            const chosen = message.buttons?.find((b) => b.id === buttonId);
+            // Send `value`, not `label`: the bridge matches on value, and the
+            // two differ whenever a button is shown in one language and acted
+            // on in another.
+            if (chosen) sendCardAction(chosen.value);
+          }}
+        />
+      </div>
+    );
+  }
 
   if (message.card) {
     return (
