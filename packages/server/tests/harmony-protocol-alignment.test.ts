@@ -1,4 +1,4 @@
-import { globSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -91,12 +91,32 @@ describe("harmony inbound session-routing set alignment", () => {
 const endpointsPath = resolve(here, "../../../harmony/entry/src/main/ets/model/Endpoints.ets");
 const serverSrc = resolve(here, "../src");
 
+/**
+ * Files under `root` with the given extension, as paths relative to `root`.
+ *
+ * Deliberately hand-rolled rather than `fs.globSync`: that API landed in
+ * Node 22, and CI runs Node 20 (`engines` says >=18), so the guard threw
+ * `globSync is not a function` on every CI run -- a drift guard that never
+ * reaches its assertions is exactly the silent failure it exists to prevent.
+ */
+function findFiles(root: string, ext: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, prefix: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(resolve(dir, entry.name), rel);
+      else if (entry.name.endsWith(ext)) out.push(rel);
+    }
+  };
+  walk(root, "");
+  return out;
+}
+
 /** Routes fastify actually registers, including the generic-typed multi-line form. */
 function registeredRoutes(): Set<string> {
-  // Node's built-in fs.globSync has no `absolute` option (unlike the npm
-  // `glob` package) — it silently ignores unknown options and returns paths
-  // relative to `cwd`, so they must be resolved against serverSrc by hand.
-  const files = globSync("**/*.ts", { cwd: serverSrc })
+  // findFiles returns paths relative to its root, so resolve them by hand.
+  const files = findFiles(serverSrc, ".ts")
     .filter((f) => !f.endsWith(".test.ts"))
     .map((f) => resolve(serverSrc, f));
   const routes = new Set<string>();
@@ -142,7 +162,7 @@ function stripComments(src: string): string {
 
 /** Every client source file except the endpoint declarations themselves. */
 function clientSources(): { file: string; src: string }[] {
-  return globSync("**/*.ets", { cwd: clientSrc })
+  return findFiles(clientSrc, ".ets")
     .map((f) => resolve(clientSrc, f))
     .filter((f) => f !== endpointsPath)
     .map((file) => ({ file, src: stripComments(readFileSync(file, "utf8")) }));
