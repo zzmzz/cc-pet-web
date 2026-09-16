@@ -117,7 +117,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1">
-          <aside className="flex w-72 shrink-0 flex-col gap-3 border-r border-border bg-surface-secondary p-3">
+          {/* pb-32 on the COLUMN, not on the scroller inside it: PetFull is fixed
+              at left-4 bottom-4 and is h-28, so it floats over the bottom 128px
+              of exactly this column. Padding the inner scroller only lets the
+              last row be scrolled clear — rows still sit under the mascot at
+              rest, which is the part users actually notice. Ending the column
+              above the pet costs nothing real: that strip was never readable. */}
+          <aside className="flex w-72 shrink-0 flex-col gap-3 border-r border-border bg-surface-secondary p-3 pb-32">
             <SearchPanel />
             <div className="grid grid-cols-2 rounded-lg bg-surface p-1 text-xs" role="tablist" aria-label="侧边栏">
               <button
@@ -153,7 +159,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 left-4 bottom-4 and h-28 (16 + 112 = 128px) — it sits over
                 this column, so without the padding it covers the last rows of
                 the very list it shares a corner with. */}
-            <div className="flex min-h-0 min-w-0 flex-1 overflow-y-auto pb-32">
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-y-auto">
               {sidebarTab === "connections" ? <SessionDropdown variant="panel" /> : <WorkspacePanel />}
             </div>
           </aside>
