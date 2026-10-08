@@ -127,6 +127,44 @@ describe("MessageList streaming cost vs history length", () => {
   }, 600_000);
 
   /**
+   * Opening a long session used to render every message in it before the view
+   * could settle — 2708 messages meant ~7s of Markdown parsing and Prism
+   * highlighting, and the smooth scroll that followed animated through all of
+   * it. Only the newest window is mounted now, so the cost of opening a session
+   * is set by the window size rather than by how long the session is.
+   */
+  it("mounts a window of history, not the whole session", () => {
+    const measure = (n: number) => {
+      vi.mocked(splitUsageFooter).mockClear();
+      vi.mocked(getToolCallLabel).mockClear();
+      const start = performance.now();
+      const { unmount } = render(
+        <MessageList messages={buildSession(n)} streamingContent="" sessionKey={`s-${n}`} />,
+      );
+      const ms = performance.now() - start;
+      const counts = {
+        ms,
+        bubbleBodies: vi.mocked(splitUsageFooter).mock.calls.length,
+        toolSteps: vi.mocked(getToolCallLabel).mock.calls.length,
+      };
+      unmount();
+      return counts;
+    };
+
+    const small = measure(300);
+    const large = measure(2700);
+
+    process.stderr.write(
+      `\n>>> 首次挂载  n=300:  气泡 ${small.bubbleBodies} / 工具步 ${small.toolSteps} / ${small.ms.toFixed(0)}ms` +
+        `\n>>> 首次挂载  n=2700: 气泡 ${large.bubbleBodies} / 工具步 ${large.toolSteps} / ${large.ms.toFixed(0)}ms\n`,
+    );
+
+    // A session 9x longer must not cost 9x to open.
+    expect(large.bubbleBodies).toBe(small.bubbleBodies);
+    expect(large.toolSteps).toBe(small.toolSteps);
+  }, 600_000);
+
+  /**
    * Following the stream used to call scrollIntoView synchronously on every
    * typewriter frame, forcing a layout each time — cheap on a short session,
    * not on the long ones this is about. Coalescing to one call per animation

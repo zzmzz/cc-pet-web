@@ -6,7 +6,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism/index.js";
 import type { ChatMessage, FileAttachment } from "@cc-pet/shared";
 import type { ReactNode } from "react";
-import { useRef, useEffect, useCallback, useState, useMemo, memo } from "react";
+import { useRef, useEffect, useLayoutEffect, useCallback, useState, useMemo, memo } from "react";
 import { getPlatform } from "../lib/platform.js";
 import { useOutboxEntry } from "../lib/store/outbox.js";
 import { retryStagedUpload } from "../lib/attachment-upload.js";
@@ -35,6 +35,17 @@ export function formatMessageTime(ts: number, now?: Date): string {
   }
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${time}`;
 }
+
+/**
+ * 一次渲染多少条历史，以及「加载更早」每次再放出多少条。
+ *
+ * 取 200 而不是几十：流式渲染的成本已经与历史长度解耦（见下面 baseItems 的注释），
+ * 窗口开大不再按帧收费，而窗口太小会让一屏多一点就触底、读历史变成不停点按钮。
+ */
+export const HISTORY_WINDOW_STEP = 200;
+
+/** 滚到离顶部这么近时自动放出更早的消息，省得非点按钮不可。 */
+const TOP_EXPAND_THRESHOLD_PX = 120;
 
 interface PreviewEntry {
   previewId: string;
@@ -377,7 +388,16 @@ function LinkPreviewAnchor({ href, children }: { href?: string; children: ReactN
 export const MessageList = memo(function MessageList({ messages, streamingContent, sessionKey, previews, processing }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const initializedRef = useRef(false);
+  /**
+   * 哪个会话已经完成过「初次落位」。
+   *
+   * 这里按会话内容计时，而不是按组件挂载计时。原先那个 initializedRef 在挂载的
+   * 那一刻就被用掉了，可那时历史还没拉回来、列表是空的；等 2000 条历史真正到达
+   * 时它已经是 true，于是首批历史被当成「来了一条新消息」，走了给单条消息准备的
+   * smooth 动画——浏览器老老实实地从头把整个列表滚到尾，正是长会话打开时看到的
+   * 那段自己在动的画面。
+   */
+  const settledSessionRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
   const [showBackToLatest, setShowBackToLatest] = useState(false);
 
@@ -395,6 +415,50 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   const registerBubble = useCallback((id: string, el: HTMLDivElement | null) => {
     if (el) bubbleRefs.current.set(id, el);
     else bubbleRefs.current.delete(id);
+  }, []);
+
+  /**
+   * 只渲染最近 windowSize 条，其余留在 store 里不进 DOM。
+   *
+   * 窗口大小跟着 sessionKey 走：切到别的会话要从最新一屏重新开始，否则在旧会话里
+   * 展开过的窗口会被新会话继承，白白渲染几百条。这里用「渲染期间发现 key 变了就
+   * 直接改 state」的写法，React 会立刻用新值重渲染而不提交中间那一帧；放进 effect
+   * 的话会先拿旧窗口渲染一次，长会话里就是一次几千条的无谓渲染。
+   */
+  const [windowState, setWindowState] = useState({ key: sessionKey, size: HISTORY_WINDOW_STEP });
+  if (windowState.key !== sessionKey) {
+    setWindowState({ key: sessionKey, size: HISTORY_WINDOW_STEP });
+  }
+  const windowSize = windowState.key === sessionKey ? windowState.size : HISTORY_WINDOW_STEP;
+
+  const windowedMessages = useMemo(
+    () => (messages.length <= windowSize ? messages : messages.slice(messages.length - windowSize)),
+    [messages, windowSize],
+  );
+  const hasOlderMessages = messages.length > windowSize;
+
+  // 滚动回调要读这个值，但不该因为它变化就重建回调（重建会让 onScroll 换个函数、
+  // 每次渲染都重新绑定）。用 ref 把最新值带进去。
+  const hasOlderRef = useRef(hasOlderMessages);
+  hasOlderRef.current = hasOlderMessages;
+
+  /**
+   * 往列表头部放更早的消息时，先记下当前的滚动几何。
+   * 内容插在上方会把读者正在看的东西整体推下去，不补偿的话视口就凭空跳一段，
+   * 读起来就像列表自己在滚。真正的补偿在下面的 useLayoutEffect 里做。
+   */
+  const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+
+  const expandWindow = useCallback(() => {
+    if (!hasOlderRef.current) return;
+    const container = containerRef.current;
+    if (container) {
+      prependAnchorRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+      };
+    }
+    setWindowState((w) => ({ key: w.key, size: w.size + HISTORY_WINDOW_STEP }));
   }, []);
 
   const isNearBottom = useCallback(() => {
@@ -441,7 +505,9 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     const shouldStick = isNearBottom();
     stickToBottomRef.current = shouldStick;
     setShowBackToLatest(!shouldStick);
-  }, [isNearBottom]);
+    const container = containerRef.current;
+    if (container && container.scrollTop <= TOP_EXPAND_THRESHOLD_PX) expandWindow();
+  }, [isNearBottom, expandWindow]);
 
   // Grouping depends on `messages` alone, so it survives the whole stream. The
   // typewriter rewrites `streamingContent` every frame; keying this memo on it
@@ -449,7 +515,9 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   // object, which made the memo on MessageBubble/ActivityBlock impossible to
   // hit and put a full Markdown + Prism re-render of the whole history on each
   // frame.
-  const baseItems = useMemo(() => groupMessages(messages), [messages]);
+  // 按窗口内的消息分组。窗口边界可能把一对 🔧/🧾 切开，于是头一条是个没有调用的
+  // 孤立结果——pairSteps 本来就按这种情况兜底（单独成步展示），不需要额外处理。
+  const baseItems = useMemo(() => groupMessages(windowedMessages), [windowedMessages]);
 
   // Whether the stream has closed the trailing tool group is the one thing the
   // streamed text decides, and it is applied as a patch rather than folded into
@@ -465,25 +533,41 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     return [...baseItems.slice(0, -1), { ...last, done: true }];
   }, [baseItems, trailingToolGroupDone]);
 
-  const askAnswers = useMemo(() => buildAskAnswerMap(messages), [messages]);
+  /**
+   * 放出更早的消息之后，把滚动位置按新增内容的高度补回去，让读者眼前的东西不动。
+   *
+   * 用 useLayoutEffect 而不是 useEffect：后者在浏览器绘制之后才跑，读者会先看到
+   * 跳动的一帧再被拨回来，那一下比不补偿还显眼。
+   */
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    if (!anchor) return;
+    prependAnchorRef.current = null;
+    const container = containerRef.current;
+    if (!container) return;
+    const grown = container.scrollHeight - anchor.scrollHeight;
+    if (grown <= 0) return;
+    container.scrollTop = anchor.scrollTop + grown;
+  }, [baseItems]);
 
-  const prevSessionRef = useRef(sessionKey);
-  useEffect(() => {
-    if (prevSessionRef.current !== sessionKey) {
-      prevSessionRef.current = sessionKey;
-      // A pending jump owns the scroll position; don't snap to the bottom.
-      if (pendingRef.current) return;
-      stickToBottomRef.current = true;
-      setShowBackToLatest(false);
-      requestAnimationFrame(() => scrollToLatest("auto"));
-    }
-  }, [sessionKey, scrollToLatest]);
+  // 答案映射基于完整列表：窗口外的提问也可能对应窗口内的回答，切片算会漏掉。
+  const askAnswers = useMemo(() => buildAskAnswerMap(messages), [messages]);
 
   // Scroll to and briefly highlight a message requested by a search result,
   // once it is present in the current session's rendered messages.
   useEffect(() => {
     if (!pendingScrollMessageId) return;
-    if (!messages.some((m) => m.id === pendingScrollMessageId)) return;
+    const index = messages.findIndex((m) => m.id === pendingScrollMessageId);
+    if (index < 0) return;
+
+    // 目标比窗口更早时它根本没进 DOM，bubbleRefs 里自然找不到。先把窗口撑到盖住它
+    // （多放一段，免得目标正好贴在最顶上、居中滚动没有余量），下一轮渲染再滚过去。
+    const needed = messages.length - index;
+    if (needed > windowSize) {
+      setWindowState((w) => ({ key: w.key, size: needed + HISTORY_WINDOW_STEP }));
+      return;
+    }
+
     const el = bubbleRefs.current.get(pendingScrollMessageId);
     if (!el) return;
 
@@ -499,20 +583,26 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     }, 2000);
 
     clearPendingScroll();
-  }, [pendingScrollMessageId, messages, clearPendingScroll]);
+  }, [pendingScrollMessageId, messages, windowSize, clearPendingScroll]);
 
   useEffect(() => () => {
     if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
   }, []);
 
   useEffect(() => {
-    if (!initializedRef.current) {
-      initializedRef.current = true;
-      if (!pendingRef.current) scrollToLatest("auto");
-      return;
-    }
     // While a jump is pending, the jump effect controls scrolling.
     if (pendingRef.current) return;
+
+    // 初次落位：首批历史到达、或切到另一个会话。这一屏是「内容出现」而不是
+    // 「来了一条新消息」，必须瞬时到底——smooth 会让浏览器把整个列表从头滚到尾。
+    const sessionId = sessionKey ?? "";
+    if (settledSessionRef.current !== sessionId) {
+      if (messages.length === 0) return; // 还没有内容可落位，等历史到达再说
+      settledSessionRef.current = sessionId;
+      scrollToLatest("auto");
+      return;
+    }
+
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === "user") {
       scrollToLatest("smooth");
@@ -529,7 +619,7 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       return;
     }
     setShowBackToLatest(true);
-  }, [messages, streamingContent, previews, processing, scrollToLatest, scheduleScrollToLatest]);
+  }, [messages, sessionKey, streamingContent, previews, processing, scrollToLatest, scheduleScrollToLatest]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -555,6 +645,17 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
   return (
     <div className="relative flex-1 min-h-0">
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto py-3 space-y-1">
+        {hasOlderMessages ? (
+          <div className="flex justify-center px-3 py-2">
+            <button
+              type="button"
+              onClick={expandWindow}
+              className="rounded-full border border-border bg-surface-secondary px-3 py-1 text-xs text-gray-600 hover:bg-surface"
+            >
+              加载更早的消息
+            </button>
+          </div>
+        ) : null}
         {renderItems.map((item) =>
           item.kind === "tool-group" ? (
             <ActivityBlock key={item.steps[0].call.id} steps={item.steps} done={item.done} />
