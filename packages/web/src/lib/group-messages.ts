@@ -40,7 +40,24 @@ function pairSteps(buf: ChatMessage[]): ToolStep[] {
   return steps;
 }
 
-export function groupMessages(messages: ChatMessage[], streamingContent?: string): RenderItem[] {
+/**
+ * 尾部那组工具调用是否已经收尾：流式正文一旦吐出非工具内容，就说明工具阶段结束了。
+ *
+ * 这个判断单独抽出来，是为了让 groupMessages 只收一个布尔值而不是整段流式正文。
+ * 打字机每吐一个字正文就变一次，若让 groupMessages 直接依赖正文，调用方的 useMemo
+ * 每帧都会失效、重新分组整个会话并返回全新的 RenderItem 数组，下游 memo 也就全部落空。
+ * 换成布尔量之后，一次回复期间它几乎恒定，分组结果在整个流式过程中保持同一引用。
+ */
+export function streamingClosesToolGroup(streamingContent?: string): boolean {
+  return (
+    streamingContent != null &&
+    streamingContent.length > 0 &&
+    !isToolCallContent(streamingContent) &&
+    !isToolResultContent(streamingContent)
+  );
+}
+
+export function groupMessages(messages: ChatMessage[], trailingToolGroupDone = false): RenderItem[] {
   const items: RenderItem[] = [];
   let toolBuf: ChatMessage[] = [];
 
@@ -65,12 +82,7 @@ export function groupMessages(messages: ChatMessage[], streamingContent?: string
   }
 
   if (toolBuf.length > 0) {
-    const done =
-      streamingContent != null &&
-      streamingContent.length > 0 &&
-      !isToolCallContent(streamingContent) &&
-      !isToolResultContent(streamingContent);
-    flushToolGroup(done);
+    flushToolGroup(trailingToolGroupDone);
   }
 
   return items;

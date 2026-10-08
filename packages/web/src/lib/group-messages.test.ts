@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "@cc-pet/shared";
-import { groupMessages, type RenderItem } from "./group-messages.js";
+import { groupMessages, streamingClosesToolGroup, type RenderItem } from "./group-messages.js";
 
 function msg(id: string, role: ChatMessage["role"], content: string): ChatMessage {
   return { id, role, content, timestamp: Date.now() };
@@ -126,7 +126,7 @@ describe("groupMessages", () => {
       msg("1", "user", "do something"),
       msg("2", "assistant", '🔧 **工具 #1: Bash**\n---\necho hi'),
     ];
-    const items = groupMessages(msgs, "结果是...");
+    const items = groupMessages(msgs, streamingClosesToolGroup("结果是..."));
     expect(items).toHaveLength(2);
     expect(items[1]).toMatchObject({ kind: "tool-group", done: true });
   });
@@ -136,7 +136,7 @@ describe("groupMessages", () => {
       msg("1", "user", "do something"),
       msg("2", "assistant", '🔧 **工具 #1: Bash**\n---\necho hi'),
     ];
-    const items = groupMessages(msgs, "💭\nstill thinking");
+    const items = groupMessages(msgs, streamingClosesToolGroup("💭\nstill thinking"));
     expect(items).toHaveLength(2);
     expect(items[1]).toMatchObject({ kind: "tool-group", done: false });
   });

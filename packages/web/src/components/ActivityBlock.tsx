@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { ToolStep } from "../lib/group-messages.js";
 import {
   getToolCallLabel,
@@ -117,7 +117,12 @@ function StepRow({ view, tone, expanded, onToggle }: StepRowProps) {
   );
 }
 
-export function ActivityBlock({ steps, done }: ActivityBlockProps) {
+/**
+ * memo'd for the same reason as MessageBubble: every render re-runs
+ * buildStepView over each step, which parses the tool payloads. Relies on
+ * MessageList keeping `steps` referentially stable between typewriter frames.
+ */
+export const ActivityBlock = memo(function ActivityBlock({ steps, done }: ActivityBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
 
@@ -191,4 +196,4 @@ export function ActivityBlock({ steps, done }: ActivityBlockProps) {
       </div>
     </div>
   );
-}
+});

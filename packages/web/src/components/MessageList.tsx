@@ -11,7 +11,7 @@ import { getPlatform } from "../lib/platform.js";
 import { useOutboxEntry } from "../lib/store/outbox.js";
 import { retryStagedUpload } from "../lib/attachment-upload.js";
 import { useSessionStore } from "../lib/store/session.js";
-import { groupMessages } from "../lib/group-messages.js";
+import { groupMessages, streamingClosesToolGroup } from "../lib/group-messages.js";
 import { buildAskAnswerMap } from "../lib/ask-answers.js";
 import { splitUsageFooter } from "../lib/footer.js";
 import { ActivityBlock } from "./ActivityBlock.js";
@@ -411,6 +411,29 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     setShowBackToLatest(false);
   }, []);
 
+  // Follow-the-stream scrolling, coalesced to one call per animation frame.
+  // The typewriter re-runs the scroll effect on every frame, and a synchronous
+  // scrollIntoView forces a layout each time — which gets expensive precisely
+  // in the long sessions this is meant to keep smooth. The sticky-bottom
+  // bookkeeping stays synchronous so the "回到最新" button never lags a frame
+  // behind; only the DOM scroll is deferred.
+  const pendingScrollFrameRef = useRef<number | null>(null);
+  const scheduleScrollToLatest = useCallback(() => {
+    stickToBottomRef.current = true;
+    setShowBackToLatest(false);
+    if (pendingScrollFrameRef.current !== null) return;
+    pendingScrollFrameRef.current = requestAnimationFrame(() => {
+      pendingScrollFrameRef.current = null;
+      bottomRef.current?.scrollIntoView({ behavior: "auto" });
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (pendingScrollFrameRef.current !== null) {
+      cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+  }, []);
+
   const viewportResizingRef = useRef(false);
 
   const handleScroll = useCallback(() => {
@@ -420,10 +443,27 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
     setShowBackToLatest(!shouldStick);
   }, [isNearBottom]);
 
-  const renderItems = useMemo(
-    () => groupMessages(messages, streamingContent),
-    [messages, streamingContent],
-  );
+  // Grouping depends on `messages` alone, so it survives the whole stream. The
+  // typewriter rewrites `streamingContent` every frame; keying this memo on it
+  // re-grouped the entire session per frame and handed every bubble a fresh
+  // object, which made the memo on MessageBubble/ActivityBlock impossible to
+  // hit and put a full Markdown + Prism re-render of the whole history on each
+  // frame.
+  const baseItems = useMemo(() => groupMessages(messages), [messages]);
+
+  // Whether the stream has closed the trailing tool group is the one thing the
+  // streamed text decides, and it is applied as a patch rather than folded into
+  // the grouping above. Doing it this way keeps `baseItems` identity when the
+  // flag flips (which it does on the first frame of every reply), and when the
+  // list really does end in an open tool group only that one item is rebuilt —
+  // so a reply costs one re-rendered block instead of the entire history.
+  const trailingToolGroupDone = streamingClosesToolGroup(streamingContent);
+  const renderItems = useMemo(() => {
+    if (!trailingToolGroupDone) return baseItems;
+    const last = baseItems[baseItems.length - 1];
+    if (last?.kind !== "tool-group" || last.done) return baseItems;
+    return [...baseItems.slice(0, -1), { ...last, done: true }];
+  }, [baseItems, trailingToolGroupDone]);
 
   const askAnswers = useMemo(() => buildAskAnswerMap(messages), [messages]);
 
@@ -484,11 +524,12 @@ export const MessageList = memo(function MessageList({ messages, streamingConten
       // "not at bottom", flipping stickToBottom off and killing auto-follow.
       // Pin instantly while streaming content is present so the view stays
       // glued to the newest text.
-      scrollToLatest(streamingContent ? "auto" : "smooth");
+      if (streamingContent) scheduleScrollToLatest();
+      else scrollToLatest("smooth");
       return;
     }
     setShowBackToLatest(true);
-  }, [messages, streamingContent, previews, processing, scrollToLatest]);
+  }, [messages, streamingContent, previews, processing, scrollToLatest, scheduleScrollToLatest]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -629,7 +670,12 @@ function FileAttachmentView({ file, isUser }: { file: FileAttachment; isUser: bo
   );
 }
 
-function MessageBubble({ message, answeredWith }: { message: ChatMessage; answeredWith?: string }) {
+/**
+ * memo 是这里的性能地基，不是微优化：一条气泡要跑 Markdown 解析（remark-gfm +
+ * rehype-raw）和 Prism 高亮，没有它时每个打字机帧都要把整个会话重算一遍。配合
+ * renderItems 的引用稳定，流式期间历史气泡的重渲染次数降到零。
+ */
+const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { message: ChatMessage; answeredWith?: string }) {
   const isUser = message.role === "user";
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -919,7 +965,7 @@ function MessageBubble({ message, answeredWith }: { message: ChatMessage; answer
       </div>
     </div>
   );
-}
+});
 
 function UsageBadge({ footer, model }: { footer: string; model: string | null }) {
   const [open, setOpen] = useState(false);
