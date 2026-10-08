@@ -106,8 +106,32 @@ export class MessageStore {
     return { seq, inserted: existing === undefined };
   }
 
+  /**
+   * `extra` carries optional per-message metadata (buttons, files, usage…) and
+   * is spread over the message. Two things must not happen here:
+   *
+   * Unparseable JSON used to throw, and since every history row goes through
+   * this method, a single bad value turned into a 500 for the whole chat — the
+   * session would not open at all. The metadata is optional; the message is
+   * not, so a value we cannot read is dropped and the message still returned.
+   *
+   * A value that parses to something other than an object is dropped for a
+   * different reason: spreading a string scatters its characters across the
+   * message as numeric keys, quietly corrupting the shape the client reads.
+   */
+  private parseExtra(raw: unknown): Record<string, unknown> {
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(String(raw));
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return parsed as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
   private toChatMessage(r: any): ChatMessage {
-    const extra = r.extra ? JSON.parse(r.extra) : {};
+    const extra = this.parseExtra(r.extra);
     return {
       id: r.id,
       role: r.role,
