@@ -55,9 +55,9 @@ describe("MessageStore tolerates unreadable extra", () => {
     // numeric keys; spreading a number or null silently yields nothing.
     corrupt("m-2", JSON.stringify("乱入的字符串"));
 
-    const bad = messages.getByChatKey("c::s").find((r) => r.id === "m-2") as Record<string, unknown>;
-    expect(bad.content).toBe("坏行");
-    expect(bad["0"]).toBeUndefined();
+    const bad = messages.getByChatKey("c::s").find((r) => r.id === "m-2");
+    expect(bad?.content).toBe("坏行");
+    expect((bad as unknown as Record<string, unknown>)["0"]).toBeUndefined();
   });
 
   it("keeps honouring well-formed extra", () => {
@@ -67,8 +67,8 @@ describe("MessageStore tolerates unreadable extra", () => {
       buttons: [{ id: "b1", label: "选我", value: "v1" }],
     } as never);
 
-    const row = messages.getByChatKey("c::s").find((r) => r.id === "m-ok") as Record<string, unknown>;
-    expect(row.buttons).toEqual([{ id: "b1", label: "选我", value: "v1" }]);
+    const row = messages.getByChatKey("c::s").find((r) => r.id === "m-ok");
+    expect(row?.buttons).toEqual([{ id: "b1", label: "选我", value: "v1" }]);
   });
 
   it("survives a bad row on the incremental backfill path too", () => {
