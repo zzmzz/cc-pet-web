@@ -18,6 +18,8 @@ export const WS_EVENTS = {
   BRIDGE_AUDIO: "bridge:audio",
   /** Server → dashboard: resident session unread count changed (server-driven). */
   RESIDENT_UNREAD: "resident:unread",
+  /** Server → dashboard: the assistant backend pushed a message into a session; refresh lists and that session. */
+  ASSISTANT_SESSION_UPDATED: "assistant-session-updated",
 
   SEND_MESSAGE: "send-message",
   SEND_BUTTON: "send-button",

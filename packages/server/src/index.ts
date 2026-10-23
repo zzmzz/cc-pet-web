@@ -52,6 +52,7 @@ import { PushSubscriptionStore } from "./storage/push-subscriptions.js";
 import { WebPushService } from "./push/web-push-service.js";
 import { registerPushRoutes } from "./api/push.js";
 import { registerAssistantRoutes } from "./api/assistant.js";
+import { registerAssistantInternalRoutes } from "./api/assistant-internal.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -170,6 +171,24 @@ registerAssistantRoutes(app, {
   dbPath: process.env.ASSISTANT_DB ?? path.join(DATA_DIR, "qiulai", "qiulai.db"),
   getAuthIdentity: getRequestAuthIdentity,
 });
+// 助手后台往会话里发消息用；hub 要等 listen 之后才建，这里先留个引用
+let assistantHub: ClientHub | null = null;
+registerAssistantInternalRoutes(app, {
+  token: process.env.ASSISTANT_INTERNAL_TOKEN,
+  getResident: () => {
+    const token = initialConfig.tokens.find((t) => t.ui === "assistant");
+    return token ? residentRegistry.pairs().find((p) => p.tokenName === token.name) : undefined;
+  },
+  sessionStore,
+  messageStore,
+  bridgeManager,
+  broadcast: (event, payload) => assistantHub?.broadcast(event, payload),
+  onUserSend: (connectionId, sessionKey) => {
+    if (residentRegistry.isResident(connectionId, sessionKey)) {
+      proactiveDetector.markUserSend(connectionId, sessionKey);
+    }
+  },
+});
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
 registerPetImageRoutes(app);
@@ -274,6 +293,7 @@ app.get<{ Params: { id: string } }>("/api/bridges/:id/status", async (req, reply
 await app.listen({ port: PORT, host: "0.0.0.0" });
 
 const hub = new ClientHub(app.server, initialConfig.tokens, app.log);
+assistantHub = hub;
 hub.onClientConnected = (client, send) => {
   const cfg = configStore.load();
   const allowedBridges = cfg.bridges.filter((b) => client.auth.bridgeIds.has(b.id));

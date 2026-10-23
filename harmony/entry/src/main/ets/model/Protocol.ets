@@ -16,6 +16,7 @@ export class WsEvents {
   static readonly BRIDGE_CARD: string = 'bridge:card';
   static readonly BRIDGE_AUDIO: string = 'bridge:audio';
   static readonly RESIDENT_UNREAD: string = 'resident:unread';
+  static readonly ASSISTANT_SESSION_UPDATED: string = 'assistant-session-updated';
   static readonly SEND_MESSAGE: string = 'send-message';
   static readonly SEND_BUTTON: string = 'send-button';
   static readonly SEND_FILE: string = 'send-file';
