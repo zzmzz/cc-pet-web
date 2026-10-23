@@ -169,6 +169,8 @@ registerPushRoutes(app, {
 });
 registerAssistantRoutes(app, {
   dbPath: process.env.ASSISTANT_DB ?? path.join(DATA_DIR, "qiulai", "qiulai.db"),
+  outputRoot: process.env.ASSISTANT_OUTPUT_ROOT,
+  pathMap: process.env.ASSISTANT_PATH_MAP,
   getAuthIdentity: getRequestAuthIdentity,
 });
 // 助手后台往会话里发消息用；hub 要等 listen 之后才建，这里先留个引用

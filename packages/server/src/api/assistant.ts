@@ -7,8 +7,13 @@ import type { AuthIdentity } from "../auth/token-auth.js";
 export interface AssistantRoutesDeps {
   /** 助手数据库路径；库由外部后台建表和迁移，这里只读写 */
   dbPath: string;
-  /** 成品文件只能从这个目录下面读；默认 ASSISTANT_OUTPUT_ROOT 或 /hywork/产出/蟹哥 */
+  /** 成品文件只能从这个目录下面读（环境变量 ASSISTANT_OUTPUT_ROOT）；没配或为空时成品文件接口一律 404 */
   outputRoot?: string;
+  /**
+   * 后台登记的是宿主上的路径，容器里看到的可能是另一个挂载点。
+   * 格式 "<宿主前缀>=<容器前缀>"（环境变量 ASSISTANT_PATH_MAP）；没配就原样使用。
+   */
+  pathMap?: string;
   getAuthIdentity: (req: FastifyRequest) => AuthIdentity | null;
 }
 
@@ -94,7 +99,7 @@ function toItem(r: ItemRow) {
 
 type DeliverableStatus = "seen" | "used" | "dismissed";
 const DELIVERABLE_STATUSES: readonly string[] = ["seen", "used", "dismissed"];
-/** 成品列表只看最近这么久登记的 */
+/** 成品列表只看最近这么久登记的；还没看过（status = 'new'）的不受这个限制 */
 const DELIVERABLE_WINDOW_MS = 3 * 24 * 3600 * 1000;
 /** 这两种直接在页面里显示，其余一律下载 */
 const TEXT_TYPES: Record<string, string> = {
@@ -102,12 +107,27 @@ const TEXT_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-const HOST_WORKSPACE = "/root/code/hyworkspace/";
-const CONTAINER_WORKSPACE = "/hywork/";
+export interface PathMap {
+  host: string;
+  container: string;
+}
 
-/** 后台在宿主上登记的路径，换成容器里看到的路径 */
-export function toContainerPath(p: string): string {
-  return p.startsWith(HOST_WORKSPACE) ? CONTAINER_WORKSPACE + p.slice(HOST_WORKSPACE.length) : p;
+/** 解析 "<宿主前缀>=<容器前缀>"；格式不对或任一边为空就当没配 */
+export function parsePathMap(raw: string | undefined): PathMap | null {
+  if (!raw) return null;
+  const i = raw.indexOf("=");
+  if (i < 0) return null;
+  const host = raw.slice(0, i).trim().replace(/\/+$/, "");
+  const container = raw.slice(i + 1).trim().replace(/\/+$/, "");
+  if (!host || !container) return null;
+  return { host, container };
+}
+
+/** 后台在宿主上登记的路径，换成容器里看到的路径；只认整段目录前缀 */
+export function toContainerPath(p: string, map: PathMap | null): string {
+  if (!map) return p;
+  if (p === map.host) return map.container;
+  return p.startsWith(map.host + "/") ? map.container + p.slice(map.host.length) : p;
 }
 
 interface DeliverableRow {
@@ -163,7 +183,8 @@ function hasV4Tables(db: Database.Database): boolean {
 
 function isInside(root: string, p: string): boolean {
   const rel = path.relative(root, p);
-  return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+  // 只挡真正往上走的 ".."，根目录里叫 "..notes.md" 的文件照常放行
+  return rel.length > 0 && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
 }
 
 function readPlannedAt(dbPath: string): string | null {
@@ -177,7 +198,8 @@ function readPlannedAt(dbPath: string): string | null {
 
 export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRoutesDeps): void {
   const { dbPath, getAuthIdentity } = deps;
-  const outputRoot = path.resolve(deps.outputRoot ?? process.env.ASSISTANT_OUTPUT_ROOT ?? "/hywork/产出/蟹哥");
+  const outputRoot = deps.outputRoot ? path.resolve(deps.outputRoot) : null;
+  const pathMap = parsePathMap(deps.pathMap);
 
   /** 返回 true 表示已回复错误，调用方直接结束 */
   function rejectUnlessAssistant(req: FastifyRequest, reply: FastifyReply): boolean {
@@ -220,7 +242,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
         deliverables = (
           db
             .prepare(
-              `SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE created_at >= ? ORDER BY created_at DESC, id DESC`,
+              `SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE created_at >= ? OR status = 'new' ORDER BY created_at DESC, id DESC`,
             )
             .all(since) as DeliverableRow[]
         ).map(toDeliverable);
@@ -315,6 +337,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
   app.get<{ Params: { id: string } }>("/api/assistant/deliverables/:id/file", async (req, reply) => {
     if (rejectUnlessAssistant(req, reply)) return reply;
     if (!/^[1-9]\d*$/.test(req.params.id)) return reply.code(400).send({ error: "Invalid id" });
+    if (!outputRoot) return reply.code(404).send({ error: "没有配置成品目录" });
     const id = Number(req.params.id);
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     let stored: string | undefined;
@@ -329,7 +352,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
     if (!stored) return reply.code(404).send({ error: "成品不存在" });
 
     // 先按字面路径判断，再按解开链接后的真实路径判断，两道都得落在产出目录里
-    const filePath = path.resolve(toContainerPath(stored));
+    const filePath = path.resolve(toContainerPath(stored, pathMap));
     if (!isInside(outputRoot, filePath)) return reply.code(403).send({ error: "Forbidden" });
     let real: string;
     let realRoot: string;
@@ -343,9 +366,10 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
     const stat = await fs.promises.stat(real);
     if (!stat.isFile()) return reply.code(404).send({ error: "文件不存在" });
 
+    reply.header("Content-Length", stat.size).header("X-Content-Type-Options", "nosniff");
     const textType = TEXT_TYPES[path.extname(real).toLowerCase()];
     if (textType) {
-      return reply.type(textType).send(await fs.promises.readFile(real, "utf8"));
+      return reply.type(textType).send(fs.createReadStream(real));
     }
     const name = path.basename(filePath);
     // 老浏览器只认 filename，给个 ASCII 兜底；真名放 filename*
@@ -353,6 +377,6 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
     return reply
       .type("application/octet-stream")
       .header("Content-Disposition", `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`)
-      .send(await fs.promises.readFile(real));
+      .send(fs.createReadStream(real));
   });
 }

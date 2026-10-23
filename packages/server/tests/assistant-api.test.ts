@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { registerAssistantRoutes, toContainerPath } from "../src/api/assistant.js";
+import { parsePathMap, registerAssistantRoutes, toContainerPath } from "../src/api/assistant.js";
 import type { AuthIdentity } from "../src/auth/token-auth.js";
 
 const ASSISTANT: AuthIdentity = { tokenName: "A", bridgeIds: new Set(), ui: "assistant" };
@@ -189,9 +189,9 @@ describe("assistant API: deliverables and threads", () => {
   let app: FastifyInstance;
   let identity: AuthIdentity | null;
 
-  async function build(p: string) {
+  async function build(p: string, opts: { outputRoot?: string; pathMap?: string } = { outputRoot: outRoot }) {
     const a = Fastify();
-    registerAssistantRoutes(a, { dbPath: p, outputRoot: outRoot, getAuthIdentity: () => identity });
+    registerAssistantRoutes(a, { dbPath: p, ...opts, getAuthIdentity: () => identity });
     await a.ready();
     return a;
   }
@@ -235,6 +235,17 @@ describe("assistant API: deliverables and threads", () => {
   const setStatus = (id: string | number, payload: unknown) =>
     app.inject({ method: "POST", url: `/api/assistant/deliverables/${id}/status`, payload: payload as object });
   const file = (id: string | number) => app.inject({ method: "GET", url: `/api/assistant/deliverables/${id}/file` });
+
+  it("keeps an older deliverable visible while it is still new", async () => {
+    const db = new Database(dbPath);
+    db.prepare(
+      "INSERT INTO deliverables (title, path, status, created_at, updated_at) VALUES ('重新登记的草稿', ?, 'new', ?, ?)",
+    ).run(path.join(outRoot, "周报草稿.md"), hoursAgo(24 * 10), hoursAgo(1));
+    db.close();
+    const titles = (await board()).json().deliverables.map((d: { title: string }) => d.title);
+    expect(titles.at(-1)).toBe("重新登记的草稿");
+    expect(titles).not.toContain("很早的成品");
+  });
 
   it("returns deliverables from the last 3 days, newest first, and all threads", async () => {
     const body = (await board()).json();
@@ -316,6 +327,8 @@ describe("assistant API: deliverables and threads", () => {
     expect(md.headers["content-type"]).toMatch(/^text\/markdown; charset=utf-8/);
     expect(md.body).toBe("# 示例周报\n内容甲\n");
     expect(md.headers["content-disposition"]).toBeUndefined();
+    expect(md.headers["content-length"]).toBe(String(Buffer.byteLength("# 示例周报\n内容甲\n")));
+    expect(md.headers["x-content-type-options"]).toBe("nosniff");
 
     const bin = await file(2);
     expect(bin.statusCode).toBe(200);
@@ -323,6 +336,48 @@ describe("assistant API: deliverables and threads", () => {
     expect(bin.headers["content-disposition"]).toContain("attachment;");
     expect(bin.headers["content-disposition"]).toContain(`filename*=UTF-8''${encodeURIComponent("数据.xlsx")}`);
     expect(bin.rawPayload).toEqual(Buffer.from([1, 2, 3, 4]));
+    expect(bin.headers["content-length"]).toBe("4");
+    expect(bin.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("allows a file whose name merely starts with two dots", async () => {
+    await writeFile(path.join(outRoot, "..notes.md"), "笔记", "utf8");
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO deliverables (title, path, created_at, updated_at) VALUES ('点开头', ?, ?, ?)")
+      .run(path.join(outRoot, "..notes.md"), hoursAgo(1), hoursAgo(1));
+    db.close();
+    const res = await file(7);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("笔记");
+  });
+
+  it("404s every file when no output root is configured", async () => {
+    for (const opts of [{}, { outputRoot: "" }]) {
+      const a = await build(dbPath, opts);
+      try {
+        const res = await a.inject({ method: "GET", url: "/api/assistant/deliverables/1/file" });
+        expect(res.statusCode).toBe(404);
+      } finally {
+        await a.close();
+      }
+    }
+  });
+
+  it("maps host paths through the configured prefix before reading", async () => {
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO deliverables (title, path, created_at, updated_at) VALUES ('宿主路径', ?, ?, ?)")
+      .run("/srv/work/out/周报草稿.md", hoursAgo(1), hoursAgo(1));
+    db.close();
+    const unmapped = await file(7);
+    expect(unmapped.statusCode).toBe(403);
+    const a = await build(dbPath, { outputRoot: outRoot, pathMap: `/srv/work/=${dir}/` });
+    try {
+      const res = await a.inject({ method: "GET", url: "/api/assistant/deliverables/7/file" });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("# 示例周报\n内容甲\n");
+    } finally {
+      await a.close();
+    }
   });
 
   it("refuses files outside the output root and 404s missing ones", async () => {
@@ -344,9 +399,20 @@ describe("assistant API: deliverables and threads", () => {
 });
 
 describe("toContainerPath", () => {
-  it("maps the host workspace prefix to /hywork/", () => {
-    expect(toContainerPath("/root/code/hyworkspace/产出/蟹哥/a.md")).toBe("/hywork/产出/蟹哥/a.md");
-    expect(toContainerPath("/hywork/产出/蟹哥/a.md")).toBe("/hywork/产出/蟹哥/a.md");
-    expect(toContainerPath("/root/code/hyworkspaceX/a.md")).toBe("/root/code/hyworkspaceX/a.md");
+  it("maps only whole-directory host prefixes", () => {
+    const map = parsePathMap("/srv/work/=/data/work/");
+    expect(map).toEqual({ host: "/srv/work", container: "/data/work" });
+    expect(toContainerPath("/srv/work/out/a.md", map)).toBe("/data/work/out/a.md");
+    expect(toContainerPath("/data/work/out/a.md", map)).toBe("/data/work/out/a.md");
+    expect(toContainerPath("/srv/workX/a.md", map)).toBe("/srv/workX/a.md");
+    expect(toContainerPath("/srv/work", map)).toBe("/data/work");
+  });
+
+  it("leaves paths alone when the map is unset or malformed", () => {
+    for (const raw of [undefined, "", "/srv/work", "=/data/out", "/srv/work=", "/=/data/out"]) {
+      const map = parsePathMap(raw);
+      expect(map, String(raw)).toBeNull();
+      expect(toContainerPath("/srv/work/a.md", map)).toBe("/srv/work/a.md");
+    }
   });
 });

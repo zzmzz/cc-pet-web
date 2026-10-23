@@ -123,6 +123,8 @@ docker compose up -d
 | `CC_PET_LOG_PRETTY` | `1` 美化日志 / `0` JSON 日志 | 自动 |
 | `NODE_ENV` | 运行环境 | - |
 | `LOG_LEVEL` | Pino 日志级别 | `info` |
+| `ASSISTANT_OUTPUT_ROOT` | 助手成品文件所在目录（容器内路径），成品下载只读这个目录下的文件；不配则下载接口返回 404 | - |
+| `ASSISTANT_PATH_MAP` | 助手后台登记的是宿主路径时，换成容器路径：`<宿主前缀>=<容器前缀>`，如 `/srv/work=/data/work` | 不转换 |
 
 ### 常用命令
 
@@ -259,6 +261,8 @@ docker compose up -d
 | `CC_PET_LOG_PRETTY` | `1` for pretty logs / `0` for JSON | auto |
 | `NODE_ENV` | Runtime environment | - |
 | `LOG_LEVEL` | Pino log level | `info` |
+| `ASSISTANT_OUTPUT_ROOT` | Directory (container path) the assistant's deliverable files are served from; when unset the file endpoint returns 404 | - |
+| `ASSISTANT_PATH_MAP` | Rewrites host paths recorded by the assistant backend to container paths: `<hostPrefix>=<containerPrefix>`, e.g. `/srv/work=/data/work` | no mapping |
 
 ### Commands
 
