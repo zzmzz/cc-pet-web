@@ -84,6 +84,11 @@ function statusCalls() {
     .map(([path, init]) => [path, JSON.parse(String(init?.body))]);
 }
 
+/** 没定日期的待办 starts folded; open it. */
+async function expandUndated(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: /没定日期的待办/ }));
+}
+
 function setWidth(width: number) {
   Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
 }
@@ -105,6 +110,7 @@ beforeEach(() => {
 
 describe("AssistantPage", () => {
   it("renders the board sections with their items", async () => {
+    const user = userEvent.setup();
     render(<AssistantPage />);
 
     expect(await screen.findByText("去图书馆还书")).toBeTruthy();
@@ -119,8 +125,31 @@ describe("AssistantPage", () => {
     expect(screen.getByText("回复李老师的邮件")).toBeTruthy();
     expect(screen.getByText(/等了 \d+ 天/)).toBeTruthy();
     expect(screen.getByRole("heading", { name: /没定日期的待办/ })).toBeTruthy();
-    expect(screen.getByText("整理书架")).toBeTruthy();
     expect(screen.getByText(/事项更新于 \d\d:\d\d/)).toBeTruthy();
+
+    // Folded until clicked; the header still says how many.
+    const fold = screen.getByRole("button", { name: /没定日期的待办/ });
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    expect(fold.textContent).toContain("1");
+    expect(screen.queryByText("整理书架")).toBeNull();
+    await user.click(fold);
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("整理书架")).toBeTruthy();
+    await user.click(fold);
+    expect(screen.queryByText("整理书架")).toBeNull();
+  });
+
+  it("orders the sections: today, next week, waiting, farther, undated, recently closed", async () => {
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    const titles = screen
+      .getAllByRole("heading", { level: 2 })
+      .map((h) => (h.textContent ?? "").replace(/[\d▸▾\s]/g, ""));
+    expect(titles).toEqual(["今天", "接下来一周", "等你回复", "更远", "没定日期的待办"]);
+    const closed = screen.getByRole("button", { name: /最近 24 小时结案/ });
+    const undated = screen.getByRole("heading", { name: /没定日期的待办/ });
+    expect(undated.compareDocumentPosition(closed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("tags urgent items 急 and relaxed ones 不急, and puts urgent ones first", async () => {
@@ -133,8 +162,10 @@ describe("AssistantPage", () => {
         item({ id: 8, title: "周末大扫除", date: tomorrow, priority: "high" }),
       ],
     });
+    const user = userEvent.setup();
     render(<AssistantPage />);
 
+    await expandUndated(user);
     const urgent = (await screen.findByText("交报名表")).closest("li")!;
     expect(within(urgent).getByText("急")).toBeTruthy();
     const relaxed = screen.getByText("随手记一下").closest("li")!;
@@ -144,8 +175,8 @@ describe("AssistantPage", () => {
     expect(within(plain).queryByText("不急")).toBeNull();
     expect(within(screen.getByTestId(`week-${tomorrow}`)).getByText("急")).toBeTruthy();
 
-    const undated = screen.getByRole("heading", { name: /没定日期的待办/ }).closest("section")!;
-    const rows = within(undated).getAllByRole("listitem").map((li) => li.textContent ?? "");
+    const undatedSection = screen.getByRole("heading", { name: /没定日期的待办/ }).closest("section")!;
+    const rows = within(undatedSection).getAllByRole("listitem").map((li) => li.textContent ?? "");
     expect(rows.map((r) => r.slice(0, 4))).toEqual(["交报名表", "整理书架", "随手记一"]);
   });
 
@@ -165,6 +196,7 @@ describe("AssistantPage", () => {
     const user = userEvent.setup();
     render(<AssistantPage />);
 
+    await expandUndated(user);
     const row = (await screen.findByText("整理书架")).closest("li")!;
     await user.click(within(row).getByRole("button", { name: "不用了" }));
 
@@ -293,15 +325,18 @@ describe("AssistantPage", () => {
     expect(within(untimed).getByTestId("item-when").className).toContain("hidden md:block");
   });
 
-  it("shows the pet next to the greeting and in the bottom-left corner on desktop", async () => {
+  it("puts the chat on the left and the board in a column on the right, with the pet in the board header", async () => {
     render(<AssistantPage />);
 
     await screen.findByText("去图书馆还书");
-    const header = screen.getByRole("heading", { name: "蟹哥" }).closest("header")!;
+    const chat = screen.getByRole("main", { name: "聊天" });
+    const boardColumn = screen.getByRole("complementary", { name: "事项" });
+    expect(chat.compareDocumentPosition(boardColumn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(chat).getByText("蟹哥还没配置好")).toBeTruthy();
+    expect(within(boardColumn).getByText("去图书馆还书")).toBeTruthy();
+    const header = within(boardColumn).getByRole("heading", { name: "蟹哥" }).closest("header")!;
     expect(within(header).getByTestId("pet-mini")).toBeTruthy();
-    const full = screen.getByTestId("pet-full");
-    // Sits in its own column, so it never covers the board.
-    expect(screen.getByRole("main").contains(full)).toBe(false);
+    expect(screen.queryByTestId("pet-full")).toBeNull();
   });
 
   it("shows only the small pet on a phone", async () => {
@@ -626,6 +661,7 @@ describe("AssistantPage item discussion", () => {
     const user = userEvent.setup();
     render(<AssistantPage />);
 
+    await expandUndated(user);
     const row = (await screen.findByText("整理书架")).closest("li")!;
     await user.click(within(row).getByRole("button", { name: "讨论" }));
 

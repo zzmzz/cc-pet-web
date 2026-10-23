@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { groupBoard, localDate, type AssistantItem } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
 import { createSession, markSessionRead } from "../../lib/sessionActions.js";
-import { PetFull } from "../Pet.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
 import { BoardHeader } from "./BoardHeader.js";
 import { DesktopChatPane, MobileChatPane, type ChatView } from "./ChatPane.js";
-import { ScheduleSections, TodaySections } from "./BoardSections.js";
+import { FullBoard, ScheduleSections, TodaySections } from "./BoardSections.js";
 import { useAssistantBoard } from "./useAssistantBoard.js";
 import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
@@ -103,15 +102,18 @@ export function AssistantPage() {
   );
   const loading = !groups && !error && <p className="text-xs text-text-secondary">正在加载…</p>;
   const schedule = groups && <ScheduleSections today={today} groups={groups} onStatus={setStatus} onDiscuss={onDiscuss} />;
-  const todayView = (afterToday?: ReactNode) =>
-    groups &&
-    board && (
-      <TodaySections
+  const todayView =
+    groups && board && (
+      <TodaySections groups={groups} closed={board.closedRecent} onStatus={setStatus} onDiscuss={onDiscuss} />
+    );
+  const fullBoard =
+    groups && board && (
+      <FullBoard
+        today={today}
         groups={groups}
         closed={board.closedRecent}
         onStatus={setStatus}
         onDiscuss={onDiscuss}
-        afterToday={afterToday}
       />
     );
 
@@ -129,7 +131,7 @@ export function AssistantPage() {
             {header}
             {notice}
             {loading}
-            {tab === "today" ? todayView() : schedule}
+            {tab === "today" ? todayView : schedule}
           </div>
         )}
         {/* Kept mounted while hidden so a half-typed message survives a tab switch. */}
@@ -170,23 +172,21 @@ export function AssistantPage() {
     );
   }
 
+  // Chat on the left as the main area; the board is a scrolling column on the right.
+  // The pet sits in the board header (PetMini), so it never covers anything.
   return (
     <div className="flex h-full bg-surface text-text-primary">
       {chatAlert}
-      {/* The pet gets its own column so it never sits on top of the board. */}
-      <div className="flex w-36 shrink-0 flex-col justify-end p-4">
-        <PetFull />
-      </div>
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-4xl space-y-4 p-6">
+      <main aria-label="聊天" className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-secondary">
+        <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
+      </main>
+      <aside aria-label="事项" className="min-h-0 w-[480px] shrink-0 overflow-y-auto border-l border-border xl:w-[540px]">
+        <div className="space-y-4 p-5">
           {header}
           {notice}
           {loading}
-          {todayView(schedule)}
+          {fullBoard}
         </div>
-      </main>
-      <aside className="flex w-[400px] shrink-0 flex-col border-l border-border bg-surface-secondary">
-        <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
       </aside>
     </div>
   );
