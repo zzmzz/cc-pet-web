@@ -8,12 +8,13 @@ import { ITEM_SESSION_PREFIX } from "./chatSessions.js";
 
 /**
  * 「讨论」：每件事一个固定的会话 `item-<id>`。已经有了就切过去；
- * 没有就建一个，再替 Yu 发一条开场消息。
+ * 没有就建一个，再替用户发一条开场消息。
  */
 export function useItemDiscussion(
   resident: Session | null,
   openSession: (key: string) => void,
   onOpened: () => void,
+  onFailed: () => void,
 ): (item: AssistantItem) => Promise<void> {
   const rc = resident?.connectionId ?? null;
   // A double click must not create the session (and send the opening message) twice.
@@ -33,13 +34,16 @@ export function useItemDiscussion(
       creating.current.add(key);
       try {
         useConnectionStore.getState().setActiveConnection(rc);
-        if (!(await createSession(rc, key, `事项：${item.title}`))) return;
+        if (!(await createSession(rc, key, `事项：${item.title}`))) {
+          onFailed();
+          return;
+        }
         sendTextMessage(rc, key, discussionPrompt(item));
         onOpened();
       } finally {
         creating.current.delete(key);
       }
     },
-    [rc, openSession, onOpened],
+    [rc, openSession, onOpened, onFailed],
   );
 }

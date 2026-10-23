@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { groupBoard, localDate, type AssistantItem } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
@@ -14,6 +14,9 @@ import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
 
 type Tab = "today" | "schedule" | "chat";
+const CREATE_FAILED_MESSAGE = "没建成，稍后再试";
+const NOTICE_MS = 5000;
+
 const TABS: { id: Tab; label: string }[] = [
   { id: "today", label: "今天" },
   { id: "schedule", label: "日程" },
@@ -44,14 +47,35 @@ export function AssistantPage() {
     setTab("chat");
     setChatView("chat");
   }, []);
-  const discuss = useItemDiscussion(resident, openSession, showChat);
+  // A session the server did not confirm: say so briefly, nothing else happens.
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
+  const createFailed = useCallback(() => setChatNotice(CREATE_FAILED_MESSAGE), []);
+  useEffect(() => {
+    if (!chatNotice) return;
+    const t = setTimeout(() => setChatNotice(null), NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [chatNotice]);
+
+  const discuss = useItemDiscussion(resident, openSession, showChat, createFailed);
   const onDiscuss = resident ? (item: AssistantItem) => void discuss(item) : undefined;
 
+  // A second click while the first one is still waiting on the server is ignored.
+  const creatingTopic = useRef(false);
   const newTopic = useCallback(async () => {
-    if (!rc) return;
-    useConnectionStore.getState().setActiveConnection(rc);
-    if (await createSession(rc, `session-${Date.now()}`)) setChatView("chat");
-  }, [rc]);
+    if (!rc || creatingTopic.current) return;
+    creatingTopic.current = true;
+    try {
+      useConnectionStore.getState().setActiveConnection(rc);
+      if (await createSession(rc, `session-${Date.now()}`)) {
+        setChatNotice(null);
+        setChatView("chat");
+      } else {
+        createFailed();
+      }
+    } finally {
+      creatingTopic.current = false;
+    }
+  }, [rc, createFailed]);
 
   const now = new Date();
   const today = localDate(now);
@@ -67,6 +91,14 @@ export function AssistantPage() {
   const notice = error && (
     <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
       {error}
+    </p>
+  );
+  const chatAlert = chatNotice && (
+    <p
+      role="alert"
+      className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 shadow"
+    >
+      {chatNotice}
     </p>
   );
   const loading = !groups && !error && <p className="text-xs text-text-secondary">正在加载…</p>;
@@ -86,6 +118,7 @@ export function AssistantPage() {
   if (isMobile) {
     return (
       <div className="flex h-full flex-col bg-surface text-text-primary">
+        {chatAlert}
         {tab !== "chat" && (
           <div
             role="tabpanel"
@@ -139,6 +172,7 @@ export function AssistantPage() {
 
   return (
     <div className="flex h-full bg-surface text-text-primary">
+      {chatAlert}
       {/* The pet gets its own column so it never sits on top of the board. */}
       <div className="flex w-36 shrink-0 flex-col justify-end p-4">
         <PetFull />

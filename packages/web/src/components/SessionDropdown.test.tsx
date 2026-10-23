@@ -9,9 +9,11 @@ import { useSessionStore } from "../lib/store/session.js";
 import { useUIStore } from "../lib/store/ui.js";
 
 const fetchApi = vi.fn().mockResolvedValue({ ok: true });
+const okResponse = () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+const fetchApiRaw = vi.fn(async () => okResponse());
 
 vi.mock("../lib/platform.js", () => ({
-  getPlatform: () => ({ fetchApi }),
+  getPlatform: () => ({ fetchApi, fetchApiRaw }),
 }));
 
 function resetStores() {
@@ -54,6 +56,8 @@ describe("SessionDropdown", () => {
     resetStores();
     fetchApi.mockClear();
     fetchApi.mockResolvedValue({ ok: true });
+    fetchApiRaw.mockClear();
+    fetchApiRaw.mockImplementation(async () => okResponse());
   });
 
   it("renders CC Pet when there is no active connection", () => {
@@ -383,7 +387,7 @@ describe("SessionDropdown", () => {
     render(<SessionDropdown variant="panel" />);
     await user.click(screen.getByText("新建会话"));
 
-    expect(fetchApi).toHaveBeenCalledWith("/api/sessions", {
+    expect(fetchApiRaw).toHaveBeenCalledWith("/api/sessions", {
       method: "POST",
       body: JSON.stringify({ connectionId: "c1", key: newKey }),
     });

@@ -44,7 +44,7 @@ function Row({
             session.isResident ? "bg-primary text-white" : "bg-surface-tertiary text-primary"
           }`}
         >
-          {session.isResident ? "秋" : title.slice(0, 1)}
+          {session.isResident ? "蟹" : title.slice(0, 1)}
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-2">

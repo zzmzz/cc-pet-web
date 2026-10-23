@@ -119,6 +119,8 @@ describe("App integration", () => {
       json: async () => ({ valid: true, name: "test", bridgeIds: ["cc-connect"] }),
     });
     adapter.fetchApi.mockImplementation(async () => ({}));
+    adapter.fetchApiRaw.mockReset();
+    adapter.fetchApiRaw.mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }));
     adapter.connectWs.mockImplementation(() => {
       defaultConnectSnapshot([{ id: "cc-connect", name: "cc-connect" }]);
     });

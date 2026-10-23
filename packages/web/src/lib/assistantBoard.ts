@@ -100,7 +100,7 @@ export function nextWeekDates(today: string): string[] {
   return Array.from({ length: 7 }, (_, i) => addDays(today, i + 1));
 }
 
-/** The first message Yu sends when she opens a discussion about an item. Empty fields are left out. */
+/** The first message the user sends when opening a discussion about an item. Empty fields are left out. */
 export function discussionPrompt(item: AssistantItem): string {
   const when = item.date
     ? [weekdayLabel(item.date), item.time, item.deadline ? "截止" : null].filter(Boolean).join(" ")

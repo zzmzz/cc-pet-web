@@ -72,6 +72,7 @@ function respond(status: number, body: unknown) {
 function mockBoard(status = 200, body: unknown = board) {
   platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
     if (path === "/api/assistant/board") return respond(status, body);
+    if (path === "/api/sessions") return respond(200, { ok: true });
     return respond(200, {});
   });
 }
@@ -417,7 +418,7 @@ describe("AssistantPage chat sessions", () => {
     expect(platformMock.fetchApi).toHaveBeenCalledWith("/api/sessions/c1/s-new/read", { method: "POST" });
     expect(screen.queryByRole("list", { name: "会话" })).toBeNull();
 
-    // A session list refresh used to re-pin the chat; it must stay where Yu put it.
+    // A session list refresh used to re-pin the chat; it must stay where the user put it.
     act(() => {
       useSessionStore.getState().setSessions("c1", [...useSessionStore.getState().sessions.c1]);
     });
@@ -434,10 +435,10 @@ describe("AssistantPage chat sessions", () => {
     await user.click(screen.getByRole("button", { name: /新话题/ }));
 
     await waitFor(() => {
-      const post = platformMock.fetchApi.mock.calls.find(([p]) => p === "/api/sessions");
+      const post = platformMock.fetchApiRaw.mock.calls.find(([p]) => p === "/api/sessions");
       expect(post).toBeTruthy();
     });
-    const [, init] = platformMock.fetchApi.mock.calls.find(([p]) => p === "/api/sessions")!;
+    const [, init] = platformMock.fetchApiRaw.mock.calls.find(([p]) => p === "/api/sessions")!;
     const body = JSON.parse(String(init.body));
     expect(body.connectionId).toBe("c1");
     expect(body.key).toMatch(/^session-\d+$/);
@@ -474,7 +475,90 @@ describe("AssistantPage item discussion", () => {
     });
   }
 
-  const sessionPosts = () => platformMock.fetchApi.mock.calls.filter(([p]) => p === "/api/sessions");
+  const sessionPosts = () => platformMock.fetchApiRaw.mock.calls.filter(([p]) => p === "/api/sessions");
+
+  /** /api/sessions waits until `release` is called, then answers with `answer`. */
+  function gateSessionPost(answer: () => ReturnType<typeof respond> = () => respond(200, { ok: true })) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
+      if (path === "/api/assistant/board") return respond(200, board);
+      if (path === "/api/sessions") {
+        await gate;
+        return answer();
+      }
+      return respond(200, {});
+    });
+    return () => release();
+  }
+
+  it("creates the item session once and sends one opening message when 讨论 is clicked twice", async () => {
+    seedResident();
+    const release = gateSessionPost();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const row = (await screen.findByText("去图书馆还书")).closest("li")!;
+    const button = within(row).getByRole("button", { name: "讨论" });
+    await user.click(button);
+    await user.click(button);
+    expect(sessionPosts()).toHaveLength(1);
+    expect(platformMock.sendWsMessage).not.toHaveBeenCalled();
+
+    release();
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("item-1"));
+    expect(sessionPosts()).toHaveLength(1);
+    expect(platformMock.sendWsMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["the server answers 500", () => respond(500, { error: "boom" })],
+    ["the server does not confirm", () => respond(200, {})],
+  ])("does not send the opening message when %s", async (_label, answer) => {
+    seedResident();
+    gateSessionPost(answer)();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const row = (await screen.findByText("去图书馆还书")).closest("li")!;
+    await user.click(within(row).getByRole("button", { name: "讨论" }));
+
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "没建成，稍后再试");
+    expect(platformMock.sendWsMessage).not.toHaveBeenCalled();
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("home");
+    expect(useSessionStore.getState().sessions.c1.some((s) => s.key === "item-1")).toBe(false);
+  });
+
+  it("creates one new topic when 新话题 is clicked twice on a phone", async () => {
+    seedResident();
+    setWidth(390);
+    const release = gateSessionPost();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "聊天" }));
+    const button = screen.getByRole("button", { name: /新话题/ });
+    await user.click(button);
+    await user.click(button);
+    expect(sessionPosts()).toHaveLength(1);
+
+    release();
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toMatch(/^session-\d+$/));
+    expect(sessionPosts()).toHaveLength(1);
+  });
+
+  it("says so when a new topic could not be created", async () => {
+    seedResident();
+    gateSessionPost(() => respond(500, {}))();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("button", { name: /全部会话/ }));
+    await user.click(screen.getByRole("button", { name: /新话题/ }));
+
+    expect(await screen.findByText("没建成，稍后再试")).toBeTruthy();
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("home");
+  });
 
   it("opens a new item session and sends the opening message once", async () => {
     seedResident();

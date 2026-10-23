@@ -54,14 +54,21 @@ export function markSessionRead(connectionId: string, key: string): void {
 
 /**
  * Create a session on the server, add it to the store and focus it.
- * Returns false (and leaves the store alone) when the request fails.
+ * Only counts as created when the server answers 2xx with `{ ok: true }`;
+ * otherwise returns false and leaves the store alone.
  */
 export async function createSession(connectionId: string, key: string, label?: string): Promise<boolean> {
   try {
-    await getPlatform().fetchApi("/api/sessions", {
+    // fetchApi resolves on any HTTP status, so check the raw response here.
+    const res = await getPlatform().fetchApiRaw("/api/sessions", {
       method: "POST",
       body: JSON.stringify({ connectionId, key, label }),
     });
+    const body = res?.ok ? ((await res.json()) as { ok?: unknown } | null) : null;
+    if (body?.ok !== true) {
+      console.error("create session failed:", res?.status);
+      return false;
+    }
   } catch (e) {
     console.error("create session failed:", e);
     return false;
