@@ -3,6 +3,7 @@ import { groupBoard, localDate } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
 import { createSession, markSessionRead } from "../../lib/sessionActions.js";
+import { PetFull } from "../Pet.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
 import { BoardHeader } from "./BoardHeader.js";
@@ -124,6 +125,10 @@ export function AssistantPage() {
 
   return (
     <div className="flex h-full bg-surface text-text-primary">
+      {/* The pet gets its own column so it never sits on top of the board. */}
+      <div className="flex w-36 shrink-0 flex-col justify-end p-4">
+        <PetFull />
+      </div>
       <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl space-y-4 p-6">
           {header}

@@ -19,6 +19,11 @@ vi.mock("../../lib/platform.js", () => ({
 
 // The real chat is covered elsewhere; here we only care that it is shown.
 vi.mock("../ChatWindow.js", () => ({ ChatWindow: () => <div data-testid="chat-window" /> }));
+// Pet images are fetched per token; Pet.test.tsx covers that.
+vi.mock("../Pet.js", () => ({
+  PetMini: () => <div data-testid="pet-mini" />,
+  PetFull: () => <div data-testid="pet-full" />,
+}));
 
 const today = localDate();
 const [tomorrow] = nextWeekDates(today);
@@ -249,6 +254,26 @@ describe("AssistantPage", () => {
     render(<AssistantPage />);
     const untimed = (await screen.findByText("补交报销单")).closest("li")!;
     expect(within(untimed).getByTestId("item-when").className).toContain("hidden md:block");
+  });
+
+  it("shows the pet next to the greeting and in the bottom-left corner on desktop", async () => {
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    const header = screen.getByRole("heading", { name: "秋来" }).closest("header")!;
+    expect(within(header).getByTestId("pet-mini")).toBeTruthy();
+    const full = screen.getByTestId("pet-full");
+    // Sits in its own column, so it never covers the board.
+    expect(screen.getByRole("main").contains(full)).toBe(false);
+  });
+
+  it("shows only the small pet on a phone", async () => {
+    setWidth(390);
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    expect(screen.getByTestId("pet-mini")).toBeTruthy();
+    expect(screen.queryByTestId("pet-full")).toBeNull();
   });
 
   it("says the data is not ready on 503", async () => {

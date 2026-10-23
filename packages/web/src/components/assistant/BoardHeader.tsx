@@ -1,3 +1,5 @@
+import { PetMini } from "../Pet.js";
+
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 const STALE_MS = 2 * 3600 * 1000;
 
@@ -25,6 +27,9 @@ export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCo
 
   return (
     <header className="flex items-start gap-3">
+      <div className="mt-1 shrink-0">
+        <PetMini />
+      </div>
       <div className="min-w-0 flex-1">
         <h1 className="text-xs font-semibold tracking-wide text-primary">秋来</h1>
         <p className="mt-0.5 text-lg font-semibold text-text-primary">{greeting(now.getHours())}</p>
