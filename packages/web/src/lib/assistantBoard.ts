@@ -89,3 +89,13 @@ export function weekdayLabel(date: string): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} 周${WEEKDAYS[d.getDay()]}`;
 }
+
+/** Today's (or `d`'s) local calendar date as YYYY-MM-DD. */
+export function localDate(d: Date = new Date()): string {
+  return formatDate(d);
+}
+
+/** The 7 dates after `today`, matching the `week` window of groupBoard. */
+export function nextWeekDates(today: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => addDays(today, i + 1));
+}

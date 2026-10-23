@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { useUIStore } from "../lib/store/ui.js";
 import { useSearchStore } from "../lib/store/search.js";
+import { useIsMobileTracker } from "../lib/useIsMobileTracker.js";
 import { PetFull, PetMini } from "./Pet.js";
 import { SessionDropdown } from "./SessionDropdown.js";
 import { SearchPanel } from "./SearchPanel.js";
@@ -13,39 +14,11 @@ const TOP_BAR_CLASS =
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const isMobile = useUIStore((s) => s.isMobile);
-  const setIsMobile = useUIStore((s) => s.setIsMobile);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"connections" | "workspace">("connections");
 
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 768);
-    check();
-
-    // Three signals for one question, deliberately. `window.resize` alone is
-    // the usual way to do this and is fine in a browser, but this app also
-    // runs inside a HarmonyOS WebView on a foldable, where the viewport can
-    // change by ~1000px the instant the device unfolds. Whether ArkWeb fires
-    // `resize` for that transition is not something we can test without the
-    // hardware — and if it does not, the layout stays stuck in whichever form
-    // it had before the fold, which is the single most likely way this screen
-    // breaks on that device. matchMedia and visualViewport cost nothing and
-    // each would catch it on their own.
-    window.addEventListener("resize", check);
-    // Optional-chained throughout: jsdom provides neither `matchMedia` nor
-    // `visualViewport`, and an unguarded call here takes 70 unrelated tests
-    // down with it.
-    const mq = window.matchMedia?.("(max-width: 767px)");
-    mq?.addEventListener?.("change", check);
-    const vv = window.visualViewport;
-    vv?.addEventListener?.("resize", check);
-
-    return () => {
-      window.removeEventListener("resize", check);
-      mq?.removeEventListener?.("change", check);
-      vv?.removeEventListener?.("resize", check);
-    };
-  }, [setIsMobile]);
+  useIsMobileTracker();
 
   const searchOpen = useSearchStore((s) => s.isOpen);
   const setSearchOpen = useSearchStore((s) => s.setOpen);

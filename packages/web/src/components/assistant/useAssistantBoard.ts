@@ -1,0 +1,79 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getPlatform } from "../../lib/platform.js";
+import type { AssistantItem } from "../../lib/assistantBoard.js";
+
+export interface AssistantBoard {
+  items: AssistantItem[];
+  closedRecent: AssistantItem[];
+  plannedAt: string | null;
+  generatedAt: string;
+}
+
+export type ItemStatus = "open" | "done" | "dismissed";
+
+const POLL_MS = 30_000;
+
+export const NOT_READY_MESSAGE = "秋来的数据还没准备好";
+const LOAD_FAILED_MESSAGE = "事项没拉下来，稍后会再试";
+const SAVE_FAILED_MESSAGE = "没改成，再试一次";
+
+// fetchApi resolves on any HTTP status, so go through fetchApiRaw and check it here.
+async function requestJson<T>(path: string, init?: RequestInit): Promise<{ status: number; body: T | null }> {
+  const res = await getPlatform().fetchApiRaw(path, init);
+  if (!res?.ok) return { status: res?.status ?? 0, body: null };
+  return { status: res.status, body: (await res.json()) as T };
+}
+
+export function useAssistantBoard() {
+  const [board, setBoard] = useState<AssistantBoard | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
+
+  const reload = useCallback(async () => {
+    try {
+      const { status, body } = await requestJson<AssistantBoard>("/api/assistant/board");
+      if (!mounted.current) return;
+      if (body) {
+        setBoard(body);
+        setError(null);
+      } else {
+        setError(status === 503 ? NOT_READY_MESSAGE : LOAD_FAILED_MESSAGE);
+      }
+    } catch {
+      if (mounted.current) setError(LOAD_FAILED_MESSAGE);
+    }
+  }, []);
+
+  const setStatus = useCallback(
+    async (id: number, status: ItemStatus) => {
+      try {
+        const { body } = await requestJson(`/api/assistant/items/${id}/status`, {
+          method: "POST",
+          body: JSON.stringify({ status }),
+        });
+        if (!mounted.current) return;
+        if (!body) {
+          setError(SAVE_FAILED_MESSAGE);
+          return;
+        }
+      } catch {
+        if (mounted.current) setError(SAVE_FAILED_MESSAGE);
+        return;
+      }
+      await reload();
+    },
+    [reload],
+  );
+
+  useEffect(() => {
+    mounted.current = true;
+    void reload();
+    const timer = window.setInterval(() => void reload(), POLL_MS);
+    return () => {
+      mounted.current = false;
+      window.clearInterval(timer);
+    };
+  }, [reload]);
+
+  return { board, error, setStatus, reload };
+}
