@@ -15,8 +15,12 @@ export function ItemRow({ item, when, note, onStatus }: Props) {
   // Ticked while the change is in flight; on success the row disappears, on failure it unticks.
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
-  useEffect(() => () => {
-    mounted.current = false;
+  useEffect(() => {
+    // Set again on every mount: StrictMode runs cleanup once before the real mount.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
   const change = async (status: ItemStatus) => {
     setBusy(true);

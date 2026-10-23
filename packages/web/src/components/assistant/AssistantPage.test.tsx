@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -137,6 +138,104 @@ describe("AssistantPage", () => {
     await user.click(screen.getByRole("button", { name: "撤销" }));
 
     await waitFor(() => expect(statusCalls()).toEqual([["/api/assistant/items/9/status", { status: "open" }]]));
+  });
+
+  it("shows the save-failed banner and frees the checkbox when the POST returns 500 (StrictMode)", async () => {
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) =>
+      path === "/api/assistant/board" ? respond(200, board) : respond(500, {}),
+    );
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <AssistantPage />
+      </StrictMode>,
+    );
+
+    const box = (await screen.findByRole("checkbox", { name: "做完了：去图书馆还书" })) as HTMLInputElement;
+    await user.click(box);
+
+    expect(await screen.findByText("没改成，再试一次")).toBeTruthy();
+    await waitFor(() => {
+      expect(box.checked).toBe(false);
+      expect(box.disabled).toBe(false);
+    });
+  });
+
+  it("shows the save-failed banner and frees the checkbox when the POST throws (StrictMode)", async () => {
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
+      if (path === "/api/assistant/board") return respond(200, board);
+      throw new Error("network down");
+    });
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <AssistantPage />
+      </StrictMode>,
+    );
+
+    const box = (await screen.findByRole("checkbox", { name: "做完了：去图书馆还书" })) as HTMLInputElement;
+    await user.click(box);
+
+    expect(await screen.findByText("没改成，再试一次")).toBeTruthy();
+    await waitFor(() => {
+      expect(box.checked).toBe(false);
+      expect(box.disabled).toBe(false);
+    });
+  });
+
+  it("sends only one POST when 撤销 is double-clicked", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
+      if (path === "/api/assistant/board") return respond(200, board);
+      await gate;
+      return respond(200, {});
+    });
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("button", { name: /最近 24 小时结案/ }));
+    const undo = screen.getByRole("button", { name: "撤销" }) as HTMLButtonElement;
+    await user.dblClick(undo);
+
+    expect(statusCalls()).toHaveLength(1);
+    expect(undo.disabled).toBe(true);
+    release();
+    await waitFor(() => expect(undo.disabled).toBe(false));
+  });
+
+  it("asks to log in again on 401 when loading the board", async () => {
+    mockBoard(401, { error: "unauthorized" });
+    render(<AssistantPage />);
+
+    expect(await screen.findByText("登录失效了，请退出后重新登录")).toBeTruthy();
+  });
+
+  it("asks to log in again on 403 when saving", async () => {
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) =>
+      path === "/api/assistant/board" ? respond(200, board) : respond(403, {}),
+    );
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("checkbox", { name: "做完了：去图书馆还书" }));
+
+    expect(await screen.findByText("登录失效了，请退出后重新登录")).toBeTruthy();
+  });
+
+  it("links the phone tabs to their panels inside a labelled nav", async () => {
+    setWidth(390);
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    const nav = screen.getByRole("navigation", { name: "页面" });
+    const tab = within(nav).getByRole("tab", { name: "今天" });
+    expect(within(nav).getByRole("tablist")).toBeTruthy();
+    const panel = document.getElementById(tab.getAttribute("aria-controls")!);
+    expect(panel?.getAttribute("role")).toBe("tabpanel");
+    expect(panel?.textContent).toContain("去图书馆还书");
+    const chatTab = within(nav).getByRole("tab", { name: "聊天" });
+    expect(document.getElementById(chatTab.getAttribute("aria-controls")!)?.getAttribute("role")).toBe("tabpanel");
   });
 
   it("says the data is not ready on 503", async () => {

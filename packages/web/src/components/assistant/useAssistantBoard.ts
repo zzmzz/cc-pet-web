@@ -16,6 +16,9 @@ const POLL_MS = 30_000;
 export const NOT_READY_MESSAGE = "秋来的数据还没准备好";
 const LOAD_FAILED_MESSAGE = "事项没拉下来，稍后会再试";
 const SAVE_FAILED_MESSAGE = "没改成，再试一次";
+export const AUTH_FAILED_MESSAGE = "登录失效了，请退出后重新登录";
+
+const isAuthFailure = (status: number) => status === 401 || status === 403;
 
 // fetchApi resolves on any HTTP status, so go through fetchApiRaw and check it here.
 async function requestJson<T>(path: string, init?: RequestInit): Promise<{ status: number; body: T | null }> {
@@ -37,7 +40,9 @@ export function useAssistantBoard() {
         setBoard(body);
         setError(null);
       } else {
-        setError(status === 503 ? NOT_READY_MESSAGE : LOAD_FAILED_MESSAGE);
+        setError(
+          isAuthFailure(status) ? AUTH_FAILED_MESSAGE : status === 503 ? NOT_READY_MESSAGE : LOAD_FAILED_MESSAGE,
+        );
       }
     } catch {
       if (mounted.current) setError(LOAD_FAILED_MESSAGE);
@@ -47,13 +52,13 @@ export function useAssistantBoard() {
   const setStatus = useCallback(
     async (id: number, status: ItemStatus) => {
       try {
-        const { body } = await requestJson(`/api/assistant/items/${id}/status`, {
+        const { status: code, body } = await requestJson(`/api/assistant/items/${id}/status`, {
           method: "POST",
           body: JSON.stringify({ status }),
         });
         if (!mounted.current) return;
         if (!body) {
-          setError(SAVE_FAILED_MESSAGE);
+          setError(isAuthFailure(code) ? AUTH_FAILED_MESSAGE : SAVE_FAILED_MESSAGE);
           return;
         }
       } catch {

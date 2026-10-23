@@ -57,7 +57,12 @@ export function AssistantPage() {
     return (
       <div className="flex h-full flex-col bg-surface text-text-primary">
         {tab !== "chat" && (
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div
+            role="tabpanel"
+            id={`assistant-panel-${tab}`}
+            aria-labelledby={`assistant-tab-${tab}`}
+            className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pt-[max(0.75rem,env(safe-area-inset-top))]"
+          >
             {header}
             {notice}
             {loading}
@@ -65,19 +70,24 @@ export function AssistantPage() {
           </div>
         )}
         {/* Kept mounted while hidden so a half-typed message survives a tab switch. */}
-        <div className={tab === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}>
+        <div
+          role="tabpanel"
+          id="assistant-panel-chat"
+          aria-labelledby="assistant-tab-chat"
+          hidden={tab !== "chat"}
+          className={tab === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}
+        >
           <ChatPane />
         </div>
-        <nav
-          role="tablist"
-          aria-label="秋来"
-          className="grid shrink-0 grid-cols-3 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]"
-        >
+        <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
+          <div role="tablist" aria-label="秋来" className="grid grid-cols-3">
           {TABS.map((t) => (
             <button
               key={t.id}
               type="button"
               role="tab"
+              id={`assistant-tab-${t.id}`}
+              aria-controls={`assistant-panel-${t.id}`}
               aria-selected={tab === t.id}
               onClick={() => setTab(t.id)}
               className={`py-2.5 text-sm ${tab === t.id ? "font-semibold text-primary" : "text-text-secondary"}`}
@@ -85,6 +95,7 @@ export function AssistantPage() {
               {t.label}
             </button>
           ))}
+          </div>
         </nav>
       </div>
     );
