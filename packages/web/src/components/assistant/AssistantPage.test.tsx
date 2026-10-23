@@ -949,4 +949,24 @@ describe("AssistantPage deliverables and threads", () => {
     await waitFor(() => expect(boardLoads()).toBe(loads + 1));
     await waitFor(() => expect(platformMock.fetchApi).toHaveBeenCalledWith("/api/sessions?connectionId=c1"));
   });
+
+  it("handles a burst of assistant-session-updated events as one refresh", async () => {
+    seed();
+    render(<AssistantPage />);
+    await screen.findByRole("heading", { name: /蟹哥做好的/ });
+    const loads = boardLoads();
+    platformMock.fetchApi.mockClear();
+
+    act(() => {
+      emitAssistantSessionUpdated({ connectionId: "c1", sessionKey: "item-4" });
+      emitAssistantSessionUpdated({ connectionId: "c1", sessionKey: "item-5" });
+      emitAssistantSessionUpdated({ connectionId: "c1", sessionKey: "item-4" });
+    });
+
+    await waitFor(() => expect(platformMock.fetchApi).toHaveBeenCalledWith("/api/sessions?connectionId=c1"));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(boardLoads()).toBe(loads + 1);
+    const listCalls = platformMock.fetchApi.mock.calls.filter(([p]) => p === "/api/sessions?connectionId=c1");
+    expect(listCalls).toHaveLength(1);
+  });
 });

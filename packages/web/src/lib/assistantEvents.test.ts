@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeChatKey, type Session } from "@cc-pet/shared";
 import {
+  createAssistantUpdateBatcher,
   emitAssistantSessionUpdated,
   onAssistantSessionUpdated,
   refreshAssistantSession,
@@ -46,7 +47,83 @@ describe("assistant session events", () => {
   });
 });
 
+describe("createAssistantUpdateBatcher", () => {
+  it("flushes once per connection after the burst, with every key seen", () => {
+    vi.useFakeTimers();
+    try {
+      const flush = vi.fn();
+      const b = createAssistantUpdateBatcher(flush, 300);
+      b.push({ connectionId: "c1", sessionKey: "item-1" });
+      vi.advanceTimersByTime(200);
+      b.push({ connectionId: "c1", sessionKey: "item-2" });
+      b.push({ connectionId: "c2", sessionKey: "item-7" });
+      b.push({ connectionId: "c1", sessionKey: "item-1" });
+      vi.advanceTimersByTime(299);
+      expect(flush).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(flush).toHaveBeenCalledTimes(2);
+      expect(flush).toHaveBeenCalledWith("c1", ["item-1", "item-2"]);
+      expect(flush).toHaveBeenCalledWith("c2", ["item-7"]);
+      b.push({ connectionId: "c1", sessionKey: "item-3" });
+      vi.advanceTimersByTime(300);
+      expect(flush).toHaveBeenLastCalledWith("c1", ["item-3"]);
+      expect(flush).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops pending updates on cancel", () => {
+    vi.useFakeTimers();
+    try {
+      const flush = vi.fn();
+      const b = createAssistantUpdateBatcher(flush, 300);
+      b.push({ connectionId: "c1", sessionKey: "item-1" });
+      b.cancel();
+      vi.advanceTimersByTime(1000);
+      expect(flush).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("refreshAssistantSession", () => {
+  it("keeps a just-created local session the server list does not have yet", async () => {
+    const now = Date.now();
+    useSessionStore.getState().setSessions("c1", [
+      session("session-new", { createdAt: now, lastActiveAt: now }),
+      session("gone-long-ago", { createdAt: now - 10 * 60_000, lastActiveAt: now - 10 * 60_000 }),
+    ]);
+    const fetchApi = vi.fn(async (path: string) => {
+      if (path.startsWith("/api/sessions?")) return { sessions: [session("item-1", { lastActiveAt: 5 })] };
+      throw new Error(`unexpected ${path}`);
+    });
+    await refreshAssistantSession({ fetchApi }, "c1", ["item-1"]);
+    expect(useSessionStore.getState().sessions.c1.map((s) => s.key)).toEqual(["session-new", "item-1"]);
+  });
+
+  it("pulls new messages for every loaded chat in the batch", async () => {
+    const a = makeChatKey("c1", "item-1");
+    const b = makeChatKey("c1", "item-2");
+    for (const ck of [a, b]) {
+      useMessageStore.getState().mergeMessages(ck, [{ id: `${ck}-1`, role: "user", content: "旧", timestamp: 1, seq: 1 }]);
+      useMessageStore.getState().markChatLoaded(ck);
+    }
+    const fetchApi = vi.fn(async (path: string) => {
+      if (path.startsWith("/api/sessions?")) return { sessions: [] };
+      for (const ck of [a, b]) {
+        if (path.startsWith(`/api/history/${encodeURIComponent(ck)}?afterSeq=1`)) {
+          return { messages: [{ id: `${ck}-2`, role: "user", content: "新", timestamp: 2, seq: 2 }], hasMore: false };
+        }
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    await refreshAssistantSession({ fetchApi }, "c1", ["item-1", "item-2"]);
+    expect(useMessageStore.getState().getWatermark(a)).toBe(2);
+    expect(useMessageStore.getState().getWatermark(b)).toBe(2);
+  });
+
   it("reloads the session list and pulls new messages for a loaded chat", async () => {
     const ck = makeChatKey("c1", "item-1");
     useMessageStore.getState().mergeMessages(ck, [
@@ -61,7 +138,7 @@ describe("refreshAssistantSession", () => {
       throw new Error(`unexpected ${path}`);
     });
 
-    await refreshAssistantSession({ fetchApi }, "c1", "item-1");
+    await refreshAssistantSession({ fetchApi }, "c1", ["item-1"]);
 
     expect(fetchApi).toHaveBeenCalledWith("/api/sessions?connectionId=c1");
     expect(useSessionStore.getState().sessions.c1.map((s) => s.key)).toEqual(["item-1", "res"]);
@@ -74,7 +151,7 @@ describe("refreshAssistantSession", () => {
       if (path.startsWith("/api/sessions?")) return { sessions: [session("item-9")] };
       throw new Error(`unexpected ${path}`);
     });
-    await refreshAssistantSession({ fetchApi }, "c1", "item-9");
+    await refreshAssistantSession({ fetchApi }, "c1", ["item-9"]);
     expect(fetchApi).toHaveBeenCalledTimes(1);
     expect(useMessageStore.getState().messagesByChat[makeChatKey("c1", "item-9")]).toBeUndefined();
   });
@@ -83,7 +160,7 @@ describe("refreshAssistantSession", () => {
     useSessionStore.getState().setSessions("c1", [session("keep")]);
     const fetchApi = vi.fn(async () => { throw new Error("offline"); });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await refreshAssistantSession({ fetchApi }, "c1", "item-1");
+    await refreshAssistantSession({ fetchApi }, "c1", ["item-1"]);
     warn.mockRestore();
     expect(useSessionStore.getState().sessions.c1.map((s) => s.key)).toEqual(["keep"]);
   });

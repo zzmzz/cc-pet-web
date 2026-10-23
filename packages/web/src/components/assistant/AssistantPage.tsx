@@ -12,7 +12,11 @@ import { useAssistantBoard } from "./useAssistantBoard.js";
 import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
 import { ThreadsContext } from "./threads.js";
-import { onAssistantSessionUpdated, refreshAssistantSession } from "../../lib/assistantEvents.js";
+import {
+  createAssistantUpdateBatcher,
+  onAssistantSessionUpdated,
+  refreshAssistantSession,
+} from "../../lib/assistantEvents.js";
 import { getPlatform } from "../../lib/platform.js";
 import type { AssistantDeliverable, AssistantThread } from "../../lib/assistantBoard.js";
 
@@ -61,15 +65,19 @@ export function AssistantPage() {
   const threads = board?.threads ?? NO_THREADS;
 
   // The backend wrote into a session (a reminder, a sub-session it started):
-  // refresh the board for thread states and pull the session list and that chat.
-  useEffect(
-    () =>
-      onAssistantSessionUpdated(({ connectionId, sessionKey }) => {
-        void reload();
-        void refreshAssistantSession(getPlatform(), connectionId, sessionKey);
-      }),
-    [reload],
-  );
+  // refresh the board for thread states and pull the session list and those chats.
+  // A burst of events for one connection becomes a single refresh.
+  useEffect(() => {
+    const batcher = createAssistantUpdateBatcher((connectionId, sessionKeys) => {
+      void reload();
+      void refreshAssistantSession(getPlatform(), connectionId, sessionKeys);
+    });
+    const off = onAssistantSessionUpdated(batcher.push);
+    return () => {
+      off();
+      batcher.cancel();
+    };
+  }, [reload]);
 
   const openSession = useCallback(
     (key: string) => {
