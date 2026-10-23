@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AssistantPage } from "./AssistantPage.js";
+import { AssistantPage, BOARD_WIDE_KEY } from "./AssistantPage.js";
 import { localDate, nextWeekDates, type AssistantItem } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
@@ -95,6 +95,7 @@ function setWidth(width: number) {
 
 beforeEach(() => {
   cleanup();
+  localStorage.clear();
   setWidth(1280);
   useUIStore.setState({ isMobile: false });
   useConnectionStore.setState({ connections: [], activeConnectionId: null });
@@ -329,14 +330,52 @@ describe("AssistantPage", () => {
     render(<AssistantPage />);
 
     await screen.findByText("去图书馆还书");
-    const chat = screen.getByRole("main", { name: "聊天" });
-    const boardColumn = screen.getByRole("complementary", { name: "事项" });
+    const chat = screen.getByRole("region", { name: "聊天" });
+    const boardColumn = screen.getByRole("region", { name: "事项" });
     expect(chat.compareDocumentPosition(boardColumn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(chat).getByText("蟹哥还没配置好")).toBeTruthy();
     expect(within(boardColumn).getByText("去图书馆还书")).toBeTruthy();
     const header = within(boardColumn).getByRole("heading", { name: "蟹哥" }).closest("header")!;
     expect(within(header).getByTestId("pet-mini")).toBeTruthy();
     expect(screen.queryByTestId("pet-full")).toBeNull();
+  });
+
+  it("widens the board with 放大日程, keeps the chat beside it, and remembers the choice", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    const chat = () => screen.getByRole("region", { name: "聊天" });
+    const boardColumn = () => screen.getByRole("region", { name: "事项" });
+    expect(chat().className).toContain("flex-1");
+    expect(boardColumn().className).toContain("w-[480px]");
+    // A narrow column lists the week a day per line.
+    expect(screen.getByTestId(`week-${tomorrow}`).className).not.toContain("min-w-28");
+
+    await user.click(within(boardColumn()).getByRole("button", { name: "放大日程" }));
+    expect(boardColumn().className).toContain("flex-1");
+    expect(chat().className).toContain("w-[400px]");
+    expect(within(chat()).getByText("蟹哥还没配置好")).toBeTruthy();
+    expect(screen.getByTestId(`week-${tomorrow}`).className).toContain("min-w-28");
+    expect(localStorage.getItem(BOARD_WIDE_KEY)).toBe("1");
+
+    // Still wide after a reload.
+    cleanup();
+    render(<AssistantPage />);
+    await screen.findByText("去图书馆还书");
+    expect(boardColumn().className).toContain("flex-1");
+    await user.click(screen.getByRole("button", { name: "还原" }));
+    expect(chat().className).toContain("flex-1");
+    expect(localStorage.getItem(BOARD_WIDE_KEY)).toBeNull();
+  });
+
+  it("has no 放大日程 button on a phone", async () => {
+    localStorage.setItem(BOARD_WIDE_KEY, "1");
+    setWidth(390);
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    expect(screen.queryByRole("button", { name: /放大日程|还原/ })).toBeNull();
   });
 
   it("shows only the small pet on a phone", async () => {

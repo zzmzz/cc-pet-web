@@ -13,6 +13,17 @@ import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
 
 type Tab = "today" | "schedule" | "chat";
+/** 电脑上「放大日程」的开关，刷新后保持。 */
+export const BOARD_WIDE_KEY = "cc-pet-assistant-board-wide";
+
+function readBoardWide(): boolean {
+  try {
+    return localStorage.getItem(BOARD_WIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 const CREATE_FAILED_MESSAGE = "没建成，稍后再试";
 const NOTICE_MS = 5000;
 
@@ -27,6 +38,15 @@ export function AssistantPage() {
   const isMobile = useUIStore((s) => s.isMobile);
   const [tab, setTab] = useState<Tab>("today");
   const [chatView, setChatView] = useState<ChatView>("list");
+  const [boardWide, setBoardWide] = useState(readBoardWide);
+  useEffect(() => {
+    try {
+      if (boardWide) localStorage.setItem(BOARD_WIDE_KEY, "1");
+      else localStorage.removeItem(BOARD_WIDE_KEY);
+    } catch {
+      // Private mode and the like: the toggle still works, it just isn't remembered.
+    }
+  }, [boardWide]);
   const { board, error, setStatus } = useAssistantBoard();
   const resident = useResidentChat();
   const rc = resident?.connectionId ?? null;
@@ -106,16 +126,6 @@ export function AssistantPage() {
     groups && board && (
       <TodaySections groups={groups} closed={board.closedRecent} onStatus={setStatus} onDiscuss={onDiscuss} />
     );
-  const fullBoard =
-    groups && board && (
-      <FullBoard
-        today={today}
-        groups={groups}
-        closed={board.closedRecent}
-        onStatus={setStatus}
-        onDiscuss={onDiscuss}
-      />
-    );
 
   if (isMobile) {
     return (
@@ -172,22 +182,50 @@ export function AssistantPage() {
     );
   }
 
-  // Chat on the left as the main area; the board is a scrolling column on the right.
-  // The pet sits in the board header (PetMini), so it never covers anything.
+  // Chat on the left as the wide column, the board in a narrower scrolling column on the right.
+  // 「放大日程」 swaps the widths; both stay visible. The pet sits in the board header.
   return (
     <div className="flex h-full bg-surface text-text-primary">
       {chatAlert}
-      <main aria-label="聊天" className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-secondary">
+      <section
+        aria-label="聊天"
+        className={`flex min-h-0 flex-col bg-surface-secondary ${boardWide ? "w-[400px] shrink-0" : "min-w-0 flex-1"}`}
+      >
         <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
-      </main>
-      <aside aria-label="事项" className="min-h-0 w-[480px] shrink-0 overflow-y-auto border-l border-border xl:w-[540px]">
-        <div className="space-y-4 p-5">
+      </section>
+      <section
+        aria-label="事项"
+        className={`min-h-0 overflow-y-auto border-l border-border ${
+          boardWide ? "min-w-0 flex-1" : "w-[480px] shrink-0 xl:w-[540px]"
+        }`}
+      >
+        <div className={`space-y-4 p-5 ${boardWide ? "mx-auto max-w-4xl" : ""}`}>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              aria-pressed={boardWide}
+              title={boardWide ? "聊天栏放回大的那边" : "事项栏变宽，聊天栏变窄"}
+              onClick={() => setBoardWide((v) => !v)}
+              className="rounded-md border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-secondary"
+            >
+              {boardWide ? "还原" : "放大日程"}
+            </button>
+          </div>
           {header}
           {notice}
           {loading}
-          {fullBoard}
+          {groups && board && (
+            <FullBoard
+              today={today}
+              groups={groups}
+              closed={board.closedRecent}
+              onStatus={setStatus}
+              onDiscuss={onDiscuss}
+              weekLayout={boardWide ? "columns" : "rows"}
+            />
+          )}
         </div>
-      </aside>
+      </section>
     </div>
   );
 }

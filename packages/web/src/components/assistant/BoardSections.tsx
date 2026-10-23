@@ -104,18 +104,19 @@ function UndatedSection({ groups, onStatus, onDiscuss }: Common) {
 }
 
 /**
- * 电脑上右边一栏放全：今天、接下来一周、等你回复、更远、没定日期的待办、最近结案。
- * 栏窄，接下来一周按天一行。
+ * 电脑上事项栏放全：今天、接下来一周、等你回复、更远、没定日期的待办、最近结案。
+ * 栏窄时接下来一周按天一行（`rows`），放大后七天并排（`columns`）。
  */
 export function FullBoard({
   today,
   closed,
+  weekLayout = "rows",
   ...common
-}: Common & { today: string; closed: AssistantItem[] }) {
+}: Common & { today: string; closed: AssistantItem[]; weekLayout?: "columns" | "rows" }) {
   return (
     <>
       <TodaySection {...common} />
-      <WeekStrip today={today} week={common.groups.week} onDiscuss={common.onDiscuss} layout="rows" />
+      <WeekStrip today={today} week={common.groups.week} onDiscuss={common.onDiscuss} layout={weekLayout} />
       <WaitingSection {...common} />
       <FartherSection {...common} />
       <UndatedSection {...common} />
