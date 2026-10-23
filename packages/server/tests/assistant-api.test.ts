@@ -239,15 +239,31 @@ describe("assistant API: deliverables and threads", () => {
     app.inject({ method: "POST", url: `/api/assistant/deliverables/${id}/status`, payload: payload as object });
   const file = (id: string | number) => app.inject({ method: "GET", url: `/api/assistant/deliverables/${id}/file` });
 
-  it("keeps an older deliverable visible while it is still new", async () => {
+  it("applies the visibility window per status", async () => {
     const db = new Database(dbPath);
-    db.prepare(
-      "INSERT INTO deliverables (title, path, status, created_at, updated_at) VALUES ('重新登记的草稿', ?, 'new', ?, ?)",
-    ).run(path.join(outRoot, "周报草稿.md"), hoursAgo(24 * 10), hoursAgo(1));
+    const ins = db.prepare(
+      "INSERT INTO deliverables (title, path, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    const p = path.join(outRoot, "周报草稿.md");
+    ins.run("老的待看", p, "new", hoursAgo(24 * 10), hoursAgo(1));
+    ins.run("老的已看", p, "seen", hoursAgo(24 * 4), hoursAgo(1));
+    ins.run("刚用过的", p, "used", hoursAgo(24 * 5), hoursAgo(3));
+    ins.run("昨天前用的", p, "used", hoursAgo(5), hoursAgo(26));
+    ins.run("刚点不用了", p, "dismissed", hoursAgo(1), hoursAgo(0.1));
     db.close();
     const titles = (await board()).json().deliverables.map((d: { title: string }) => d.title);
-    expect(titles.at(-1)).toBe("重新登记的草稿");
-    expect(titles).not.toContain("很早的成品");
+    expect(titles).toContain("刚用过的");
+    for (const t of ["老的待看", "老的已看", "昨天前用的", "刚点不用了", "很早的成品"]) {
+      expect(titles).not.toContain(t);
+    }
+  });
+
+  it("drops a deliverable right after it is marked dismissed, keeps it after used", async () => {
+    expect((await setStatus(2, { status: "dismissed" })).statusCode).toBe(200);
+    expect((await setStatus(1, { status: "used" })).statusCode).toBe(200);
+    const titles = (await board()).json().deliverables.map((d: { title: string }) => d.title);
+    expect(titles).not.toContain("数据表");
+    expect(titles).toContain("周报草稿");
   });
 
   it("returns deliverables from the last 3 days, newest first, and all threads", async () => {

@@ -101,6 +101,8 @@ type DeliverableStatus = "seen" | "used" | "dismissed";
 const DELIVERABLE_STATUSES: readonly string[] = ["seen", "used", "dismissed"];
 /** 成品列表只看最近这么久登记的；还没看过（status = 'new'）的不受这个限制 */
 const DELIVERABLE_WINDOW_MS = 3 * 24 * 3600 * 1000;
+/** 「用了」的成品留这么久；「不用了」的立刻不再返回 */
+const DELIVERABLE_USED_WINDOW_MS = 24 * 3600 * 1000;
 /** 这两种直接在页面里显示，其余一律下载 */
 const TEXT_TYPES: Record<string, string> = {
   ".md": "text/markdown; charset=utf-8",
@@ -251,12 +253,13 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
       let threads: ReturnType<typeof toThread>[] = [];
       if (hasV4Tables(db)) {
         const since = localIso(new Date(now.getTime() - DELIVERABLE_WINDOW_MS));
+        const usedSince = localIso(new Date(now.getTime() - DELIVERABLE_USED_WINDOW_MS));
         deliverables = (
           db
             .prepare(
-              `SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE created_at >= ? OR status = 'new' ORDER BY created_at DESC, id DESC`,
+              `SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE (status IN ('new', 'seen') AND created_at >= ?) OR (status = 'used' AND updated_at >= ?) ORDER BY created_at DESC, id DESC`,
             )
-            .all(since) as DeliverableRow[]
+            .all(since, usedSince) as DeliverableRow[]
         ).map(toDeliverable);
         threads = (
           db
