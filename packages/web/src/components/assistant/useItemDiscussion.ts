@@ -15,6 +15,7 @@ export function useItemDiscussion(
   openSession: (key: string) => void,
   onOpened: () => void,
   onFailed: () => void,
+  onSucceeded: () => void = () => {},
 ): (item: AssistantItem) => Promise<void> {
   const rc = resident?.connectionId ?? null;
   // A double click must not create the session (and send the opening message) twice.
@@ -39,11 +40,12 @@ export function useItemDiscussion(
           return;
         }
         sendTextMessage(rc, key, discussionPrompt(item));
+        onSucceeded();
         onOpened();
       } finally {
         creating.current.delete(key);
       }
     },
-    [rc, openSession, onOpened, onFailed],
+    [rc, openSession, onOpened, onFailed, onSucceeded],
   );
 }

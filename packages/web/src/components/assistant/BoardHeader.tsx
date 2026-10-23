@@ -1,4 +1,4 @@
-import { PetMini } from "../Pet.js";
+import { PetFull, PetMini } from "../Pet.js";
 
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 const STALE_MS = 2 * 3600 * 1000;
@@ -19,7 +19,22 @@ function logout() {
   window.location.reload();
 }
 
-export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCount: number; plannedAt: string | null }) {
+export function BoardHeader({
+  now,
+  todayCount,
+  plannedAt,
+  desktop = false,
+  boardWide = false,
+  onToggleWide,
+}: {
+  now: Date;
+  todayCount: number;
+  plannedAt: string | null;
+  /** 电脑上放大的宠物，手机上是小头像。 */
+  desktop?: boolean;
+  boardWide?: boolean;
+  onToggleWide?: () => void;
+}) {
   const planned = plannedAt ? new Date(plannedAt) : null;
   const plannedValid = planned !== null && !Number.isNaN(planned.getTime());
   const stale = !plannedValid || now.getTime() - planned.getTime() > STALE_MS;
@@ -27,9 +42,7 @@ export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCo
 
   return (
     <header className="flex items-start gap-3">
-      <div className="mt-1 shrink-0">
-        <PetMini />
-      </div>
+      <div className="mt-1 shrink-0">{desktop ? <PetFull /> : <PetMini />}</div>
       <div className="min-w-0 flex-1">
         <h1 className="text-xs font-semibold tracking-wide text-primary">蟹哥</h1>
         <p className="mt-0.5 text-lg font-semibold text-text-primary">{greeting(now.getHours())}</p>
@@ -39,6 +52,17 @@ export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCo
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <span className={`text-xs ${stale ? "text-amber-600" : "text-text-secondary"}`}>{updated}</span>
+        <div className="flex items-center gap-1">
+          {onToggleWide && (
+            <button
+              type="button"
+              title={boardWide ? "把日程栏缩回去，聊天栏放宽" : "把日程栏放宽，聊天栏收窄"}
+              onClick={onToggleWide}
+              className="rounded-md border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-secondary"
+            >
+              {boardWide ? "还原" : "放大日程"}
+            </button>
+          )}
         <button
           type="button"
           onClick={logout}
@@ -46,6 +70,7 @@ export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCo
         >
           退出
         </button>
+        </div>
       </div>
     </header>
   );

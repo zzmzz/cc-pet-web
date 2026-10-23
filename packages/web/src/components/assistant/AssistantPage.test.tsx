@@ -132,12 +132,14 @@ describe("AssistantPage", () => {
     const fold = screen.getByRole("button", { name: /没定日期的待办/ });
     expect(fold.getAttribute("aria-expanded")).toBe("false");
     expect(fold.textContent).toContain("1");
-    expect(screen.queryByText("整理书架")).toBeNull();
+    const undatedList = document.getElementById(fold.getAttribute("aria-controls")!)!;
+    expect(undatedList.hidden).toBe(true);
     await user.click(fold);
     expect(fold.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("整理书架")).toBeTruthy();
+    expect(undatedList.hidden).toBe(false);
+    expect(within(undatedList).getByText("整理书架")).toBeTruthy();
     await user.click(fold);
-    expect(screen.queryByText("整理书架")).toBeNull();
+    expect(undatedList.hidden).toBe(true);
   });
 
   it("orders the sections: today, next week, waiting, farther, undated, recently closed", async () => {
@@ -336,8 +338,20 @@ describe("AssistantPage", () => {
     expect(within(chat).getByText("蟹哥还没配置好")).toBeTruthy();
     expect(within(boardColumn).getByText("去图书馆还书")).toBeTruthy();
     const header = within(boardColumn).getByRole("heading", { name: "蟹哥" }).closest("header")!;
-    expect(within(header).getByTestId("pet-mini")).toBeTruthy();
-    expect(screen.queryByTestId("pet-full")).toBeNull();
+    expect(within(header).getByTestId("pet-full")).toBeTruthy();
+    expect(screen.queryByTestId("pet-mini")).toBeNull();
+    expect(within(header).getByRole("button", { name: "放大日程" })).toBeTruthy();
+    expect(within(header).getByRole("button", { name: "退出" })).toBeTruthy();
+  });
+
+  it("keeps the full pet in the board header after 放大日程", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await screen.findByText("去图书馆还书");
+    await user.click(screen.getByRole("button", { name: "放大日程" }));
+    const header = within(screen.getByRole("region", { name: "事项" })).getByRole("heading", { name: "蟹哥" }).closest("header")!;
+    expect(within(header).getByTestId("pet-full")).toBeTruthy();
   });
 
   it("widens the board with 放大日程, keeps the chat beside it, and remembers the choice", async () => {

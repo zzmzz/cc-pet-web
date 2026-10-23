@@ -75,7 +75,8 @@ export function AssistantPage() {
     return () => clearTimeout(t);
   }, [chatNotice]);
 
-  const discuss = useItemDiscussion(resident, openSession, showChat, createFailed);
+  const clearNotice = useCallback(() => setChatNotice(null), []);
+  const discuss = useItemDiscussion(resident, openSession, showChat, createFailed, clearNotice);
   const onDiscuss = resident ? (item: AssistantItem) => void discuss(item) : undefined;
 
   // A second click while the first one is still waiting on the server is ignored.
@@ -102,6 +103,9 @@ export function AssistantPage() {
 
   const header = (
     <BoardHeader
+      desktop={!isMobile}
+      boardWide={boardWide}
+      onToggleWide={isMobile ? undefined : () => setBoardWide((v) => !v)}
       now={now}
       todayCount={groups ? groups.today.length + groups.overdue.length : 0}
       plannedAt={board?.plannedAt ?? null}
@@ -183,7 +187,7 @@ export function AssistantPage() {
   }
 
   // Chat on the left as the wide column, the board in a narrower scrolling column on the right.
-  // 「放大日程」 swaps the widths; both stay visible. The pet sits in the board header.
+  // 「放大日程」 swaps the widths; both stay visible. The full pet sits in the board header.
   return (
     <div className="flex h-full bg-surface text-text-primary">
       {chatAlert}
@@ -200,17 +204,6 @@ export function AssistantPage() {
         }`}
       >
         <div className={`space-y-4 p-5 ${boardWide ? "mx-auto max-w-4xl" : ""}`}>
-          <div className="flex justify-end">
-            <button
-              type="button"
-              aria-pressed={boardWide}
-              title={boardWide ? "聊天栏放回大的那边" : "事项栏变宽，聊天栏变窄"}
-              onClick={() => setBoardWide((v) => !v)}
-              className="rounded-md border border-border px-2 py-0.5 text-xs text-text-secondary hover:bg-surface-secondary"
-            >
-              {boardWide ? "还原" : "放大日程"}
-            </button>
-          </div>
           {header}
           {notice}
           {loading}

@@ -92,13 +92,11 @@ function UndatedSection({ groups, onStatus, onDiscuss }: Common) {
           </span>
         </button>
       </h2>
-      {open && (
-        <ul id="assistant-undated" className="mt-1">
-          {groups.undated.map((item) => (
-            <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
-          ))}
-        </ul>
-      )}
+      <ul id="assistant-undated" hidden={!open} className="mt-1">
+        {groups.undated.map((item) => (
+          <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
+        ))}
+      </ul>
     </section>
   );
 }
