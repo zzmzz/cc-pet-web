@@ -188,6 +188,8 @@ describe("assistant API: deliverables and threads", () => {
   let dbPath: string;
   let app: FastifyInstance;
   let identity: AuthIdentity | null;
+  /** Seeded timestamps, kept so assertions don't recompute them across a second boundary. */
+  let at: { d5: string; t1: string; t2: string };
 
   async function build(p: string, opts: { outputRoot?: string; pathMap?: string } = { outputRoot: outRoot }) {
     const a = Fastify();
@@ -208,11 +210,12 @@ describe("assistant API: deliverables and threads", () => {
     const db = new Database(dbPath);
     db.exec(SCHEMA_V4);
     const old = "2026-10-01T08:00:00";
+    at = { d5: hoursAgo(5), t1: hoursAgo(1), t2: hoursAgo(2) };
     db.prepare("INSERT INTO items (kind, title, created_at, updated_at) VALUES ('todo', '示例事项', ?, ?)").run(old, old);
     const ins = db.prepare(
       "INSERT INTO deliverables (item_id, session_key, title, path, summary, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
     );
-    ins.run(1, "item-1", "周报草稿", path.join(outRoot, "周报草稿.md"), "按上周记录整理", "new", hoursAgo(5), hoursAgo(5));
+    ins.run(1, "item-1", "周报草稿", path.join(outRoot, "周报草稿.md"), "按上周记录整理", "new", at.d5, at.d5);
     ins.run(null, null, "数据表", path.join(outRoot, "数据.xlsx"), "", "seen", hoursAgo(1), hoursAgo(1));
     ins.run(1, "item-1", "很早的成品", path.join(outRoot, "周报草稿.md"), "", "used", hoursAgo(24 * 4), hoursAgo(24 * 4));
     ins.run(1, null, "越界的成品", path.join(dir, "secret.txt"), "", "new", hoursAgo(1.5), hoursAgo(1.5));
@@ -221,8 +224,8 @@ describe("assistant API: deliverables and threads", () => {
     const th = db.prepare(
       "INSERT INTO threads (session_key, item_id, title, status, progress, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
     );
-    th.run("item-1", 1, "示例事项", "running", "查完一半", "planner", old, hoursAgo(1));
-    th.run("task-2", null, "临时活", "stuck", "", "assistant", old, hoursAgo(2));
+    th.run("item-1", 1, "示例事项", "running", "查完一半", "planner", old, at.t1);
+    th.run("task-2", null, "临时活", "stuck", "", "assistant", old, at.t2);
     db.close();
     app = await build(dbPath);
   });
@@ -256,16 +259,16 @@ describe("assistant API: deliverables and threads", () => {
     const d = body.deliverables.find((x: { title: string }) => x.title === "周报草稿");
     expect(d).toEqual({
       id: 1, itemId: 1, sessionKey: "item-1", title: "周报草稿", path: path.join(outRoot, "周报草稿.md"),
-      summary: "按上周记录整理", status: "new", createdAt: hoursAgo(5),
+      summary: "按上周记录整理", status: "new", createdAt: at.d5,
     });
     expect(body.threads).toEqual(expect.arrayContaining([
       {
         sessionKey: "item-1", itemId: 1, title: "示例事项", status: "running", progress: "查完一半",
-        parent: null, createdAt: old, updatedAt: hoursAgo(1),
+        parent: null, createdAt: old, updatedAt: at.t1,
       },
       {
         sessionKey: "task-2", itemId: null, title: "临时活", status: "stuck", progress: "",
-        parent: null, createdAt: old, updatedAt: hoursAgo(2),
+        parent: null, createdAt: old, updatedAt: at.t2,
       },
     ]));
     expect(body.threads).toHaveLength(2);
