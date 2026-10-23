@@ -11,6 +11,8 @@ export interface AssistantRoutesDeps {
 }
 
 type ItemStatus = "open" | "done" | "dismissed";
+type Priority = "high" | "normal" | "low";
+const PRIORITIES: readonly string[] = ["high", "normal", "low"];
 const STATUSES: readonly string[] = ["open", "done", "dismissed"];
 
 const CLOSED_REASON: Record<ItemStatus, string | null> = {
@@ -32,10 +34,22 @@ interface ItemRow {
   closed_reason: string | null;
   created_at: string;
   updated_at: string;
+  /** 旧库没有这一列 */
+  priority?: string | null;
 }
 
-const ITEM_COLUMNS =
+const BASE_COLUMNS =
   "id, kind, title, detail, date, time, deadline, people, status, closed_reason, created_at, updated_at";
+
+/** 优先级列是后台第 3 版库才加的；旧库照样能读，全当 normal */
+function itemColumns(db: Database.Database): string {
+  const cols = db.pragma("table_info(items)") as { name: string }[];
+  return cols.some((c) => c.name === "priority") ? `${BASE_COLUMNS}, priority` : BASE_COLUMNS;
+}
+
+function toPriority(raw: string | null | undefined): Priority {
+  return typeof raw === "string" && PRIORITIES.includes(raw) ? (raw as Priority) : "normal";
+}
 
 function pad(n: number): string {
   return String(n).padStart(2, "0");
@@ -70,6 +84,7 @@ function toItem(r: ItemRow) {
     people: parsePeople(r.people),
     status: r.status,
     closedReason: r.closed_reason,
+    priority: toPriority(r.priority),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -112,12 +127,13 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
       db.pragma("busy_timeout = 5000");
+      const cols = itemColumns(db);
       const open = db
-        .prepare(`SELECT ${ITEM_COLUMNS} FROM items WHERE status = 'open' ORDER BY id`)
+        .prepare(`SELECT ${cols} FROM items WHERE status = 'open' ORDER BY id`)
         .all() as ItemRow[];
       const closed = db
         .prepare(
-          `SELECT ${ITEM_COLUMNS} FROM items WHERE status IN ('done', 'dismissed') AND updated_at >= ? ORDER BY updated_at DESC`,
+          `SELECT ${cols} FROM items WHERE status IN ('done', 'dismissed') AND updated_at >= ? ORDER BY updated_at DESC`,
         )
         .all(cutoff) as ItemRow[];
       return {
@@ -152,7 +168,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
             .run(next, CLOSED_REASON[next], at, id);
           if (info.changes === 0) return undefined;
           db.prepare("INSERT INTO actions (item_id, action, source, at) VALUES (?, ?, 'web', ?)").run(id, next, at);
-          return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items WHERE id = ?`).get(id) as ItemRow;
+          return db.prepare(`SELECT ${itemColumns(db)} FROM items WHERE id = ?`).get(id) as ItemRow;
         })();
         if (!row) return reply.code(404).send({ error: "事项不存在" });
         return toItem(row);

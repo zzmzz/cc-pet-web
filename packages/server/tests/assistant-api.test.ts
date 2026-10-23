@@ -17,9 +17,9 @@ function iso(d: Date) {
 const hoursAgo = (h: number) => iso(new Date(Date.now() - h * 3600 * 1000));
 
 const SCHEMA = `
-CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', date TEXT, time TEXT, deadline INTEGER NOT NULL DEFAULT 0, people TEXT NOT NULL DEFAULT '[]', sources TEXT NOT NULL DEFAULT '[]', draft TEXT, status TEXT NOT NULL DEFAULT 'open', closed_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', date TEXT, time TEXT, deadline INTEGER NOT NULL DEFAULT 0, people TEXT NOT NULL DEFAULT '[]', sources TEXT NOT NULL DEFAULT '[]', draft TEXT, status TEXT NOT NULL DEFAULT 'open', closed_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal');
 CREATE TABLE actions(id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL, action TEXT NOT NULL, source TEXT NOT NULL, at TEXT NOT NULL);
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 `;
 
 describe("assistant API", () => {
@@ -50,6 +50,8 @@ describe("assistant API", () => {
     ins.run("todo", "刚做完的事", "", null, null, 0, "[]", "done", "已完成", old, hoursAgo(2));
     ins.run("todo", "刚放弃的事", "", null, null, 0, "[]", "dismissed", "不用了", old, hoursAgo(1));
     ins.run("todo", "很早做完的事", "", null, null, 0, "[]", "done", "已完成", old, hoursAgo(30));
+    db.prepare("UPDATE items SET priority = 'high' WHERE id = 1").run();
+    db.prepare("UPDATE items SET priority = 'urgent' WHERE id = 3").run();
     db.close();
     app = await build(dbPath);
   });
@@ -100,6 +102,33 @@ describe("assistant API", () => {
     expect(body.closedRecent[0].closedReason).toBe("不用了");
     expect(typeof body.generatedAt).toBe("string");
     expect(body.plannedAt).toBeNull();
+  });
+
+  it("returns each item's priority, treating unknown values as normal", async () => {
+    const body = (await get()).json();
+    expect(body.items.map((i: { priority: string }) => i.priority)).toEqual(["high", "normal"]);
+    expect(body.closedRecent.map((i: { priority: string }) => i.priority)).toEqual(["normal", "normal"]);
+    expect((await post(1, { status: "done" })).json().priority).toBe("high");
+  });
+
+  it("treats every item as normal when the database has no priority column", async () => {
+    const oldPath = path.join(dir, "old.db");
+    const db = new Database(oldPath);
+    db.exec(SCHEMA.replace(", priority TEXT NOT NULL DEFAULT 'normal'", "").replace("user_version = 3", "user_version = 2"));
+    const at = "2026-10-01T08:00:00";
+    expect((db.pragma("table_info(items)") as { name: string }[]).some((c) => c.name === "priority")).toBe(false);
+    db.prepare("INSERT INTO items (kind, title, created_at, updated_at) VALUES ('todo', '旧库里的事', ?, ?)").run(at, at);
+    db.close();
+    const a = await build(oldPath);
+    try {
+      const res = await a.inject({ method: "GET", url: "/api/assistant/board" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toEqual([expect.objectContaining({ title: "旧库里的事", priority: "normal" })]);
+      const res2 = await a.inject({ method: "POST", url: "/api/assistant/items/1/status", payload: { status: "done" } });
+      expect(res2.json()).toMatchObject({ status: "done", priority: "normal" });
+    } finally {
+      await a.close();
+    }
   });
 
   it("reads plannedAt from the sibling file", async () => {
