@@ -19,6 +19,7 @@ import {
   refreshAssistantSession,
 } from "../../lib/assistantEvents.js";
 import { getPlatform } from "../../lib/platform.js";
+import { onOpenSessionRequest, takeOpenFromUrl, type OpenSessionRequest } from "../../lib/notificationOpen.js";
 import type { AssistantDeliverable, AssistantThread } from "../../lib/assistantBoard.js";
 
 const NO_DELIVERABLES: AssistantDeliverable[] = [];
@@ -90,6 +91,24 @@ export function AssistantPage() {
     },
     [rc],
   );
+
+  // A click on a push notification names a session: one from the URL waits until the
+  // resident's connection is known; one from the service worker arrives while the page is up.
+  // Taken in an effect, not a state initializer: StrictMode runs initializers twice and
+  // the first run already strips the URL.
+  const [openRequest, setOpenRequest] = useState<OpenSessionRequest | null>(null);
+  useEffect(() => {
+    const fromUrl = takeOpenFromUrl();
+    if (fromUrl) setOpenRequest(fromUrl);
+    return onOpenSessionRequest(setOpenRequest);
+  }, []);
+  useEffect(() => {
+    if (!openRequest || !rc) return;
+    setOpenRequest(null);
+    if (openRequest.connectionId !== rc) return;
+    setTab("chat");
+    openSession(openRequest.sessionKey);
+  }, [openRequest, rc, openSession]);
 
   const showChat = useCallback(() => {
     setTab("chat");

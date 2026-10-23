@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import { OPEN_SESSION_MESSAGE, notificationUrl, parseOpenRequest } from "./lib/notificationOpen.js";
 
 declare const self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<{ url: string; revision: string | null }> };
 
@@ -35,7 +36,7 @@ cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener("push", (event: PushEvent) => {
-  let payload: { title?: string; body?: string; data?: Record<string, unknown> } = {};
+  let payload: { title?: string; body?: string; tag?: string; data?: Record<string, unknown> } = {};
   try {
     payload = event.data?.json() ?? {};
   } catch {
@@ -47,7 +48,7 @@ self.addEventListener("push", (event: PushEvent) => {
       body: payload.body || "有新的主动消息",
       icon: "/pwa-192x192.png",
       badge: "/pwa-192x192.png",
-      tag: "resident-proactive",
+      tag: typeof payload.tag === "string" && payload.tag ? payload.tag : "resident-proactive",
       data: payload.data ?? {},
     }),
   );
@@ -57,12 +58,16 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
+      // A notification that names a session (data.connectionId + data.sessionKey) opens that chat:
+      // an open page gets told via postMessage, otherwise a new page carries it in the URL.
+      const target = parseOpenRequest(event.notification.data);
       const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const existing = clientList.find((c) => "focus" in c) as WindowClient | undefined;
       if (existing) {
         await existing.focus();
+        if (target) existing.postMessage({ type: OPEN_SESSION_MESSAGE, ...target });
       } else {
-        await self.clients.openWindow("/");
+        await self.clients.openWindow(notificationUrl(target));
       }
     })(),
   );

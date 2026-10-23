@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AssistantPage, BOARD_WIDE_KEY } from "./AssistantPage.js";
@@ -9,6 +9,7 @@ import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
 import { useMessageStore } from "../../lib/store/message.js";
 import { emitAssistantSessionUpdated } from "../../lib/assistantEvents.js";
+import { OPEN_SESSION_MESSAGE } from "../../lib/notificationOpen.js";
 
 const platformMock = vi.hoisted(() => ({
   fetchApi: vi.fn(),
@@ -1121,5 +1122,62 @@ describe("AssistantPage progress strip", () => {
     expect(rowTexts(el)).toHaveLength(3);
     const chat = screen.getByTestId("chat-window");
     expect(el.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("AssistantPage opened from a notification", () => {
+  function seed() {
+    useConnectionStore.setState({ connections: [{ id: "c1", name: "Bot", connected: true }], activeConnectionId: "c1" });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "home", connectionId: "c1", createdAt: 1, lastActiveAt: 50, isResident: true },
+          { key: "task-1", connectionId: "c1", createdAt: 1, lastActiveAt: 40, label: "示例报价单" },
+        ],
+      },
+      activeSessionKey: { c1: "home" },
+    });
+  }
+  let sw: EventTarget;
+  beforeEach(() => {
+    sw = new EventTarget();
+    Object.defineProperty(window.navigator, "serviceWorker", { configurable: true, value: sw });
+    window.history.replaceState(null, "", "/");
+  });
+  afterEach(() => {
+    delete (window.navigator as { serviceWorker?: unknown }).serviceWorker;
+  });
+  const post = (data: unknown) => act(() => {
+    sw.dispatchEvent(Object.assign(new Event("message"), { data }));
+  });
+
+  it("opens the session named in the URL once the resident shows up, and cleans the URL", async () => {
+    window.history.replaceState(null, "", "/?openConnection=c1&openSession=task-1");
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    expect(window.location.search).toBe("");
+    act(() => seed());
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("task-1"));
+  });
+
+  it("switches to the session a click on a notification asks for, on a phone too", async () => {
+    setWidth(390);
+    seed();
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    post({ type: OPEN_SESSION_MESSAGE, connectionId: "c1", sessionKey: "task-1" });
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("task-1"));
+    expect(screen.getByRole("tab", { name: "聊天" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByText("去图书馆还书")).toBeNull();
+  });
+
+  it("ignores requests for another connection or of another type", async () => {
+    seed();
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    post({ type: OPEN_SESSION_MESSAGE, connectionId: "c9", sessionKey: "task-1" });
+    post({ type: "something-else", connectionId: "c1", sessionKey: "task-1" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("home");
   });
 });
