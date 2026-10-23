@@ -149,6 +149,7 @@ interface ThreadRow {
   title: string;
   status: string;
   progress: string;
+  created_by: string;
   created_at: string;
   updated_at: string;
   /** 第 5 版库才有：派出这个子会话的会话 key */
@@ -178,6 +179,7 @@ function toThread(r: ThreadRow) {
     status: r.status,
     progress: r.progress,
     parent: r.parent ?? null,
+    createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -190,7 +192,7 @@ function hasV4Tables(db: Database.Database): boolean {
 
 /** parent 列是第 5 版库才加的；按列是否存在判断，旧库不选它 */
 function threadColumns(db: Database.Database): string {
-  const base = "session_key, item_id, title, status, progress, created_at, updated_at";
+  const base = "session_key, item_id, title, status, progress, created_by, created_at, updated_at";
   const cols = db.pragma("table_info(threads)") as { name: string }[];
   return cols.some((c) => c.name === "parent") ? `${base}, parent` : base;
 }

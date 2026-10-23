@@ -280,11 +280,11 @@ describe("assistant API: deliverables and threads", () => {
     expect(body.threads).toEqual(expect.arrayContaining([
       {
         sessionKey: "item-1", itemId: 1, title: "示例事项", status: "running", progress: "查完一半",
-        parent: null, createdAt: old, updatedAt: at.t1,
+        parent: null, createdBy: "planner", createdAt: old, updatedAt: at.t1,
       },
       {
         sessionKey: "task-2", itemId: null, title: "临时活", status: "stuck", progress: "",
-        parent: null, createdAt: old, updatedAt: at.t2,
+        parent: null, createdBy: "assistant", createdAt: old, updatedAt: at.t2,
       },
     ]));
     expect(body.threads).toHaveLength(2);

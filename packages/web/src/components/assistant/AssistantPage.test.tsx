@@ -1050,7 +1050,7 @@ describe("AssistantPage progress strip", () => {
   }
   function thread(over: Record<string, unknown> & { sessionKey: string; title: string }) {
     return {
-      itemId: null, status: "running", progress: "", parent: "home",
+      itemId: null, status: "running", progress: "", parent: "home", createdBy: "assistant",
       createdAt: ago(12), updatedAt: ago(1), ...over,
     };
   }
@@ -1059,8 +1059,10 @@ describe("AssistantPage progress strip", () => {
     thread({ sessionKey: "task-2", title: "示例会议纪要", status: "done", createdAt: ago(90), updatedAt: ago(30) }),
     thread({ sessionKey: "task-3", title: "示例通知稿", status: "stuck", createdAt: ago(150) }),
     thread({ sessionKey: "task-4", title: "别人派的活", parent: "item-2" }),
-    thread({ sessionKey: "task-5", title: "后台自己派的", parent: null }),
+    thread({ sessionKey: "task-5", title: "后台自己派的", parent: null, createdBy: "planner", status: "done", createdAt: ago(200), updatedAt: ago(100) }),
     thread({ sessionKey: "task-6", title: "前天做完的", status: "done", updatedAt: ago(60 * 30) }),
+    thread({ sessionKey: "task-9", title: "聊完的讨论", parent: null, createdBy: "web", status: "done", updatedAt: ago(10) }),
+    thread({ sessionKey: "task-10", title: "在聊的讨论", parent: null, createdBy: "web", createdAt: ago(300) }),
   ];
   const deliverables = [
     { id: 7, itemId: null, sessionKey: "task-2", title: "示例会议纪要", path: "/out/纪要.md", summary: "", status: "new", createdAt: ago(30) },
@@ -1095,23 +1097,31 @@ describe("AssistantPage progress strip", () => {
   const strip = () => screen.findByRole("region", { name: "派出去的活" });
   const rowTexts = (el: HTMLElement) => within(el).getAllByRole("listitem").map((li) => li.textContent ?? "");
 
-  it("lists the main session's sub-sessions above its chat", async () => {
+  it("lists unfinished threads of any origin plus recent done ones, each with a source tag, above the chat", async () => {
     render(<AssistantPage />);
     const el = await strip();
+    // 4 unfinished + 2 done: compact shows the unfinished ones first
     const rows = rowTexts(el);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows[0]).toContain("卡住了");
     expect(rows[0]).toContain("示例通知稿");
+    expect(rows[0]).toContain("主会话派的");
     expect(rows[0]).toContain("2 小时 30 分钟");
-    expect(rows[1]).toContain("在做");
-    expect(rows[1]).toContain("示例报价单");
-    expect(rows[1]).toContain("资料找齐了");
-    expect(rows[1]).toContain("12 分钟");
-    expect(rows[2]).toContain("做好了");
-    expect(rows[2]).toContain("用了 1 小时");
-    expect(rows.join()).not.toContain("别人派的活");
-    expect(rows.join()).not.toContain("后台自己派的");
+    expect(rows[3]).toContain("在聊的讨论");
+    expect(rows[3]).toContain("讨论");
+    expect(rows.find((r) => r.includes("示例报价单"))).toContain("资料找齐了");
+    expect(rows.find((r) => r.includes("示例报价单"))).toContain("12 分钟");
+    expect(rows.find((r) => r.includes("别人派的活"))).toContain("子会话派的");
     expect(rows.join()).not.toContain("前天做完的");
+    expect(rows.join()).not.toContain("聊完的讨论");
+    await userEvent.setup().click(within(el).getByRole("button", { name: "还有 2 个已完成" }));
+    const all = rowTexts(el);
+    expect(all).toHaveLength(6);
+    expect(all[4]).toContain("示例会议纪要");
+    expect(all[4]).toContain("用了 1 小时");
+    expect(all[5]).toContain("后台自己派的");
+    expect(all[5]).toContain("自动起草");
+    expect(all.join()).not.toContain("聊完的讨论");
     // Above the chat, inside the chat column.
     const chat = screen.getByTestId("chat-window");
     expect(el.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1130,7 +1140,8 @@ describe("AssistantPage progress strip", () => {
     const user = userEvent.setup();
     render(<AssistantPage />);
     const el = await strip();
-    const done = within(el).getAllByRole("listitem")[2];
+    await user.click(within(el).getByRole("button", { name: /还有 2 个已完成/ }));
+    const done = within(el).getAllByRole("listitem")[4];
     expect(within(el).getAllByRole("button", { name: "打开成品" })).toHaveLength(1);
     await user.click(within(done).getByRole("button", { name: "打开成品" }));
     expect((await screen.findByRole("dialog", { name: "示例会议纪要" })).textContent).toContain("# 示例纪要");
@@ -1139,7 +1150,7 @@ describe("AssistantPage progress strip", () => {
   });
 
   it("is not shown when there is nothing to list", async () => {
-    body = { ...board, threads: [threads[3]] };
+    body = { ...board, threads: [threads[5], threads[2 + 3]] };
     render(<AssistantPage />);
     expect(await screen.findByText("去图书馆还书")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "派出去的活" })).toBeNull();
@@ -1150,7 +1161,7 @@ describe("AssistantPage progress strip", () => {
     const { unmount } = render(<AssistantPage />);
     const toggle = within(await strip()).getByRole("button", { name: /派出去的活/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(toggle.textContent).toContain("1 个在做，1 个卡住了，1 个做好了");
+    expect(toggle.textContent).toContain("3 个在做，1 个卡住了，2 个做好了");
     await user.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(within(await strip()).queryAllByRole("listitem")).toHaveLength(0);
@@ -1160,7 +1171,7 @@ describe("AssistantPage progress strip", () => {
     const again = within(await strip()).getByRole("button", { name: /派出去的活/ });
     expect(again.getAttribute("aria-expanded")).toBe("false");
     await user.click(again);
-    expect(within(await strip()).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(await strip()).getAllByRole("listitem")).toHaveLength(4);
   });
 
   it("with more than 3 rows shows the unfinished ones first and folds the finished", async () => {
@@ -1175,9 +1186,9 @@ describe("AssistantPage progress strip", () => {
     const user = userEvent.setup();
     render(<AssistantPage />);
     const el = await strip();
-    expect(rowTexts(el).map((t) => t.includes("做好了"))).toEqual([false, false, false]);
-    await user.click(within(el).getByRole("button", { name: "还有 2 个已完成" }));
-    expect(rowTexts(el)).toHaveLength(5);
+    expect(rowTexts(el).map((t) => t.includes("做好了"))).toEqual([false, false, false, false, false]);
+    await user.click(within(el).getByRole("button", { name: "还有 3 个已完成" }));
+    expect(rowTexts(el)).toHaveLength(8);
     expect(within(el).queryByRole("button", { name: /还有/ })).toBeNull();
   });
 
@@ -1188,7 +1199,7 @@ describe("AssistantPage progress strip", () => {
     await user.click(await screen.findByRole("tab", { name: "聊天" }));
     await user.click(await screen.findByRole("button", { name: /个人助理-主会话/ }));
     const el = await strip();
-    expect(rowTexts(el)).toHaveLength(3);
+    expect(rowTexts(el)).toHaveLength(4);
     const chat = screen.getByTestId("chat-window");
     expect(el.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

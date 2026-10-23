@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   elapsedLabel,
   progressRows,
+  threadSourceLabel,
   type AssistantDeliverable,
   type AssistantThread,
 } from "../../lib/assistantBoard.js";
@@ -38,11 +39,13 @@ function timeText(t: AssistantThread, now: Date): string {
 function Row({
   thread: t,
   deliverable,
+  source,
   now,
   onOpen,
   onOpenFile,
 }: {
   thread: AssistantThread;
+  source: string;
   deliverable: AssistantDeliverable | undefined;
   now: Date;
   onOpen: (key: string) => void;
@@ -74,6 +77,7 @@ function Row({
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${look.dot}`} />
           {look.label}
         </span>
+        <span className="shrink-0 rounded bg-surface-tertiary px-1 text-[10px] text-text-secondary">{source}</span>
         <span className="min-w-0 max-w-[45%] shrink-0 truncate font-medium text-text-primary">{t.title}</span>
         {progress && <span title={progress} className="min-w-0 flex-1 truncate text-text-secondary">
             {progress}
@@ -95,7 +99,7 @@ function Row({
 }
 
 /**
- * 主会话对话上方的进度栏：主会话派出去的子会话，没做完的和 24 小时内做好的。
+ * 主会话对话上方的进度栏：所有没做完的活，加上 24 小时内做好的（主会话派的或自动起草的）。
  * 点一行进那个子会话；有成品的可以直接打开。
  */
 export function ProgressStrip({
@@ -166,6 +170,7 @@ export function ProgressStrip({
                   key={t.sessionKey}
                   thread={t}
                   deliverable={fileFor(t.sessionKey)}
+                  source={threadSourceLabel(t, residentKey)}
                   now={now}
                   onOpen={onOpen}
                   onOpenFile={open}

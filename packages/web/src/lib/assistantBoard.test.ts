@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deliverableStatusLabel, deliverableTime, discussionPrompt, fileName, groupBoard, isTextDeliverable,
-  isChildOf, elapsedLabel, priorityRank, progressRows, threadForItem, weekdayLabel,
+  isChildOf, elapsedLabel, priorityRank, progressRows, threadSourceLabel, threadForItem, weekdayLabel,
   type AssistantItem, type AssistantThread,
 } from "./assistantBoard.js";
 
@@ -228,19 +228,20 @@ describe("progressRows", () => {
       parent: KEY, createdAt: "2026-10-28T10:00:00", updatedAt: "2026-10-28T11:00:00", ...p,
     };
   }
-  it("keeps the resident's own threads: unfinished ones, and done ones from the last 24 hours", () => {
+  it("keeps every unfinished thread, and done ones from the last 24 hours only if resident-dispatched or planner-made", () => {
     const rows = progressRows([
       th({ sessionKey: "task-1" }),
-      th({ sessionKey: "task-2", parent: null }),
-      th({ sessionKey: "task-3", parent: "item-4" }),
+      th({ sessionKey: "task-2", parent: null, createdBy: "assistant" }),
+      th({ sessionKey: "task-3", parent: "item-4", status: "stuck" }),
       th({ sessionKey: "task-4", status: "done", updatedAt: "2026-10-27T11:00:00" }),
       th({ sessionKey: "task-5", status: "done", updatedAt: "2026-10-28T09:00:00" }),
-      th({ sessionKey: "task-6", status: "stuck", createdAt: "2026-10-20T10:00:00", updatedAt: "2026-10-20T10:00:00" }),
-      th({ sessionKey: "task-7", status: "weird" }),
-      th({ sessionKey: "task-9", status: "toString" }),
-      th({ sessionKey: "task-8", parent: undefined }),
+      th({ sessionKey: "task-6", status: "done", parent: null, createdBy: "web", updatedAt: "2026-10-28T09:00:00" }),
+      th({ sessionKey: "task-7", status: "done", parent: null, createdBy: "planner", updatedAt: "2026-10-28T09:30:00" }),
+      th({ sessionKey: "task-8", status: "done", parent: "item-4", createdBy: "assistant", updatedAt: "2026-10-28T09:30:00" }),
+      th({ sessionKey: "task-9", status: "weird" }),
+      th({ sessionKey: "task-10", status: "toString" }),
     ], KEY, now);
-    expect(rows.map((t) => t.sessionKey)).toEqual(["task-6", "task-1", "task-5"]);
+    expect(rows.map((t) => t.sessionKey)).toEqual(["task-3", "task-1", "task-2", "task-7", "task-5"]);
   });
   it("orders stuck, then running newest first, then done newest first", () => {
     const rows = progressRows([
@@ -251,5 +252,19 @@ describe("progressRows", () => {
       th({ sessionKey: "task-5", status: "stuck" }),
     ], KEY, now);
     expect(rows.map((t) => t.sessionKey)).toEqual(["task-5", "task-4", "task-2", "task-3", "task-1"]);
+  });
+});
+
+describe("threadSourceLabel", () => {
+  const KEY = "demo:resident:resident";
+  const th = (p: Partial<AssistantThread>): AssistantThread => ({
+    sessionKey: "task-1", itemId: null, title: "活", status: "running", progress: "", updatedAt: "2026-10-28T11:00:00", ...p,
+  });
+  it("tags where each thread came from", () => {
+    expect(threadSourceLabel(th({ parent: KEY, createdBy: "assistant" }), KEY)).toBe("主会话派的");
+    expect(threadSourceLabel(th({ parent: null, createdBy: "planner" }), KEY)).toBe("自动起草");
+    expect(threadSourceLabel(th({ parent: null, createdBy: "web" }), KEY)).toBe("讨论");
+    expect(threadSourceLabel(th({ sessionKey: "item-3", parent: null }), KEY)).toBe("讨论");
+    expect(threadSourceLabel(th({ parent: "item-3", createdBy: "assistant" }), KEY)).toBe("子会话派的");
   });
 });

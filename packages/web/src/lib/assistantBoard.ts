@@ -153,6 +153,8 @@ export interface AssistantThread {
   status: string; progress: string; updatedAt: string;
   /** The session that dispatched it; null for the planner's own, missing from older servers. */
   parent?: string | null;
+  /** planner / web / assistant; missing from older servers. */
+  createdBy?: string;
   /** Missing from older servers. */
   createdAt?: string;
 }
@@ -221,15 +223,17 @@ const DONE_WINDOW_MS = 24 * 3600 * 1000;
 const ROW_RANK: Record<string, number> = { stuck: 0, running: 1, done: 2 };
 
 /**
- * The progress strip above the main chat: threads the resident session dispatched,
- * stuck first, then running (newest first), then those finished in the last 24 hours
- * (most recently finished first).
+ * The progress strip above the main chat: every running or stuck thread, plus threads
+ * finished in the last 24 hours that the resident dispatched or the planner drafted.
+ * Stuck first, then running (newest first), then done (most recently finished first).
  */
 export function progressRows(threads: AssistantThread[], residentKey: string, now: Date): AssistantThread[] {
   const cutoff = now.getTime() - DONE_WINDOW_MS;
   return threads
-    .filter((t) => Object.hasOwn(ROW_RANK, t.status) && isChildOf(t.parent, residentKey))
-    .filter((t) => t.status !== "done" || parseTime(t.updatedAt) >= cutoff)
+    .filter((t) => Object.hasOwn(ROW_RANK, t.status))
+    .filter((t) => t.status !== "done" || (
+      parseTime(t.updatedAt) >= cutoff && (isChildOf(t.parent, residentKey) || t.createdBy === "planner")
+    ))
     .map((t, i) => ({ t, i }))
     .sort((a, b) => {
       const rank = ROW_RANK[a.t.status] - ROW_RANK[b.t.status];
@@ -239,4 +243,12 @@ export function progressRows(threads: AssistantThread[], residentKey: string, no
       return parseTime(bt) - parseTime(at) || a.i - b.i;
     })
     .map(({ t }) => t);
+}
+
+/** Where a thread came from, as a short tag for the progress strip. */
+export function threadSourceLabel(t: AssistantThread, residentKey: string): string {
+  if (isChildOf(t.parent, residentKey)) return "主会话派的";
+  if (t.createdBy === "planner") return "自动起草";
+  if (t.createdBy === "web" || (!t.parent && /^item-\d+$/.test(t.sessionKey))) return "讨论";
+  return "子会话派的";
 }
