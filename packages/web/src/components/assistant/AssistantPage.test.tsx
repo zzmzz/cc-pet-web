@@ -86,9 +86,9 @@ function statusCalls() {
     .map(([path, init]) => [path, JSON.parse(String(init?.body))]);
 }
 
-/** 没定日期的待办 starts folded; open it. */
+/** The 不急的 part of 没定日期的待办 starts folded; open it. */
 async function expandUndated(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole("button", { name: /没定日期的待办/ }));
+  await user.click(await screen.findByRole("button", { name: /还有 \d+ 件不急的/ }));
 }
 
 function setWidth(width: number) {
@@ -131,9 +131,9 @@ describe("AssistantPage", () => {
     expect(screen.getByText(/事项更新于 \d\d:\d\d/)).toBeTruthy();
 
     // Folded until clicked; the header still says how many.
-    const fold = screen.getByRole("button", { name: /没定日期的待办/ });
+    expect(screen.getByRole("heading", { name: /没定日期的待办/ }).textContent).toContain("1");
+    const fold = screen.getByRole("button", { name: /还有 1 件不急的/ });
     expect(fold.getAttribute("aria-expanded")).toBe("false");
-    expect(fold.textContent).toContain("1");
     const undatedList = document.getElementById(fold.getAttribute("aria-controls")!)!;
     expect(undatedList.hidden).toBe(true);
     await user.click(fold);
@@ -142,6 +142,38 @@ describe("AssistantPage", () => {
     expect(within(undatedList).getByText("整理书架")).toBeTruthy();
     await user.click(fold);
     expect(undatedList.hidden).toBe(true);
+  });
+
+  it("shows high-priority undated todos always, and folds the calm ones", async () => {
+    const user = userEvent.setup();
+    mockBoard(200, {
+      ...board,
+      items: [
+        item({ id: 4, title: "整理书架" }),
+        item({ id: 6, title: "给花浇水", priority: "low" }),
+        item({ id: 7, title: "续办借书证", priority: "high" }),
+      ],
+    });
+    render(<AssistantPage />);
+    const heading = await screen.findByRole("heading", { name: /没定日期的待办/ });
+    expect(heading.textContent).toContain("3");
+    const urgentRow = screen.getByText("续办借书证").closest("ul")!;
+    expect(urgentRow.hidden).toBe(false);
+    const fold = screen.getByRole("button", { name: /还有 2 件不急的/ });
+    const calmList = document.getElementById(fold.getAttribute("aria-controls")!)!;
+    expect(calmList.hidden).toBe(true);
+    expect(within(calmList).getByText("整理书架")).toBeTruthy();
+    await user.click(fold);
+    expect(calmList.hidden).toBe(false);
+    expect(localStorage.getItem("cc-pet-assistant-undated-folded")).toBe("open");
+  });
+
+  it("with only calm undated todos, shows just the header and the fold toggle", async () => {
+    mockBoard(200, { ...board, items: [item({ id: 4, title: "整理书架" })] });
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /没定日期的待办/ })).closest("section")!;
+    expect(within(section).getAllByRole("list", { hidden: true }).every((l) => (l as HTMLElement).hidden)).toBe(true);
+    expect(within(section).getByRole("button", { name: /还有 1 件不急的/ })).toBeTruthy();
   });
 
   it("orders the sections: today, next week, waiting, farther, undated, recently closed", async () => {
@@ -912,6 +944,43 @@ describe("AssistantPage deliverables and threads", () => {
       ]),
     );
     await waitFor(() => expect(boardLoads()).toBeGreaterThanOrEqual(loads + 2));
+  });
+
+  it("removes a deliverable right away on 不用了, keeps it on 用了", async () => {
+    const user = userEvent.setup();
+    // Like the server: the board no longer lists it once dismissed.
+    const gone = new Set<number>();
+    platformMock.fetchApiRaw.mockImplementation(async (path: string, init?: { body?: string }) => {
+      const m = /deliverables\/(\d+)\/status/.exec(path);
+      if (m) {
+        if (JSON.parse(String(init?.body)).status === "dismissed") gone.add(Number(m[1]));
+        return respond(200, {});
+      }
+      if (path === "/api/assistant/board") {
+        return respond(200, { ...fullBoard, deliverables: deliverables.filter((d) => !gone.has(d.id)) });
+      }
+      return respond(200, {});
+    });
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    await user.click(within(within(section).getAllByRole("listitem")[1]).getByRole("button", { name: "不用了" }));
+    await waitFor(() => expect(within(section).queryByText("示例数据表")).toBeNull());
+    await user.click(within(within(section).getAllByRole("listitem")[0]).getByRole("button", { name: "用了" }));
+    await waitFor(() => expect(deliverablePosts()).toHaveLength(2));
+    expect(within(section).getByText("示例周报草稿")).toBeTruthy();
+  });
+
+  it("truncates the summary on one line with a title, and toggles the full text on click", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    await screen.findByRole("heading", { name: /蟹哥做好的/ });
+    const summary = screen.getAllByTestId("deliverable-summary")[0];
+    expect(summary.className).toContain("truncate");
+    expect(summary.getAttribute("title")).toContain("按上周记录整理的初稿");
+    await user.click(summary);
+    expect(summary.className).not.toContain("truncate");
+    await user.click(summary);
+    expect(summary.className).toContain("truncate");
   });
 
   it("shows each thread's status in the session list and on its item", async () => {

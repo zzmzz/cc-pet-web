@@ -145,6 +145,7 @@ function DeliverableRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -179,9 +180,19 @@ function DeliverableRow({
             {deliverableStatusLabel(d.status)}
           </span>
         </div>
-        <div className="mt-0.5 text-xs text-text-secondary">
-          {[d.summary.trim(), deliverableTime(d.createdAt, today)].filter((s) => s.length > 0).join(" · ")}
-        </div>
+        {(() => {
+          const text = [d.summary.trim(), deliverableTime(d.createdAt, today)].filter((s) => s.length > 0).join(" · ");
+          return (
+            <div
+              data-testid="deliverable-summary"
+              title={text}
+              onClick={() => setExpanded((v) => !v)}
+              className={`mt-0.5 cursor-pointer text-xs text-text-secondary ${expanded ? "break-words" : "truncate"}`}
+            >
+              {text}
+            </div>
+          );
+        })()}
         {failed && <div className="mt-0.5 text-xs text-amber-600">{OPEN_FAILED_MESSAGE}</div>}
       </div>
       <button
@@ -211,7 +222,7 @@ function DeliverableRow({
   );
 }
 
-/** 「蟹哥做好的」：近 3 天的成品。没有就不显示。 */
+/** 「蟹哥做好的」：近 3 天的成品（用了的留 24 小时，不用了的不显示）。没有就不显示。 */
 export function Deliverables({
   deliverables,
   today,

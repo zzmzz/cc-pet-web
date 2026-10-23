@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPlatform } from "../../lib/platform.js";
 import type { AssistantDeliverable, AssistantItem, AssistantThread } from "../../lib/assistantBoard.js";
 
@@ -32,9 +32,18 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<{ statu
 }
 
 export function useAssistantBoard() {
-  const [board, setBoard] = useState<AssistantBoard | null>(null);
+  const [rawBoard, setBoard] = useState<AssistantBoard | null>(null);
+  /** 点了「不用了」的成品：服务端确认前先藏起来 */
+  const [hidden, setHidden] = useState<ReadonlySet<number>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const board = useMemo(
+    () =>
+      rawBoard && rawBoard.deliverables && hidden.size > 0
+        ? { ...rawBoard, deliverables: rawBoard.deliverables.filter((d) => !hidden.has(d.id)) }
+        : rawBoard,
+    [rawBoard, hidden],
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -81,7 +90,22 @@ export function useAssistantBoard() {
   );
 
   const setDeliverableStatus = useCallback(
-    (id: number, status: DeliverableAction) => post(`/api/assistant/deliverables/${id}/status`, status),
+    async (id: number, status: DeliverableAction) => {
+      if (status !== "dismissed") return post(`/api/assistant/deliverables/${id}/status`, status);
+      setHidden((h) => new Set(h).add(id));
+      try {
+        await post(`/api/assistant/deliverables/${id}/status`, status);
+      } finally {
+        // 成功的话刷新后的看板已不含它；失败的话让它回来
+        if (mounted.current) {
+          setHidden((h) => {
+            const n = new Set(h);
+            n.delete(id);
+            return n;
+          });
+        }
+      }
+    },
     [post],
   );
 

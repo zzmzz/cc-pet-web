@@ -84,33 +84,61 @@ function FartherSection({ groups, onStatus, onDiscuss }: Common) {
   );
 }
 
-/** 没定日期的待办默认收起，标题上有件数，点一下展开。 */
+export const UNDATED_FOLDED_KEY = "cc-pet-assistant-undated-folded";
+
+function readUndatedOpen(): boolean {
+  try {
+    return localStorage.getItem(UNDATED_FOLDED_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
+/** 没定日期的待办：急的（high）一直摆着，其余收在「还有 N 件不急的」里，默认收起。标题上是总数。 */
 function UndatedSection({ groups, onStatus, onDiscuss }: Common) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(readUndatedOpen);
   if (groups.undated.length === 0) return null;
+  const urgent = groups.undated.filter((i) => i.priority === "high");
+  const calm = groups.undated.filter((i) => i.priority !== "high");
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try {
+      if (next) localStorage.setItem(UNDATED_FOLDED_KEY, "open");
+      else localStorage.removeItem(UNDATED_FOLDED_KEY);
+    } catch {
+      // Private mode and the like: the toggle still works, it just isn't remembered.
+    }
+  };
   return (
-    <section className="rounded-xl border border-border bg-surface-secondary px-4 py-3">
-      <h2 className="text-sm font-semibold text-text-primary">
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls="assistant-undated"
-          onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center gap-2 text-left"
-        >
-          <span aria-hidden className="text-text-secondary">{open ? "▾" : "▸"}</span>
-          没定日期的待办
-          <span className="rounded-full bg-surface px-2 text-xs font-normal text-text-secondary">
-            {groups.undated.length}
-          </span>
-        </button>
-      </h2>
-      <ul id="assistant-undated" hidden={!open} className="mt-1">
-        {groups.undated.map((item) => (
-          <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
-        ))}
-      </ul>
-    </section>
+    <Section title="没定日期的待办" count={groups.undated.length}>
+      {urgent.length > 0 && (
+        <ul>
+          {urgent.map((item) => (
+            <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
+          ))}
+        </ul>
+      )}
+      {calm.length > 0 && (
+        <>
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls="assistant-undated-calm"
+            onClick={toggle}
+            className="flex items-center gap-1 py-1 text-xs text-text-secondary hover:text-text-primary"
+          >
+            <span aria-hidden>{open ? "▾" : "▸"}</span>
+            还有 {calm.length} 件不急的
+          </button>
+          <ul id="assistant-undated-calm" hidden={!open}>
+            {calm.map((item) => (
+              <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
+            ))}
+          </ul>
+        </>
+      )}
+    </Section>
   );
 }
 

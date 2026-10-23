@@ -75,7 +75,9 @@ function Row({
           {look.label}
         </span>
         <span className="min-w-0 max-w-[45%] shrink-0 truncate font-medium text-text-primary">{t.title}</span>
-        {progress && <span className="min-w-0 flex-1 truncate text-text-secondary">{progress}</span>}
+        {progress && <span title={progress} className="min-w-0 flex-1 truncate text-text-secondary">
+            {progress}
+          </span>}
         <span className="ml-auto shrink-0 text-text-secondary">{time}</span>
       </button>
       {deliverable && (
