@@ -25,6 +25,16 @@ export class SessionStore {
     ).run(session.connectionId, session.key, session.label ?? null, session.createdAt, session.lastActiveAt);
   }
 
+  /** 只在会话不存在时插入；已存在就什么都不动。返回是否新建了 */
+  createIfMissing(session: Session): boolean {
+    const info = this.db.prepare(
+      `INSERT INTO sessions (connection_id, key, label, created_at, last_active_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(connection_id, key) DO NOTHING`
+    ).run(session.connectionId, session.key, session.label ?? null, session.createdAt, session.lastActiveAt);
+    return info.changes > 0;
+  }
+
   listByConnection(connectionId: string): Session[] {
     // Left-join the first user message so sessions that pre-date server-side
     // auto-title persistence still show a meaningful label without forcing

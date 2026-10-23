@@ -182,12 +182,8 @@ registerAssistantInternalRoutes(app, {
   sessionStore,
   messageStore,
   bridgeManager,
+  // 这里故意不调 proactiveDetector.markUserSend：后台发的不算用户发话，助手的回复照常推送
   broadcast: (event, payload) => assistantHub?.broadcast(event, payload),
-  onUserSend: (connectionId, sessionKey) => {
-    if (residentRegistry.isResident(connectionId, sessionKey)) {
-      proactiveDetector.markUserSend(connectionId, sessionKey);
-    }
-  },
 });
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
