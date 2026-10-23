@@ -31,7 +31,7 @@ export function WeekStrip({
                     <button
                       type="button"
                       aria-label={`讨论：${item.title}`}
-                      title="和秋来聊聊这件事"
+                      title="和蟹哥聊聊这件事"
                       disabled={!onDiscuss}
                       onClick={() => onDiscuss?.(item)}
                       className="w-full rounded bg-surface-secondary px-1.5 py-1 text-left text-xs text-text-primary enabled:hover:bg-primary/10"

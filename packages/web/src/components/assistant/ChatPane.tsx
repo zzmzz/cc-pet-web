@@ -16,7 +16,7 @@ function useActiveSession(resident: Session | null): Session | null {
 }
 
 function CurrentTitle({ session }: { session: Session | null }) {
-  if (!session) return <span className="truncate">秋来</span>;
+  if (!session) return <span className="truncate">蟹哥</span>;
   return (
     <>
       {isItemSession(session) && (
@@ -41,7 +41,7 @@ export function DesktopChatPane({ resident, onOpen, onNew }: Props) {
   const activeKey = active?.key;
   useEffect(() => setListOpen(false), [activeKey]);
   if (!resident) {
-    return <div className="flex h-full items-center justify-center text-sm text-text-secondary">秋来还没配置好</div>;
+    return <div className="flex h-full items-center justify-center text-sm text-text-secondary">蟹哥还没配置好</div>;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -89,7 +89,7 @@ export function MobileChatPane({
 }: Props & { view: ChatView; onBack: () => void }) {
   const active = useActiveSession(resident);
   if (!resident) {
-    return <div className="flex h-full items-center justify-center text-sm text-text-secondary">秋来还没配置好</div>;
+    return <div className="flex h-full items-center justify-center text-sm text-text-secondary">蟹哥还没配置好</div>;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">

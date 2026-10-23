@@ -9,7 +9,7 @@ interface Props {
   /** Small amber note after the title, e.g. 已过 2 天. */
   note?: string;
   onStatus: (id: number, status: ItemStatus) => Promise<void>;
-  /** Opens (or starts) a chat with 秋来 about this item. */
+  /** Opens (or starts) a chat with 蟹哥 about this item. */
   onDiscuss?: (item: AssistantItem) => void;
 }
 

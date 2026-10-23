@@ -31,7 +31,7 @@ export function BoardHeader({ now, todayCount, plannedAt }: { now: Date; todayCo
         <PetMini />
       </div>
       <div className="min-w-0 flex-1">
-        <h1 className="text-xs font-semibold tracking-wide text-primary">秋来</h1>
+        <h1 className="text-xs font-semibold tracking-wide text-primary">蟹哥</h1>
         <p className="mt-0.5 text-lg font-semibold text-text-primary">{greeting(now.getHours())}</p>
         <p className="mt-0.5 text-xs text-text-secondary">
           {now.getMonth() + 1} 月 {now.getDate()} 日 周{WEEKDAYS[now.getDay()]} · 今天 {todayCount} 件事

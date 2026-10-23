@@ -116,7 +116,7 @@ export function AssistantPage() {
           />
         </div>
         <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
-          <div role="tablist" aria-label="秋来" className="grid grid-cols-3">
+          <div role="tablist" aria-label="蟹哥" className="grid grid-cols-3">
           {TABS.map((t) => (
             <button
               key={t.id}

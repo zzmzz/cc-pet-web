@@ -13,7 +13,7 @@ export type ItemStatus = "open" | "done" | "dismissed";
 
 const POLL_MS = 30_000;
 
-export const NOT_READY_MESSAGE = "秋来的数据还没准备好";
+export const NOT_READY_MESSAGE = "蟹哥的数据还没准备好";
 const LOAD_FAILED_MESSAGE = "事项没拉下来，稍后会再试";
 const SAVE_FAILED_MESSAGE = "没改成，再试一次";
 export const AUTH_FAILED_MESSAGE = "登录失效了，请退出后重新登录";

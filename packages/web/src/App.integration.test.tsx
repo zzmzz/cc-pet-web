@@ -186,7 +186,7 @@ describe("App integration", () => {
     });
     render(<App />);
 
-    await screen.findByRole("heading", { name: "秋来" });
+    await screen.findByRole("heading", { name: "蟹哥" });
     expect(screen.queryByPlaceholderText(INPUT_PLACEHOLDER)).toBeNull();
     expect(localStorage.getItem("cc-pet-ui")).toBe("assistant");
   });
@@ -196,7 +196,7 @@ describe("App integration", () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     render(<App />);
 
-    await screen.findByRole("heading", { name: "秋来" });
+    await screen.findByRole("heading", { name: "蟹哥" });
   });
 
   it("drops the remembered ui mode when verify reports none", async () => {
@@ -204,7 +204,7 @@ describe("App integration", () => {
     render(<App />);
 
     await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
-    expect(screen.queryByRole("heading", { name: "秋来" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "蟹哥" })).toBeNull();
     expect(localStorage.getItem("cc-pet-ui")).toBeNull();
   });
 

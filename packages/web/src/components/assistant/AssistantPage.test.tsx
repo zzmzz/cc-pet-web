@@ -106,7 +106,7 @@ describe("AssistantPage", () => {
     render(<AssistantPage />);
 
     expect(await screen.findByText("去图书馆还书")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "秋来" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "蟹哥" })).toBeTruthy();
     expect(screen.getByText(/今天 1 件事/)).toBeTruthy();
     expect(screen.getByText("带借书卡 · 王小明")).toBeTruthy();
     expect(screen.getByRole("heading", { name: /接下来一周/ })).toBeTruthy();
@@ -269,7 +269,7 @@ describe("AssistantPage", () => {
     render(<AssistantPage />);
 
     await screen.findByText("去图书馆还书");
-    const header = screen.getByRole("heading", { name: "秋来" }).closest("header")!;
+    const header = screen.getByRole("heading", { name: "蟹哥" }).closest("header")!;
     expect(within(header).getByTestId("pet-mini")).toBeTruthy();
     const full = screen.getByTestId("pet-full");
     // Sits in its own column, so it never covers the board.
@@ -289,10 +289,10 @@ describe("AssistantPage", () => {
     mockBoard(503, { error: "not ready" });
     render(<AssistantPage />);
 
-    expect(await screen.findByText("秋来的数据还没准备好")).toBeTruthy();
+    expect(await screen.findByText("蟹哥的数据还没准备好")).toBeTruthy();
   });
 
-  it("says 秋来 is not set up when there is no resident session", async () => {
+  it("says 蟹哥 is not set up when there is no resident session", async () => {
     useConnectionStore.setState({ connections: [{ id: "c1", name: "Bot", connected: true }], activeConnectionId: "c1" });
     useSessionStore.setState({
       sessions: { c1: [{ key: "s1", connectionId: "c1", createdAt: 1, lastActiveAt: 1 }] },
@@ -300,7 +300,7 @@ describe("AssistantPage", () => {
     });
     render(<AssistantPage />);
 
-    expect(await screen.findByText("秋来还没配置好")).toBeTruthy();
+    expect(await screen.findByText("蟹哥还没配置好")).toBeTruthy();
     expect(screen.queryByTestId("chat-window")).toBeNull();
   });
 
@@ -346,7 +346,7 @@ describe("AssistantPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "聊天" }));
     expect(screen.queryByText("年底体检")).toBeNull();
-    expect(screen.getByText("秋来还没配置好")).toBeTruthy();
+    expect(screen.getByText("蟹哥还没配置好")).toBeTruthy();
   });
 });
 
@@ -389,7 +389,7 @@ describe("AssistantPage chat sessions", () => {
     await user.click(await screen.findByRole("button", { name: /全部会话/ }));
     const rows = listRows();
     expect(rows).toHaveLength(5);
-    expect(rows[0]).toContain("秋来 · 总台");
+    expect(rows[0]).toContain("蟹哥 · 总台");
     expect(rows[1]).toContain("新话题");
     expect(rows[2]).toContain("周报怎么写");
     expect(within(screen.getByRole("list", { name: "会话" })).getByLabelText("2 条未读")).toBeTruthy();
