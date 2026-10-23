@@ -497,7 +497,7 @@ describe("AssistantPage chat sessions", () => {
       .map((b) => b.textContent ?? "");
   }
 
-  it("lists 总台, then 新话题, then the other sessions on the same connection, newest first", async () => {
+  it("lists the main session, then 新话题, then the other sessions on the same connection, newest first", async () => {
     seedSessions();
     const user = userEvent.setup();
     render(<AssistantPage />);
@@ -505,7 +505,7 @@ describe("AssistantPage chat sessions", () => {
     await user.click(await screen.findByRole("button", { name: /全部会话/ }));
     const rows = listRows();
     expect(rows).toHaveLength(5);
-    expect(rows[0]).toContain("蟹哥 · 总台");
+    expect(rows[0]).toContain("个人助理-主会话");
     expect(rows[1]).toContain("新话题");
     expect(rows[2]).toContain("周报怎么写");
     expect(within(screen.getByRole("list", { name: "会话" })).getByLabelText("2 条未读")).toBeTruthy();
@@ -517,7 +517,7 @@ describe("AssistantPage chat sessions", () => {
     expect(screen.queryByText("Bot")).toBeNull();
   });
 
-  it("opens a picked session and does not pull it back to 总台", async () => {
+  it("opens a picked session and does not pull it back to the main session", async () => {
     seedSessions();
     const user = userEvent.setup();
     render(<AssistantPage />);
