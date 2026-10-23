@@ -42,6 +42,8 @@ export interface TokenConfig {
   bridgeIds: string[];
   petImages?: TokenPetImages;
   residentSession?: ResidentSessionConfig;
+  /** 令牌专属界面：assistant = 秋来助手页面 */
+  ui?: "assistant";
 }
 
 export interface TokenPetImages {

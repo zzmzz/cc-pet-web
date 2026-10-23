@@ -90,6 +90,7 @@ function normalizeToken(t: unknown): TokenConfig | null {
     bridgeIds,
     petImages,
     residentSession: normalizeResidentSession(x.residentSession),
+    ...(x.ui === "assistant" ? { ui: "assistant" as const } : {}),
   };
 }
 

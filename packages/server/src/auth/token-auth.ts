@@ -5,6 +5,7 @@ export interface AuthIdentity {
   tokenName: string;
   bridgeIds: Set<string>;
   petImages?: TokenPetImages;
+  ui?: "assistant";
 }
 
 function secureEquals(a: string, b: string): boolean {
@@ -24,6 +25,7 @@ export function findTokenIdentity(tokens: TokenConfig[], rawToken: string | null
     tokenName: matched.name,
     bridgeIds: new Set(matched.bridgeIds),
     petImages: matched.petImages,
+    ...(matched.ui ? { ui: matched.ui } : {}),
   };
 }
 

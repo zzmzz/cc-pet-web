@@ -150,7 +150,12 @@ app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) =>
     reply.code(401);
     return { valid: false, error: "Invalid token" };
   }
-  return { valid: true, name: identity.tokenName, bridgeIds: Array.from(identity.bridgeIds) };
+  return {
+    valid: true,
+    name: identity.tokenName,
+    bridgeIds: Array.from(identity.bridgeIds),
+    ...(identity.ui ? { ui: identity.ui } : {}),
+  };
 });
 app.addHook("onRequest", authGuard(initialConfig.tokens));
 registerConfigRoutes(app, configStore);
