@@ -128,7 +128,8 @@ export function ProgressStrip({
 
   const unfinished = rows.filter((t) => t.status !== "done");
   const running = rows.filter((t) => t.status === "running").length;
-  const compact = rows.length > COMPACT_OVER && !showAll;
+  // compact mode only helps when something is still running; otherwise show everything
+  const compact = rows.length > COMPACT_OVER && !showAll && unfinished.length > 0;
   const shown = compact ? unfinished : rows;
   const hiddenDone = rows.length - shown.length;
   // deliverables come newest first, so find() picks the latest file of each session.
