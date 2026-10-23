@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { WS_EVENTS } from "@cc-pet/shared";
 import type { BridgeManager } from "../bridge/manager.js";
 import type { MessageStore } from "../storage/messages.js";
@@ -22,7 +22,22 @@ export interface AssistantInternalDeps {
   messageStore: Pick<MessageStore, "saveWithStatus">;
   bridgeManager: Pick<BridgeManager, "send">;
   broadcast: (event: string, payload: Record<string, unknown>) => void;
+  /** 给 ui: "assistant" 那个令牌的订阅发网页推送；没配就不推 */
+  pushToAssistant?: (payload: AssistantPush) => unknown;
 }
+
+export interface AssistantPush {
+  title: string;
+  body: string;
+  /** 同一个子会话的推送互相替换，不同子会话的各留一条 */
+  tag: string;
+  /** 点开推送时进入这个会话 */
+  data: { connectionId: string; sessionKey: string };
+}
+
+const NOTIFY_EVENTS: readonly string[] = ["progress", "done", "stuck"];
+/** 推送正文上限，太长手机上也看不全 */
+const MAX_PUSH_BODY = 200;
 
 function tokenMatches(expected: string, got: unknown): boolean {
   if (typeof got !== "string") return false;
@@ -37,25 +52,49 @@ function tokenMatches(expected: string, got: unknown): boolean {
  * 后台用它往常驻会话或事项子会话里发一条消息，效果和用户在网页上发的一样。
  * 只有一点不同：不记成「用户刚发过话」，助手随后的回复仍算主动消息，照常走 Web Push。
  */
+function validKey(sessionKey: unknown, residentKey: string): sessionKey is string {
+  return (
+    typeof sessionKey === "string" &&
+    sessionKey.length <= MAX_KEY &&
+    (sessionKey === residentKey || CHILD_KEY.test(sessionKey))
+  );
+}
+
+function clip(text: string, max: number): string {
+  return [...text].slice(0, max).join("");
+}
+
 export function registerAssistantInternalRoutes(app: FastifyInstance, deps: AssistantInternalDeps): void {
+  /** 两个接口共用的令牌和常驻会话检查；返回 undefined 表示已回复错误 */
+  function authorize(
+    req: { headers: Record<string, unknown> },
+    reply: FastifyReply,
+  ): { connectionId: string; key: string } | undefined {
+    const expected = deps.token;
+    if (!expected) {
+      void reply.code(404).send({ error: "Not Found" });
+      return undefined;
+    }
+    if (!tokenMatches(expected, req.headers["x-assistant-token"])) {
+      void reply.code(401).send({ error: "Unauthorized" });
+      return undefined;
+    }
+    const resident = deps.getResident();
+    if (!resident) {
+      void reply.code(503).send({ error: "没有配置助手的常驻会话" });
+      return undefined;
+    }
+    return resident;
+  }
+
   app.post<{ Body: { sessionKey?: unknown; content?: unknown; label?: unknown } }>(
     "/internal/assistant/send",
     async (req, reply) => {
-      const expected = deps.token;
-      if (!expected) return reply.code(404).send({ error: "Not Found" });
-      if (!tokenMatches(expected, req.headers["x-assistant-token"])) {
-        return reply.code(401).send({ error: "Unauthorized" });
-      }
-
-      const resident = deps.getResident();
-      if (!resident) return reply.code(503).send({ error: "没有配置助手的常驻会话" });
+      const resident = authorize(req, reply);
+      if (!resident) return reply;
 
       const { sessionKey, content, label } = req.body ?? {};
-      if (
-        typeof sessionKey !== "string" ||
-        sessionKey.length > MAX_KEY ||
-        (sessionKey !== resident.key && !CHILD_KEY.test(sessionKey))
-      ) {
+      if (!validKey(sessionKey, resident.key)) {
         return reply.code(400).send({ error: "Invalid sessionKey" });
       }
       if (typeof content !== "string" || content.trim().length === 0 || [...content].length > MAX_CONTENT) {
@@ -64,7 +103,7 @@ export function registerAssistantInternalRoutes(app: FastifyInstance, deps: Assi
       const connectionId = resident.connectionId;
 
       const now = Date.now();
-      const trimmed = typeof label === "string" ? [...label.trim()].slice(0, MAX_LABEL).join("") : "";
+      const trimmed = typeof label === "string" ? clip(label.trim(), MAX_LABEL) : "";
       // 已有会话（含它的标题）原样保留
       deps.sessionStore.createIfMissing({
         key: sessionKey,
@@ -95,6 +134,54 @@ export function registerAssistantInternalRoutes(app: FastifyInstance, deps: Assi
       deps.broadcast(WS_EVENTS.ASSISTANT_SESSION_UPDATED, { connectionId, sessionKey });
       req.log.info({ connectionId, sessionKey, contentLength: content.length }, "Assistant backend sent message");
       return { ok: true, sessionKey };
+    },
+  );
+  /**
+   * 后台报子会话进度用：progress、done、stuck。页面收到广播就刷新进度栏；
+   * done 和 stuck 另外给助手令牌发一条网页推送，点开进那个子会话。推送失败只记日志。
+   */
+  app.post<{ Body: { sessionKey?: unknown; event?: unknown; title?: unknown; text?: unknown } }>(
+    "/internal/assistant/notify",
+    async (req, reply) => {
+      const resident = authorize(req, reply);
+      if (!resident) return reply;
+
+      const { sessionKey, event, title, text } = req.body ?? {};
+      if (!validKey(sessionKey, resident.key)) {
+        return reply.code(400).send({ error: "Invalid sessionKey" });
+      }
+      if (typeof event !== "string" || !NOTIFY_EVENTS.includes(event)) {
+        return reply.code(400).send({ error: "Invalid event" });
+      }
+      if (title !== undefined && typeof title !== "string") {
+        return reply.code(400).send({ error: "Invalid title" });
+      }
+      if (text !== undefined && (typeof text !== "string" || [...text].length > MAX_CONTENT)) {
+        return reply.code(400).send({ error: "Invalid text" });
+      }
+      const connectionId = resident.connectionId;
+      deps.broadcast(WS_EVENTS.ASSISTANT_SESSION_UPDATED, { connectionId, sessionKey });
+
+      if ((event === "done" || event === "stuck") && deps.pushToAssistant) {
+        const name = clip(title?.trim() || sessionKey, MAX_LABEL);
+        const detail = text?.trim() ?? "";
+        const body =
+          event === "stuck" ? `『${name}』卡住了，去看看` : detail ? `『${name}』做好了：${detail}` : `『${name}』做好了`;
+        try {
+          void Promise.resolve(
+            deps.pushToAssistant({
+              title: "蟹哥",
+              body: clip(body, MAX_PUSH_BODY),
+              tag: `assistant-${sessionKey}`,
+              data: { connectionId, sessionKey },
+            }),
+          ).catch((err: unknown) => req.log.warn({ err, sessionKey }, "Assistant push failed"));
+        } catch (err) {
+          req.log.warn({ err, sessionKey }, "Assistant push failed");
+        }
+      }
+      req.log.info({ connectionId, sessionKey, event }, "Assistant backend notified");
+      return { ok: true };
     },
   );
 }

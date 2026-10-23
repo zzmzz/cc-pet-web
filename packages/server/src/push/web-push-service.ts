@@ -5,6 +5,8 @@ import type { PushSubscriptionStore } from "../storage/push-subscriptions.js";
 export interface PushPayload {
   title: string;
   body: string;
+  /** 通知的 tag；同 tag 的新通知替换旧的，不给就由 service worker 用默认值 */
+  tag?: string;
   data?: Record<string, unknown>;
 }
 

@@ -186,6 +186,10 @@ registerAssistantInternalRoutes(app, {
   bridgeManager,
   // 这里故意不调 proactiveDetector.markUserSend：后台发的不算用户发话，助手的回复照常推送
   broadcast: (event, payload) => assistantHub?.broadcast(event, payload),
+  pushToAssistant: (payload) => {
+    const token = initialConfig.tokens.find((t) => t.ui === "assistant");
+    return token ? webPush.sendToToken(token.name, payload) : undefined;
+  },
 });
 registerHistoryRoutes(app, messageStore);
 registerFileRoutes(app, DATA_DIR);
