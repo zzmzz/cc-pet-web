@@ -12,6 +12,7 @@ import { useAssistantBoard } from "./useAssistantBoard.js";
 import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
 import { ThreadsContext } from "./threads.js";
+import { ProgressStrip } from "./ProgressStrip.js";
 import {
   createAssistantUpdateBatcher,
   onAssistantSessionUpdated,
@@ -152,6 +153,16 @@ export function AssistantPage() {
       {chatNotice}
     </p>
   );
+  const strip = resident && (
+    <ProgressStrip
+      residentKey={resident.key}
+      threads={threads}
+      deliverables={deliverables}
+      now={now}
+      onOpen={openSession}
+      onDeliverableStatus={setDeliverableStatus}
+    />
+  );
   const loading = !groups && !error && <p className="text-xs text-text-secondary">正在加载…</p>;
   const schedule = groups && <ScheduleSections today={today} groups={groups} onStatus={setStatus} onDiscuss={onDiscuss} />;
   const todayView =
@@ -199,6 +210,7 @@ export function AssistantPage() {
               onBack={() => setChatView("list")}
               onOpen={openSession}
               onNew={() => void newTopic()}
+              aboveMain={strip}
             />
           </div>
           <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
@@ -234,7 +246,7 @@ export function AssistantPage() {
           aria-label="聊天"
           className={`flex min-h-0 flex-col bg-surface-secondary ${boardWide ? "w-[400px] shrink-0" : "min-w-0 flex-1"}`}
         >
-          <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
+          <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} aboveMain={strip} />
         </section>
         <section
           aria-label="事项"

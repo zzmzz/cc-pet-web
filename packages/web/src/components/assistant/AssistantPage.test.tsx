@@ -970,3 +970,156 @@ describe("AssistantPage deliverables and threads", () => {
     expect(listCalls).toHaveLength(1);
   });
 });
+
+describe("AssistantPage progress strip", () => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  /** Local time `minutes` ago, in the backend's zone-less format. */
+  function ago(minutes: number): string {
+    const d = new Date(Date.now() - minutes * 60_000);
+    return `${localDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  function thread(over: Record<string, unknown> & { sessionKey: string; title: string }) {
+    return {
+      itemId: null, status: "running", progress: "", parent: "home",
+      createdAt: ago(12), updatedAt: ago(1), ...over,
+    };
+  }
+  const threads = [
+    thread({ sessionKey: "task-1", title: "示例报价单", progress: "资料找齐了" }),
+    thread({ sessionKey: "task-2", title: "示例会议纪要", status: "done", createdAt: ago(90), updatedAt: ago(30) }),
+    thread({ sessionKey: "task-3", title: "示例通知稿", status: "stuck", createdAt: ago(150) }),
+    thread({ sessionKey: "task-4", title: "别人派的活", parent: "item-2" }),
+    thread({ sessionKey: "task-5", title: "后台自己派的", parent: null }),
+    thread({ sessionKey: "task-6", title: "前天做完的", status: "done", updatedAt: ago(60 * 30) }),
+  ];
+  const deliverables = [
+    { id: 7, itemId: null, sessionKey: "task-2", title: "示例会议纪要", path: "/out/纪要.md", summary: "", status: "new", createdAt: ago(30) },
+  ];
+  let body: unknown;
+  let fileResponse: () => unknown;
+
+  function seed() {
+    useConnectionStore.setState({ connections: [{ id: "c1", name: "Bot", connected: true }], activeConnectionId: "c1" });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "home", connectionId: "c1", createdAt: 1, lastActiveAt: 50, isResident: true },
+          { key: "task-1", connectionId: "c1", createdAt: 1, lastActiveAt: 40, label: "示例报价单" },
+        ],
+      },
+      activeSessionKey: { c1: "home" },
+    });
+  }
+
+  beforeEach(() => {
+    body = { ...board, deliverables, threads };
+    fileResponse = () => ({ ok: true, status: 200, text: async () => "# 示例纪要" });
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
+      if (path === "/api/assistant/board") return respond(200, body);
+      if (path.endsWith("/file")) return fileResponse();
+      return respond(200, {});
+    });
+    seed();
+  });
+
+  const strip = () => screen.findByRole("region", { name: "派出去的活" });
+  const rowTexts = (el: HTMLElement) => within(el).getAllByRole("listitem").map((li) => li.textContent ?? "");
+
+  it("lists the main session's sub-sessions above its chat", async () => {
+    render(<AssistantPage />);
+    const el = await strip();
+    const rows = rowTexts(el);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toContain("卡住了");
+    expect(rows[0]).toContain("示例通知稿");
+    expect(rows[0]).toContain("2 小时 30 分钟");
+    expect(rows[1]).toContain("在做");
+    expect(rows[1]).toContain("示例报价单");
+    expect(rows[1]).toContain("资料找齐了");
+    expect(rows[1]).toContain("12 分钟");
+    expect(rows[2]).toContain("做好了");
+    expect(rows[2]).toContain("用了 1 小时");
+    expect(rows.join()).not.toContain("别人派的活");
+    expect(rows.join()).not.toContain("后台自己派的");
+    expect(rows.join()).not.toContain("前天做完的");
+    // Above the chat, inside the chat column.
+    const chat = screen.getByTestId("chat-window");
+    expect(el.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("region", { name: "聊天" }).contains(el)).toBe(true);
+  });
+
+  it("switches to a sub-session on click, and the strip goes away there", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    await user.click(within(await strip()).getByRole("button", { name: /示例报价单/ }));
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("task-1");
+    expect(screen.queryByRole("region", { name: "派出去的活" })).toBeNull();
+  });
+
+  it("opens the finished file from its row", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    const el = await strip();
+    const done = within(el).getAllByRole("listitem")[2];
+    expect(within(el).getAllByRole("button", { name: "打开成品" })).toHaveLength(1);
+    await user.click(within(done).getByRole("button", { name: "打开成品" }));
+    expect((await screen.findByRole("dialog", { name: "示例会议纪要" })).textContent).toContain("# 示例纪要");
+    expect(platformMock.fetchApiRaw).toHaveBeenCalledWith("/api/assistant/deliverables/7/file");
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("home");
+  });
+
+  it("is not shown when there is nothing to list", async () => {
+    body = { ...board, threads: [threads[3]] };
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "派出去的活" })).toBeNull();
+  });
+
+  it("folds, and remembers that across a reload", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<AssistantPage />);
+    const toggle = within(await strip()).getByRole("button", { name: /派出去的活/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toContain("1 个在做，1 个卡住了，1 个做好了");
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(await strip()).queryAllByRole("listitem")).toHaveLength(0);
+    unmount();
+
+    render(<AssistantPage />);
+    const again = within(await strip()).getByRole("button", { name: /派出去的活/ });
+    expect(again.getAttribute("aria-expanded")).toBe("false");
+    await user.click(again);
+    expect(within(await strip()).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("with more than 3 rows shows the unfinished ones first and folds the finished", async () => {
+    body = {
+      ...board,
+      threads: [
+        ...threads,
+        thread({ sessionKey: "task-7", title: "示例名单", status: "done", updatedAt: ago(5) }),
+        thread({ sessionKey: "task-8", title: "示例日程表" }),
+      ],
+    };
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    const el = await strip();
+    expect(rowTexts(el).map((t) => t.includes("做好了"))).toEqual([false, false, false]);
+    await user.click(within(el).getByRole("button", { name: "还有 2 个已完成" }));
+    expect(rowTexts(el)).toHaveLength(5);
+    expect(within(el).queryByRole("button", { name: /还有/ })).toBeNull();
+  });
+
+  it("sits above the main chat on a phone too", async () => {
+    setWidth(390);
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    await user.click(await screen.findByRole("tab", { name: "聊天" }));
+    await user.click(await screen.findByRole("button", { name: /个人助理-主会话/ }));
+    const el = await strip();
+    expect(rowTexts(el)).toHaveLength(3);
+    const chat = screen.getByTestId("chat-window");
+    expect(el.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

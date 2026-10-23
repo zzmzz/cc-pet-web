@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Session } from "@cc-pet/shared";
 import { useSessionStore } from "../../lib/store/session.js";
 import { ChatWindow } from "../ChatWindow.js";
@@ -31,10 +31,12 @@ interface Props {
   resident: Session | null;
   onOpen: (key: string) => void;
   onNew: () => void;
+  /** Shown above the chat while the main session is open (the progress strip). */
+  aboveMain?: ReactNode;
 }
 
 /** 电脑上：聊天栏顶上一条会话标题，点开是会话列表。 */
-export function DesktopChatPane({ resident, onOpen, onNew }: Props) {
+export function DesktopChatPane({ resident, onOpen, onNew, aboveMain }: Props) {
   const [listOpen, setListOpen] = useState(false);
   const active = useActiveSession(resident);
   // Switching from elsewhere (an item's 讨论) should show that chat, not the list.
@@ -57,6 +59,7 @@ export function DesktopChatPane({ resident, onOpen, onNew }: Props) {
           <span className="ml-auto shrink-0 text-xs text-text-secondary">{listOpen ? "收起" : "全部会话"}</span>
         </button>
       </div>
+      {active?.isResident && aboveMain}
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <ChatWindow />
         {listOpen && (
@@ -86,6 +89,7 @@ export function MobileChatPane({
   onNew,
   view,
   onBack,
+  aboveMain,
 }: Props & { view: ChatView; onBack: () => void }) {
   const active = useActiveSession(resident);
   if (!resident) {
@@ -114,6 +118,7 @@ export function MobileChatPane({
           </div>
         </div>
       )}
+      {view === "chat" && active?.isResident && aboveMain}
       {/* Kept mounted behind the list so a half-typed message survives going back. */}
       <div className={view === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}>
         <ChatWindow />

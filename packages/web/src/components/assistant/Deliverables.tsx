@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { getPlatform } from "../../lib/platform.js";
 import {
   deliverableStatusLabel,
@@ -12,7 +12,7 @@ import type { DeliverableAction } from "./useAssistantBoard.js";
 
 type OnDeliverableStatus = (id: number, status: DeliverableAction) => Promise<void>;
 
-const OPEN_FAILED_MESSAGE = "没打开，稍后再试";
+export const OPEN_FAILED_MESSAGE = "没打开，稍后再试";
 const COPIED_MS = 1500;
 
 const STATUS_TONE: Record<string, string> = {
@@ -100,16 +100,48 @@ function TextViewer({ title, text, onClose }: { title: string; text: string; onC
   );
 }
 
+/**
+ * Opening a deliverable: md/txt show in a viewer on the page, anything else downloads.
+ * The first open marks a new one as seen. `open` resolves false when the file did not come.
+ */
+export function useOpenDeliverable(onStatus: OnDeliverableStatus): {
+  open: (d: AssistantDeliverable) => Promise<boolean>;
+  viewer: ReactNode;
+} {
+  const [viewing, setViewing] = useState<{ title: string; text: string } | null>(null);
+  const open = useCallback(
+    async (d: AssistantDeliverable) => {
+      try {
+        const res = await getPlatform().fetchApiRaw(`/api/assistant/deliverables/${d.id}/file`);
+        if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
+        if (isTextDeliverable(d.path)) {
+          setViewing({ title: d.title, text: await res.text() });
+        } else {
+          download(await res.blob(), fileName(d.path));
+        }
+      } catch {
+        return false;
+      }
+      if (d.status === "new") void onStatus(d.id, "seen");
+      return true;
+    },
+    [onStatus],
+  );
+  const close = useCallback(() => setViewing(null), []);
+  const viewer = viewing && <TextViewer title={viewing.title} text={viewing.text} onClose={close} />;
+  return { open, viewer };
+}
+
 function DeliverableRow({
   deliverable: d,
   today,
   onStatus,
-  onView,
+  onOpen,
 }: {
   deliverable: AssistantDeliverable;
   today: string;
   onStatus: OnDeliverableStatus;
-  onView: (title: string, text: string) => void;
+  onOpen: (d: AssistantDeliverable) => Promise<boolean>;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -123,19 +155,7 @@ function DeliverableRow({
 
   const open = async () => {
     setFailed(false);
-    try {
-      const res = await getPlatform().fetchApiRaw(`/api/assistant/deliverables/${d.id}/file`);
-      if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
-      if (isTextDeliverable(d.path)) {
-        onView(d.title, await res.text());
-      } else {
-        download(await res.blob(), fileName(d.path));
-      }
-    } catch {
-      if (mounted.current) setFailed(true);
-      return;
-    }
-    if (d.status === "new") void onStatus(d.id, "seen");
+    if (!(await onOpen(d)) && mounted.current) setFailed(true);
   };
 
   const change = async (status: DeliverableAction) => {
@@ -201,7 +221,7 @@ export function Deliverables({
   today: string;
   onStatus: OnDeliverableStatus;
 }) {
-  const [viewing, setViewing] = useState<{ title: string; text: string } | null>(null);
+  const { open, viewer } = useOpenDeliverable(onStatus);
   if (deliverables.length === 0) return null;
   return (
     <Section title="蟹哥做好的" count={deliverables.length}>
@@ -212,11 +232,11 @@ export function Deliverables({
             deliverable={d}
             today={today}
             onStatus={onStatus}
-            onView={(title, text) => setViewing({ title, text })}
+            onOpen={open}
           />
         ))}
       </ul>
-      {viewing && <TextViewer title={viewing.title} text={viewing.text} onClose={() => setViewing(null)} />}
+      {viewer}
     </Section>
   );
 }
