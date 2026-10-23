@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupBoard, weekdayLabel, type AssistantItem } from "./assistantBoard.js";
+import { discussionPrompt, groupBoard, weekdayLabel, type AssistantItem } from "./assistantBoard.js";
 
 let seq = 0;
 function mk(p: Partial<AssistantItem>): AssistantItem {
@@ -85,5 +85,30 @@ describe("weekdayLabel", () => {
   it("formats month-day and weekday", () => {
     expect(weekdayLabel("2026-10-28")).toBe("10-28 周三");
     expect(weekdayLabel("2026-11-01")).toBe("11-01 周日");
+  });
+});
+
+describe("discussionPrompt", () => {
+  const ENDING = "这件事是从我的微信聊天里整理出来的。先帮我理一下要做什么、要准备什么；能先起草的东西告诉我，我确认了你再动手。";
+
+  it("writes every field that has a value", () => {
+    const item = mk({
+      title: "交活动方案", date: "2026-10-28", time: "17:00", deadline: true,
+      detail: "要附预算表", people: ["王小明", "李华"],
+    });
+    expect(discussionPrompt(item)).toBe(
+      [
+        "我们来聊聊这件事：交活动方案",
+        "时间：10-28 周三 17:00 截止",
+        "细节：要附预算表",
+        "相关的人：王小明、李华",
+        ENDING,
+      ].join("\n"),
+    );
+  });
+
+  it("leaves out empty fields and says the date is not set", () => {
+    const item = mk({ title: "整理书架" });
+    expect(discussionPrompt(item)).toBe(["我们来聊聊这件事：整理书架", "时间：没定日期", ENDING].join("\n"));
   });
 });

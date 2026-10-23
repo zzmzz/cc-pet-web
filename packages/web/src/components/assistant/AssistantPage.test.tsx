@@ -7,14 +7,20 @@ import { localDate, nextWeekDates, type AssistantItem } from "../../lib/assistan
 import { useUIStore } from "../../lib/store/ui.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
+import { useMessageStore } from "../../lib/store/message.js";
 
 const platformMock = vi.hoisted(() => ({
   fetchApi: vi.fn(),
   fetchApiRaw: vi.fn(),
+  sendWsMessage: vi.fn(),
 }));
 
 vi.mock("../../lib/platform.js", () => ({
-  getPlatform: () => ({ fetchApi: platformMock.fetchApi, fetchApiRaw: platformMock.fetchApiRaw }),
+  getPlatform: () => ({
+    fetchApi: platformMock.fetchApi,
+    fetchApiRaw: platformMock.fetchApiRaw,
+    sendWsMessage: platformMock.sendWsMessage,
+  }),
 }));
 
 // The real chat is covered elsewhere; here we only care that it is shown.
@@ -89,6 +95,9 @@ beforeEach(() => {
   platformMock.fetchApi.mockReset();
   platformMock.fetchApi.mockResolvedValue({});
   platformMock.fetchApiRaw.mockReset();
+  platformMock.sendWsMessage.mockReset();
+  platformMock.sendWsMessage.mockReturnValue("client-1");
+  useMessageStore.setState({ messagesByChat: {} });
   mockBoard();
 });
 
@@ -453,5 +462,91 @@ describe("AssistantPage chat sessions", () => {
 
     await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(screen.getByRole("list", { name: "会话" })).toBeTruthy();
+  });
+});
+
+describe("AssistantPage item discussion", () => {
+  function seedResident() {
+    useConnectionStore.setState({ connections: [{ id: "c1", name: "Bot", connected: true }], activeConnectionId: "c1" });
+    useSessionStore.setState({
+      sessions: { c1: [{ key: "home", connectionId: "c1", createdAt: 1, lastActiveAt: 1, isResident: true }] },
+      activeSessionKey: { c1: "home" },
+    });
+  }
+
+  const sessionPosts = () => platformMock.fetchApi.mock.calls.filter(([p]) => p === "/api/sessions");
+
+  it("opens a new item session and sends the opening message once", async () => {
+    seedResident();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const row = (await screen.findByText("去图书馆还书")).closest("li")!;
+    await user.click(within(row).getByRole("button", { name: "讨论" }));
+
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("item-1"));
+    expect(sessionPosts()).toHaveLength(1);
+    expect(JSON.parse(String(sessionPosts()[0][1].body))).toEqual({
+      connectionId: "c1",
+      key: "item-1",
+      label: "事项：去图书馆还书",
+    });
+    expect(platformMock.sendWsMessage).toHaveBeenCalledTimes(1);
+    const [msg] = platformMock.sendWsMessage.mock.calls[0];
+    expect(msg).toMatchObject({ connectionId: "c1", sessionKey: "item-1" });
+    expect(msg.content).toContain("我们来聊聊这件事：去图书馆还书");
+    expect(msg.content).toContain("09:00");
+    expect(msg.content).toContain("细节：带借书卡");
+    expect(msg.content).toContain("相关的人：王小明");
+    // Shows in the chat like a typed message, and the item label survives.
+    expect(useMessageStore.getState().messagesByChat["c1::item-1"]?.[0]).toMatchObject({ role: "user", content: msg.content });
+    expect(useSessionStore.getState().sessions.c1.find((s) => s.key === "item-1")?.label).toBe("事项：去图书馆还书");
+
+    // Second time: just switch back to it.
+    useSessionStore.getState().setActiveSession("c1", "home");
+    await user.click(within(row).getByRole("button", { name: "讨论" }));
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("item-1");
+    expect(sessionPosts()).toHaveLength(1);
+    expect(platformMock.sendWsMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves empty fields out of the opening message", async () => {
+    seedResident();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const row = (await screen.findByText("整理书架")).closest("li")!;
+    await user.click(within(row).getByRole("button", { name: "讨论" }));
+
+    await waitFor(() => expect(platformMock.sendWsMessage).toHaveBeenCalledTimes(1));
+    const content = platformMock.sendWsMessage.mock.calls[0][0].content as string;
+    expect(content).toContain("时间：没定日期");
+    expect(content).not.toContain("细节：");
+    expect(content).not.toContain("相关的人：");
+  });
+
+  it("can start from a day in the week strip", async () => {
+    seedResident();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const day = await screen.findByTestId(`week-${tomorrow}`);
+    await user.click(within(day).getByRole("button", { name: "讨论：交周报" }));
+
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("item-2"));
+  });
+
+  it("jumps to the chat tab on a phone", async () => {
+    seedResident();
+    setWidth(390);
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    const row = (await screen.findByText("去图书馆还书")).closest("li")!;
+    await user.click(within(row).getByRole("button", { name: "讨论" }));
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "聊天" }).getAttribute("aria-selected")).toBe("true"));
+    expect(screen.getByRole("button", { name: /返回/ })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "会话" })).toBeNull();
   });
 });

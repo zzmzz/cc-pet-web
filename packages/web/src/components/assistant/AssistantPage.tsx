@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from "react";
-import { groupBoard, localDate } from "../../lib/assistantBoard.js";
+import { groupBoard, localDate, type AssistantItem } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
 import { createSession, markSessionRead } from "../../lib/sessionActions.js";
@@ -10,6 +10,7 @@ import { BoardHeader } from "./BoardHeader.js";
 import { DesktopChatPane, MobileChatPane, type ChatView } from "./ChatPane.js";
 import { ScheduleSections, TodaySections } from "./BoardSections.js";
 import { useAssistantBoard } from "./useAssistantBoard.js";
+import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
 
 type Tab = "today" | "schedule" | "chat";
@@ -39,6 +40,13 @@ export function AssistantPage() {
     [rc],
   );
 
+  const showChat = useCallback(() => {
+    setTab("chat");
+    setChatView("chat");
+  }, []);
+  const discuss = useItemDiscussion(resident, openSession, showChat);
+  const onDiscuss = resident ? (item: AssistantItem) => void discuss(item) : undefined;
+
   const newTopic = useCallback(async () => {
     if (!rc) return;
     useConnectionStore.getState().setActiveConnection(rc);
@@ -62,11 +70,17 @@ export function AssistantPage() {
     </p>
   );
   const loading = !groups && !error && <p className="text-xs text-text-secondary">正在加载…</p>;
-  const schedule = groups && <ScheduleSections today={today} groups={groups} onStatus={setStatus} />;
+  const schedule = groups && <ScheduleSections today={today} groups={groups} onStatus={setStatus} onDiscuss={onDiscuss} />;
   const todayView = (afterToday?: ReactNode) =>
     groups &&
     board && (
-      <TodaySections groups={groups} closed={board.closedRecent} onStatus={setStatus} afterToday={afterToday} />
+      <TodaySections
+        groups={groups}
+        closed={board.closedRecent}
+        onStatus={setStatus}
+        onDiscuss={onDiscuss}
+        afterToday={afterToday}
+      />
     );
 
   if (isMobile) {

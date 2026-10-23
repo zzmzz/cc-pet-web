@@ -7,6 +7,7 @@ import type { ItemStatus } from "./useAssistantBoard.js";
 import { WeekStrip } from "./WeekStrip.js";
 
 type OnStatus = (id: number, status: ItemStatus) => Promise<void>;
+type OnDiscuss = (item: AssistantItem) => void;
 
 function Empty({ text }: { text: string }) {
   return <p className="py-3 text-xs text-text-secondary">{text}</p>;
@@ -20,11 +21,13 @@ export function TodaySections({
   groups,
   closed,
   onStatus,
+  onDiscuss,
   afterToday,
 }: {
   groups: BoardGroups;
   closed: AssistantItem[];
   onStatus: OnStatus;
+  onDiscuss?: OnDiscuss;
   afterToday?: ReactNode;
 }) {
   const todayCount = groups.today.length + groups.overdue.length;
@@ -36,10 +39,10 @@ export function TodaySections({
         ) : (
           <ul>
             {groups.overdue.map(({ item, days }) => (
-              <ItemRow key={item.id} item={item} when={item.time} note={`已过 ${days} 天`} onStatus={onStatus} />
+              <ItemRow key={item.id} item={item} when={item.time} note={`已过 ${days} 天`} onStatus={onStatus} onDiscuss={onDiscuss} />
             ))}
             {groups.today.map((item) => (
-              <ItemRow key={item.id} item={item} when={item.time} onStatus={onStatus} />
+              <ItemRow key={item.id} item={item} when={item.time} onStatus={onStatus} onDiscuss={onDiscuss} />
             ))}
           </ul>
         )}
@@ -49,7 +52,7 @@ export function TodaySections({
         <Section title="等你回复" count={groups.waiting.length}>
           <ul>
             {groups.waiting.map(({ item, days }) => (
-              <ItemRow key={item.id} item={item} note={days > 0 ? `等了 ${days} 天` : undefined} onStatus={onStatus} />
+              <ItemRow key={item.id} item={item} note={days > 0 ? `等了 ${days} 天` : undefined} onStatus={onStatus} onDiscuss={onDiscuss} />
             ))}
           </ul>
         </Section>
@@ -58,7 +61,7 @@ export function TodaySections({
         <Section title="没定日期的待办" count={groups.undated.length}>
           <ul>
             {groups.undated.map((item) => (
-              <ItemRow key={item.id} item={item} onStatus={onStatus} />
+              <ItemRow key={item.id} item={item} onStatus={onStatus} onDiscuss={onDiscuss} />
             ))}
           </ul>
         </Section>
@@ -73,14 +76,16 @@ export function ScheduleSections({
   today,
   groups,
   onStatus,
+  onDiscuss,
 }: {
   today: string;
   groups: BoardGroups;
   onStatus: OnStatus;
+  onDiscuss?: OnDiscuss;
 }) {
   return (
     <>
-      <WeekStrip today={today} week={groups.week} />
+      <WeekStrip today={today} week={groups.week} onDiscuss={onDiscuss} />
       {groups.farther.length > 0 && (
         <Section title="更远" count={groups.farther.length}>
           <ul>
@@ -90,6 +95,7 @@ export function ScheduleSections({
                 item={item}
                 when={item.date ? weekdayLabel(item.date) : null}
                 onStatus={onStatus}
+                onDiscuss={onDiscuss}
               />
             ))}
           </ul>

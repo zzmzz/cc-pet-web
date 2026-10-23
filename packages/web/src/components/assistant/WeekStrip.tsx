@@ -1,7 +1,15 @@
-import { nextWeekDates, weekdayLabel, type BoardGroups } from "../../lib/assistantBoard.js";
+import { nextWeekDates, weekdayLabel, type AssistantItem, type BoardGroups } from "../../lib/assistantBoard.js";
 import { Section } from "./Section.js";
 
-export function WeekStrip({ today, week }: { today: string; week: BoardGroups["week"] }) {
+export function WeekStrip({
+  today,
+  week,
+  onDiscuss,
+}: {
+  today: string;
+  week: BoardGroups["week"];
+  onDiscuss?: (item: AssistantItem) => void;
+}) {
   const byDate = new Map(week.map((d) => [d.date, d.items]));
   return (
     <Section title="接下来一周">
@@ -18,9 +26,19 @@ export function WeekStrip({ today, week }: { today: string; week: BoardGroups["w
               <div className="mb-1 text-xs text-text-secondary">{weekdayLabel(date)}</div>
               <ul className="space-y-1">
                 {items.map((item) => (
-                  <li key={item.id} className="rounded bg-surface-secondary px-1.5 py-1 text-xs text-text-primary">
-                    {item.time && <span className="mr-1 font-medium text-primary">{item.time}</span>}
-                    {item.title}
+                  <li key={item.id}>
+                    {/* Tapping a day's item opens a chat about it. */}
+                    <button
+                      type="button"
+                      aria-label={`讨论：${item.title}`}
+                      title="和秋来聊聊这件事"
+                      disabled={!onDiscuss}
+                      onClick={() => onDiscuss?.(item)}
+                      className="w-full rounded bg-surface-secondary px-1.5 py-1 text-left text-xs text-text-primary enabled:hover:bg-primary/10"
+                    >
+                      {item.time && <span className="mr-1 font-medium text-primary">{item.time}</span>}
+                      {item.title}
+                    </button>
                   </li>
                 ))}
               </ul>

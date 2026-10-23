@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Session } from "@cc-pet/shared";
 import { useSessionStore } from "../../lib/store/session.js";
 import { ChatWindow } from "../ChatWindow.js";
@@ -37,6 +37,9 @@ interface Props {
 export function DesktopChatPane({ resident, onOpen, onNew }: Props) {
   const [listOpen, setListOpen] = useState(false);
   const active = useActiveSession(resident);
+  // Switching from elsewhere (an item's 讨论) should show that chat, not the list.
+  const activeKey = active?.key;
+  useEffect(() => setListOpen(false), [activeKey]);
   if (!resident) {
     return <div className="flex h-full items-center justify-center text-sm text-text-secondary">秋来还没配置好</div>;
   }

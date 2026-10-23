@@ -99,3 +99,18 @@ export function localDate(d: Date = new Date()): string {
 export function nextWeekDates(today: string): string[] {
   return Array.from({ length: 7 }, (_, i) => addDays(today, i + 1));
 }
+
+/** The first message Yu sends when she opens a discussion about an item. Empty fields are left out. */
+export function discussionPrompt(item: AssistantItem): string {
+  const when = item.date
+    ? [weekdayLabel(item.date), item.time, item.deadline ? "截止" : null].filter(Boolean).join(" ")
+    : "没定日期";
+  const lines = [`我们来聊聊这件事：${item.title}`, `时间：${when}`];
+  if (item.detail.trim()) lines.push(`细节：${item.detail.trim()}`);
+  const people = item.people.filter((p) => p.trim().length > 0);
+  if (people.length > 0) lines.push(`相关的人：${people.join("、")}`);
+  lines.push(
+    "这件事是从我的微信聊天里整理出来的。先帮我理一下要做什么、要准备什么；能先起草的东西告诉我，我确认了你再动手。",
+  );
+  return lines.join("\n");
+}

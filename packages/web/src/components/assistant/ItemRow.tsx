@@ -9,9 +9,11 @@ interface Props {
   /** Small amber note after the title, e.g. 已过 2 天. */
   note?: string;
   onStatus: (id: number, status: ItemStatus) => Promise<void>;
+  /** Opens (or starts) a chat with 秋来 about this item. */
+  onDiscuss?: (item: AssistantItem) => void;
 }
 
-export function ItemRow({ item, when, note, onStatus }: Props) {
+export function ItemRow({ item, when, note, onStatus, onDiscuss }: Props) {
   // Ticked while the change is in flight; on success the row disappears, on failure it unticks.
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
@@ -55,6 +57,15 @@ export function ItemRow({ item, when, note, onStatus }: Props) {
         </div>
         {meta && <div className="mt-0.5 text-xs text-text-secondary">{meta}</div>}
       </div>
+      {onDiscuss && (
+        <button
+          type="button"
+          onClick={() => onDiscuss(item)}
+          className="shrink-0 rounded-md border border-primary/40 px-2 py-0.5 text-xs text-primary hover:bg-primary/10"
+        >
+          讨论
+        </button>
+      )}
       <button
         type="button"
         disabled={busy}
