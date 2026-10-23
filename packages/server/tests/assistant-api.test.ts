@@ -248,6 +248,7 @@ describe("assistant API: deliverables and threads", () => {
   });
 
   it("returns deliverables from the last 3 days, newest first, and all threads", async () => {
+    const old = "2026-10-01T08:00:00";
     const body = (await board()).json();
     expect(body.deliverables.map((d: { title: string }) => d.title)).toEqual([
       "数据表", "越界的成品", "不见了的成品", "绕出去的成品", "周报草稿",
@@ -258,10 +259,28 @@ describe("assistant API: deliverables and threads", () => {
       summary: "按上周记录整理", status: "new", createdAt: hoursAgo(5),
     });
     expect(body.threads).toEqual(expect.arrayContaining([
-      { sessionKey: "item-1", itemId: 1, title: "示例事项", status: "running", progress: "查完一半", updatedAt: hoursAgo(1) },
-      { sessionKey: "task-2", itemId: null, title: "临时活", status: "stuck", progress: "", updatedAt: hoursAgo(2) },
+      {
+        sessionKey: "item-1", itemId: 1, title: "示例事项", status: "running", progress: "查完一半",
+        parent: null, createdAt: old, updatedAt: hoursAgo(1),
+      },
+      {
+        sessionKey: "task-2", itemId: null, title: "临时活", status: "stuck", progress: "",
+        parent: null, createdAt: old, updatedAt: hoursAgo(2),
+      },
     ]));
     expect(body.threads).toHaveLength(2);
+  });
+
+  it("returns each thread's parent once the database is at version 5", async () => {
+    const db = new Database(dbPath);
+    db.exec("ALTER TABLE threads ADD COLUMN parent TEXT; PRAGMA user_version = 5;");
+    db.prepare("UPDATE threads SET parent = 'demo:resident:resident' WHERE session_key = 'task-2'").run();
+    db.close();
+    const threads = (await board()).json().threads as { sessionKey: string; parent: string | null }[];
+    expect(Object.fromEntries(threads.map((t) => [t.sessionKey, t.parent]))).toEqual({
+      "item-1": null,
+      "task-2": "demo:resident:resident",
+    });
   });
 
   it("returns empty arrays for an older database without the new tables", async () => {

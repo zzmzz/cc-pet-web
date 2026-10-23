@@ -147,7 +147,10 @@ interface ThreadRow {
   title: string;
   status: string;
   progress: string;
+  created_at: string;
   updated_at: string;
+  /** 第 5 版库才有：派出这个子会话的会话 key */
+  parent?: string | null;
 }
 
 const DELIVERABLE_COLUMNS = "id, item_id, session_key, title, path, summary, status, created_at";
@@ -172,6 +175,8 @@ function toThread(r: ThreadRow) {
     title: r.title,
     status: r.status,
     progress: r.progress,
+    parent: r.parent ?? null,
+    createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
@@ -179,6 +184,13 @@ function toThread(r: ThreadRow) {
 /** threads 和 deliverables 是后台第 4 版库才有的；旧库当没有 */
 function hasV4Tables(db: Database.Database): boolean {
   return (db.pragma("user_version", { simple: true }) as number) >= 4;
+}
+
+/** parent 列是第 5 版库才加的；按列是否存在判断，旧库不选它 */
+function threadColumns(db: Database.Database): string {
+  const base = "session_key, item_id, title, status, progress, created_at, updated_at";
+  const cols = db.pragma("table_info(threads)") as { name: string }[];
+  return cols.some((c) => c.name === "parent") ? `${base}, parent` : base;
 }
 
 function isInside(root: string, p: string): boolean {
@@ -248,7 +260,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
         ).map(toDeliverable);
         threads = (
           db
-            .prepare("SELECT session_key, item_id, title, status, progress, updated_at FROM threads ORDER BY updated_at DESC")
+            .prepare(`SELECT ${threadColumns(db)} FROM threads ORDER BY updated_at DESC`)
             .all() as ThreadRow[]
         ).map(toThread);
       }
