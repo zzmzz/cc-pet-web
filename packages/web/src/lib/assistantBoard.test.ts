@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { discussionPrompt, groupBoard, priorityRank, weekdayLabel, type AssistantItem } from "./assistantBoard.js";
+import {
+  deliverableStatusLabel, deliverableTime, discussionPrompt, fileName, groupBoard, isTextDeliverable,
+  priorityRank, threadForItem, weekdayLabel, type AssistantItem,
+} from "./assistantBoard.js";
 
 let seq = 0;
 function mk(p: Partial<AssistantItem>): AssistantItem {
@@ -147,5 +150,36 @@ describe("discussionPrompt", () => {
   it("leaves out empty fields and says the date is not set", () => {
     const item = mk({ title: "整理书架" });
     expect(discussionPrompt(item)).toBe(["我们来聊聊这件事：整理书架", "时间：没定日期", ENDING].join("\n"));
+  });
+});
+
+describe("deliverable and thread helpers", () => {
+  it("labels deliverable statuses, treating unknown ones as new", () => {
+    expect(["new", "seen", "used", "dismissed", "odd"].map(deliverableStatusLabel)).toEqual([
+      "待你看", "已看", "已用", "不用了", "待你看",
+    ]);
+  });
+
+  it("opens md and txt on the page", () => {
+    expect(isTextDeliverable("/x/a.md")).toBe(true);
+    expect(isTextDeliverable("/x/a.TXT")).toBe(true);
+    expect(isTextDeliverable("/x/a.xlsx")).toBe(false);
+    expect(isTextDeliverable("/x/md")).toBe(false);
+    expect(fileName("/x/y/数据.xlsx")).toBe("数据.xlsx");
+  });
+
+  it("formats the time with 今天 for today", () => {
+    expect(deliverableTime("2026-10-28T09:05:00", TODAY)).toBe("今天 09:05");
+    expect(deliverableTime("2026-10-21T18:30:00", TODAY)).toBe("10-21 18:30");
+  });
+
+  it("finds an item's thread, preferring its own session", () => {
+    const t = (sessionKey: string, itemId: number | null) => ({
+      sessionKey, itemId, title: "", status: "running", progress: "", updatedAt: "",
+    });
+    const threads = [t("task-1", 3), t("item-3", 3), t("task-2", 5)];
+    expect(threadForItem(threads, 3)?.sessionKey).toBe("item-3");
+    expect(threadForItem(threads, 5)?.sessionKey).toBe("task-2");
+    expect(threadForItem(threads, 9)).toBeUndefined();
   });
 });

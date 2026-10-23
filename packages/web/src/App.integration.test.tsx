@@ -11,6 +11,7 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useUIStore } from "./lib/store/ui.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { useWorkspaceStore } from "./lib/store/workspace.js";
+import { onAssistantSessionUpdated } from "./lib/assistantEvents.js";
 
 class FakeAdapter implements PlatformAPI {
   private handler: ((type: string, payload: any) => void) | null = null;
@@ -816,6 +817,21 @@ describe("App integration", () => {
       expect((st.messagesByChat[keyB] ?? []).some((m) => m.content === "delivered to B only")).toBe(true);
       expect((st.messagesByChat[keyA] ?? []).some((m) => m.content === "delivered to B only")).toBe(false);
     });
+  });
+
+  it("passes assistant-session-updated on to the assistant page's listeners", async () => {
+    const seen: unknown[] = [];
+    const off = onAssistantSessionUpdated((u) => seen.push(u));
+    try {
+      render(<App />);
+      await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+      adapter.emit(WS_EVENTS.ASSISTANT_SESSION_UPDATED, { connectionId: "cc-connect", sessionKey: "item-7" });
+      await waitFor(() => expect(seen).toEqual([{ connectionId: "cc-connect", sessionKey: "item-7" }]));
+      // Nothing lands in the chat itself; the page re-reads the session instead.
+      expect(useMessageStore.getState().messagesByChat[makeChatKey("cc-connect", "item-7")]).toBeUndefined();
+    } finally {
+      off();
+    }
   });
 
   it("updates session task state to awaiting_confirmation on bridge buttons", async () => {

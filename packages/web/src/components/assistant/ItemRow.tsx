@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AssistantItem } from "../../lib/assistantBoard.js";
 import { PriorityBadge } from "./PriorityBadge.js";
+import { ThreadStatus, useItemThread } from "./threads.js";
 import type { ItemStatus } from "./useAssistantBoard.js";
 
 interface Props {
@@ -30,6 +31,7 @@ export function ItemRow({ item, when, note, onStatus, onDiscuss }: Props) {
     await onStatus(item.id, status);
     if (mounted.current) setBusy(false);
   };
+  const thread = useItemThread(item.id);
   const meta = [item.detail, item.people.join("、")].filter((s) => s.length > 0).join(" · ");
   return (
     <li className="flex items-start gap-3 border-b border-border py-3 last:border-b-0">
@@ -58,6 +60,7 @@ export function ItemRow({ item, when, note, onStatus, onDiscuss }: Props) {
           {note && <span className="ml-2 text-xs font-normal text-amber-600">{note}</span>}
         </div>
         {meta && <div className="mt-0.5 text-xs text-text-secondary">{meta}</div>}
+        <ThreadStatus thread={thread} className="mt-0.5" />
       </div>
       {onDiscuss && (
         <button

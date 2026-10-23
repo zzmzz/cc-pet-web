@@ -169,6 +169,27 @@ describe("MessageList", () => {
     expect(container.querySelectorAll("br").length).toBe(1);
   });
 
+  it("shows user messages that start with （自动） in a light grey bubble", () => {
+    const messages: ChatMessage[] = [
+      { id: "u-auto", role: "user", content: "（自动）示例事项明天到期，看一下进展", timestamp: 1 },
+      { id: "u-own", role: "user", content: "我自己发的", timestamp: 2 },
+      { id: "a-auto", role: "assistant", content: "（自动）助手这么开头也不变灰", timestamp: 3 },
+    ];
+    render(<MessageList messages={messages} />);
+    const bubble = (text: string) => screen.getByText(text).closest("[data-bubble]") as HTMLElement;
+
+    const auto = bubble("（自动）示例事项明天到期，看一下进展");
+    expect(auto.dataset.automated).toBe("true");
+    expect(auto.className).toContain("bg-gray-200");
+    expect(auto.className).not.toContain("bg-indigo-500");
+
+    const own = bubble("我自己发的");
+    expect(own.dataset.automated).toBeUndefined();
+    expect(own.className).toContain("bg-indigo-500");
+
+    expect(bubble("（自动）助手这么开头也不变灰").dataset.automated).toBeUndefined();
+  });
+
   it("keeps fenced code blocks free of injected trailing spaces", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", {

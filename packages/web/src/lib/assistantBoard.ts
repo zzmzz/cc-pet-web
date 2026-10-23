@@ -136,3 +136,51 @@ export function discussionPrompt(item: AssistantItem): string {
   );
   return lines.join("\n");
 }
+
+export type DeliverableStatus = "new" | "seen" | "used" | "dismissed";
+
+/** A file 蟹哥 finished, as listed on the board. */
+export interface AssistantDeliverable {
+  id: number; itemId: number | null; sessionKey: string | null; title: string;
+  path: string; summary: string; status: string; createdAt: string;
+}
+
+export type ThreadStatus = "running" | "done" | "stuck";
+
+/** A sub-session 蟹哥 is working in, keyed by the chat session it lives in. */
+export interface AssistantThread {
+  sessionKey: string; itemId: number | null; title: string;
+  status: string; progress: string; updatedAt: string;
+}
+
+const DELIVERABLE_LABELS: Record<DeliverableStatus, string> = {
+  new: "待你看",
+  seen: "已看",
+  used: "已用",
+  dismissed: "不用了",
+};
+
+export function deliverableStatusLabel(status: string): string {
+  return DELIVERABLE_LABELS[status as DeliverableStatus] ?? DELIVERABLE_LABELS.new;
+}
+
+/** md and txt open on the page; everything else downloads. */
+export function isTextDeliverable(path: string): boolean {
+  return /\.(md|txt)$/i.test(path);
+}
+
+export function fileName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** 今天 09:05 for today, otherwise 10-21 09:05. */
+export function deliverableTime(createdAt: string, today: string): string {
+  const date = createdAt.slice(0, 10);
+  const time = createdAt.slice(11, 16);
+  return date === today ? `今天 ${time}` : `${date.slice(5)} ${time}`;
+}
+
+/** The thread for an item: prefer its own item-<id> session, else the newest one pointing at it. */
+export function threadForItem(threads: AssistantThread[], itemId: number): AssistantThread | undefined {
+  return threads.find((t) => t.sessionKey === `item-${itemId}`) ?? threads.find((t) => t.itemId === itemId);
+}

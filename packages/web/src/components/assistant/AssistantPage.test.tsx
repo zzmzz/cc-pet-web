@@ -8,6 +8,7 @@ import { useUIStore } from "../../lib/store/ui.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
 import { useMessageStore } from "../../lib/store/message.js";
+import { emitAssistantSessionUpdated } from "../../lib/assistantEvents.js";
 
 const platformMock = vi.hoisted(() => ({
   fetchApi: vi.fn(),
@@ -748,5 +749,204 @@ describe("AssistantPage item discussion", () => {
     await waitFor(() => expect(screen.getByRole("tab", { name: "聊天" }).getAttribute("aria-selected")).toBe("true"));
     expect(screen.getByRole("button", { name: /返回/ })).toBeTruthy();
     expect(screen.queryByRole("list", { name: "会话" })).toBeNull();
+  });
+});
+
+describe("AssistantPage deliverables and threads", () => {
+  const deliverables = [
+    { id: 1, itemId: 4, sessionKey: "item-4", title: "示例周报草稿", path: "/hywork/产出/示例/周报.md", summary: "按上周记录整理的初稿", status: "new", createdAt: `${today}T09:05:00` },
+    { id: 2, itemId: null, sessionKey: null, title: "示例数据表", path: "/hywork/产出/示例/数据.xlsx", summary: "", status: "seen", createdAt: `${today}T08:00:00` },
+    { id: 3, itemId: null, sessionKey: null, title: "用过的清单", path: "/hywork/产出/示例/清单.txt", summary: "", status: "used", createdAt: "2026-01-02T08:00:00" },
+    { id: 4, itemId: null, sessionKey: null, title: "没用上的稿子", path: "/hywork/产出/示例/稿子.docx", summary: "", status: "dismissed", createdAt: "2026-01-01T08:00:00" },
+  ];
+  const threads = [
+    { sessionKey: "item-4", itemId: 4, title: "整理书架", status: "running", progress: "查完一半", updatedAt: `${today}T09:00:00` },
+    { sessionKey: "item-1", itemId: 1, title: "去图书馆还书", status: "done", progress: "", updatedAt: `${today}T09:00:00` },
+    { sessionKey: "s-new", itemId: null, title: "周报怎么写", status: "stuck", progress: "", updatedAt: `${today}T09:00:00` },
+  ];
+  const fullBoard = { ...board, deliverables, threads };
+
+  let fileResponse: () => unknown;
+  function mockAll(body: unknown = fullBoard) {
+    platformMock.fetchApiRaw.mockImplementation(async (path: string) => {
+      if (path === "/api/assistant/board") return respond(200, body);
+      if (path.endsWith("/file")) return fileResponse();
+      return respond(200, {});
+    });
+  }
+  const deliverablePosts = () =>
+    platformMock.fetchApiRaw.mock.calls
+      .filter(([p]) => String(p).startsWith("/api/assistant/deliverables/") && String(p).endsWith("/status"))
+      .map(([p, init]) => [p, JSON.parse(String(init?.body))]);
+  const boardLoads = () => platformMock.fetchApiRaw.mock.calls.filter(([p]) => p === "/api/assistant/board").length;
+
+  function seed() {
+    useConnectionStore.setState({ connections: [{ id: "c1", name: "Bot", connected: true }], activeConnectionId: "c1" });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "home", connectionId: "c1", createdAt: 1, lastActiveAt: 50, isResident: true },
+          { key: "item-4", connectionId: "c1", createdAt: 1, lastActiveAt: 200, label: "事项：整理书架" },
+          { key: "s-new", connectionId: "c1", createdAt: 1, lastActiveAt: 300, label: "周报怎么写" },
+          { key: "s-plain", connectionId: "c1", createdAt: 1, lastActiveAt: 100, label: "闲聊" },
+        ],
+      },
+      activeSessionKey: { c1: "home" },
+    });
+  }
+
+  beforeEach(() => {
+    fileResponse = () => respond(404, {});
+    mockAll();
+  });
+
+  it("lists what 蟹哥 made under 今天, with a status tag on each", async () => {
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent ?? "");
+    const at = (name: string) => headings.findIndex((h) => h.includes(name));
+    expect(at("蟹哥做好的")).toBe(at("今天") + 1);
+
+    const rows = within(section).getAllByRole("listitem");
+    expect(rows).toHaveLength(4);
+    expect(rows[0].textContent).toContain("示例周报草稿");
+    expect(rows[0].textContent).toContain("按上周记录整理的初稿");
+    expect(rows[0].textContent).toContain("09:05");
+    expect(within(rows[0]).getByText("待你看")).toBeTruthy();
+    expect(within(rows[1]).getByText("已看")).toBeTruthy();
+    expect(within(rows[2]).getByText("已用")).toBeTruthy();
+    expect(within(rows[3]).getByText("不用了", { selector: "[data-testid='deliverable-status']" })).toBeTruthy();
+    for (const row of rows) {
+      expect(within(row).getByRole("button", { name: "打开" })).toBeTruthy();
+      expect(within(row).getByRole("button", { name: "用了" })).toBeTruthy();
+      expect(within(row).getByRole("button", { name: "不用了" })).toBeTruthy();
+    }
+  });
+
+  it("leaves the section out when there is nothing", async () => {
+    mockAll({ ...board, deliverables: [], threads: [] });
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /蟹哥做好的/ })).toBeNull();
+  });
+
+  it("works with a board that has no deliverables field at all", async () => {
+    mockAll(board);
+    render(<AssistantPage />);
+    expect(await screen.findByText("去图书馆还书")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /蟹哥做好的/ })).toBeNull();
+  });
+
+  it("shows a text file on the page with a copy button, and marks it seen the first time", async () => {
+    fileResponse = () => ({ ok: true, status: 200, text: async () => "# 示例周报\n第一段" });
+    const writeText = vi.fn(async () => {});
+    // After setup: userEvent installs its own clipboard stub.
+    const user = userEvent.setup();
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    const row = within(section).getAllByRole("listitem")[0];
+
+    await user.click(within(row).getByRole("button", { name: "打开" }));
+    const dialog = await screen.findByRole("dialog", { name: "示例周报草稿" });
+    expect(dialog.textContent).toContain("# 示例周报");
+    expect(dialog.textContent).toContain("第一段");
+    expect(platformMock.fetchApiRaw).toHaveBeenCalledWith("/api/assistant/deliverables/1/file");
+    await waitFor(() => expect(deliverablePosts()).toEqual([["/api/assistant/deliverables/1/status", { status: "seen" }]]));
+
+    await user.click(within(dialog).getByRole("button", { name: "复制" }));
+    expect(writeText).toHaveBeenCalledWith("# 示例周报\n第一段");
+    expect(await within(dialog).findByRole("button", { name: "已复制" })).toBeTruthy();
+
+    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("downloads other files and does not re-mark one already seen", async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3])]);
+    fileResponse = () => ({ ok: true, status: 200, blob: async () => blob });
+    const createObjectURL = vi.fn(() => "blob:test-1");
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const clicks: HTMLAnchorElement[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push(this);
+    });
+    try {
+      const user = userEvent.setup();
+      render(<AssistantPage />);
+      const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+      await user.click(within(within(section).getAllByRole("listitem")[1]).getByRole("button", { name: "打开" }));
+      await waitFor(() => expect(clicks).toHaveLength(1));
+      expect(createObjectURL).toHaveBeenCalledWith(blob);
+      expect(clicks[0].download).toBe("数据.xlsx");
+      expect(clicks[0].href).toBe("blob:test-1");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(deliverablePosts()).toEqual([]);
+    } finally {
+      click.mockRestore();
+    }
+  });
+
+  it("says so when a file cannot be opened", async () => {
+    fileResponse = () => respond(404, {});
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    await user.click(within(within(section).getAllByRole("listitem")[1]).getByRole("button", { name: "打开" }));
+    expect(await within(section).findByText("没打开，稍后再试")).toBeTruthy();
+  });
+
+  it("marks a deliverable used or not needed, then reloads", async () => {
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    const loads = boardLoads();
+    await user.click(within(within(section).getAllByRole("listitem")[0]).getByRole("button", { name: "用了" }));
+    await user.click(within(within(section).getAllByRole("listitem")[1]).getByRole("button", { name: "不用了" }));
+    await waitFor(() =>
+      expect(deliverablePosts()).toEqual([
+        ["/api/assistant/deliverables/1/status", { status: "used" }],
+        ["/api/assistant/deliverables/2/status", { status: "dismissed" }],
+      ]),
+    );
+    await waitFor(() => expect(boardLoads()).toBeGreaterThanOrEqual(loads + 2));
+  });
+
+  it("shows each thread's status in the session list and on its item", async () => {
+    seed();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    // Item rows: 去图书馆还书 is done, 整理书架 (folded under 没定日期) is in progress.
+    const todayRow = (await screen.findByText("去图书馆还书")).closest("li")!;
+    expect(within(todayRow).getByTestId("thread-status").textContent).toContain("做好了");
+    await expandUndated(user);
+    const shelfRow = screen.getByText("整理书架", { selector: "div" }).closest("li")!;
+    const shelf = within(shelfRow).getByTestId("thread-status");
+    expect(shelf.textContent).toContain("在做");
+    expect(shelf.textContent).toContain("查完一半");
+    expect(within(screen.getByText("交周报").closest("li")!).queryByTestId("thread-status")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /全部会话/ }));
+    const list = screen.getByRole("list", { name: "会话" });
+    const rowFor = (name: RegExp) => within(list).getByRole("button", { name });
+    expect(within(rowFor(/整理书架/)).getByTestId("thread-status").textContent).toContain("在做");
+    expect(within(rowFor(/整理书架/)).getByTestId("thread-status").textContent).toContain("查完一半");
+    expect(within(rowFor(/周报怎么写/)).getByTestId("thread-status").textContent).toContain("卡住了");
+    expect(within(rowFor(/闲聊/)).queryByTestId("thread-status")).toBeNull();
+  });
+
+  it("refreshes the board, the session list and the open chat on assistant-session-updated", async () => {
+    seed();
+    render(<AssistantPage />);
+    await screen.findByRole("heading", { name: /蟹哥做好的/ });
+    const loads = boardLoads();
+    platformMock.fetchApi.mockClear();
+
+    act(() => emitAssistantSessionUpdated({ connectionId: "c1", sessionKey: "item-4" }));
+
+    await waitFor(() => expect(boardLoads()).toBe(loads + 1));
+    await waitFor(() => expect(platformMock.fetchApi).toHaveBeenCalledWith("/api/sessions?connectionId=c1"));
   });
 });

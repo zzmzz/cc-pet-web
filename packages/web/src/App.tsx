@@ -14,6 +14,7 @@ import { useSessionStore } from "./lib/store/session.js";
 import { useCommandStore } from "./lib/store/commands.js";
 import { normalizeBridgeSlashCommands } from "./lib/slash-commands.js";
 import { applyDefaultFocusAfterHydrate, hydrateSessionsAndHistory } from "./lib/hydrateFromServer.js";
+import { emitAssistantSessionUpdated } from "./lib/assistantEvents.js";
 import { useVisualViewport } from "./lib/useVisualViewport.js";
 import { revealTypewriter, flushTypewriter } from "./lib/typewriter.js";
 import { isToolCallContent, isToolResultContent, looksLikeToolProgress } from "./lib/tool-call.js";
@@ -592,6 +593,12 @@ export default function App() {
               useSessionStore.getState().setUnread(ck, count);
               setPetStateSafely("talking");
             }
+            break;
+          }
+          case WS_EVENTS.ASSISTANT_SESSION_UPDATED: {
+            const cid = (payload as { connectionId?: string }).connectionId;
+            const sKey = (payload as { sessionKey?: string }).sessionKey;
+            if (cid && sKey) emitAssistantSessionUpdated({ connectionId: cid, sessionKey: sKey });
             break;
           }
           case WS_EVENTS.BRIDGE_ERROR:

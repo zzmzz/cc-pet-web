@@ -1,13 +1,26 @@
 import { useState } from "react";
-import { weekdayLabel, type AssistantItem, type BoardGroups } from "../../lib/assistantBoard.js";
+import {
+  weekdayLabel,
+  type AssistantDeliverable,
+  type AssistantItem,
+  type BoardGroups,
+} from "../../lib/assistantBoard.js";
 import { ClosedRecent } from "./ClosedRecent.js";
+import { Deliverables } from "./Deliverables.js";
 import { ItemRow } from "./ItemRow.js";
 import { Section } from "./Section.js";
-import type { ItemStatus } from "./useAssistantBoard.js";
+import type { DeliverableAction, ItemStatus } from "./useAssistantBoard.js";
 import { WeekStrip } from "./WeekStrip.js";
 
 type OnStatus = (id: number, status: ItemStatus) => Promise<void>;
 type OnDiscuss = (item: AssistantItem) => void;
+
+/** 「蟹哥做好的」 sits right under 今天 on both layouts. */
+interface Made {
+  today: string;
+  deliverables: AssistantDeliverable[];
+  onDeliverableStatus: (id: number, status: DeliverableAction) => Promise<void>;
+}
 
 interface Common {
   groups: BoardGroups;
@@ -102,18 +115,21 @@ function UndatedSection({ groups, onStatus, onDiscuss }: Common) {
 }
 
 /**
- * 电脑上事项栏放全：今天、接下来一周、等你回复、更远、没定日期的待办、最近结案。
+ * 电脑上事项栏放全：今天、蟹哥做好的、接下来一周、等你回复、更远、没定日期的待办、最近结案。
  * 栏窄时接下来一周按天一行（`rows`），放大后七天并排（`columns`）。
  */
 export function FullBoard({
   today,
   closed,
+  deliverables,
+  onDeliverableStatus,
   weekLayout = "rows",
   ...common
-}: Common & { today: string; closed: AssistantItem[]; weekLayout?: "columns" | "rows" }) {
+}: Common & Made & { closed: AssistantItem[]; weekLayout?: "columns" | "rows" }) {
   return (
     <>
       <TodaySection {...common} />
+      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} />
       <WeekStrip today={today} week={common.groups.week} onDiscuss={common.onDiscuss} layout={weekLayout} />
       <WaitingSection {...common} />
       <FartherSection {...common} />
@@ -123,11 +139,18 @@ export function FullBoard({
   );
 }
 
-/** 手机上「今天」标签页：今天、等你回复、没定日期的待办、最近结案。 */
-export function TodaySections({ closed, ...common }: Common & { closed: AssistantItem[] }) {
+/** 手机上「今天」标签页：今天、蟹哥做好的、等你回复、没定日期的待办、最近结案。 */
+export function TodaySections({
+  closed,
+  today,
+  deliverables,
+  onDeliverableStatus,
+  ...common
+}: Common & Made & { closed: AssistantItem[] }) {
   return (
     <>
       <TodaySection {...common} />
+      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} />
       <WaitingSection {...common} />
       <UndatedSection {...common} />
       <ClosedRecent items={closed} onStatus={common.onStatus} />

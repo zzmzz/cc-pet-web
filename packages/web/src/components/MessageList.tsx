@@ -776,8 +776,13 @@ function FileAttachmentView({ file, isUser }: { file: FileAttachment; isUser: bo
  * rehype-raw）和 Prism 高亮，没有它时每个打字机帧都要把整个会话重算一遍。配合
  * renderItems 的引用稳定，流式期间历史气泡的重渲染次数降到零。
  */
+/** The assistant backend prefixes the messages it sends on the user's behalf with this. */
+const AUTOMATED_PREFIX = "（自动）";
+
 const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { message: ChatMessage; answeredWith?: string }) {
   const isUser = message.role === "user";
+  // Sent by the assistant backend, not typed by the user: same side, muted grey bubble.
+  const isAutomated = isUser && message.content.trimStart().startsWith(AUTOMATED_PREFIX);
   const hasFiles = Array.isArray(message.files) && message.files.length > 0;
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
@@ -935,9 +940,13 @@ const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { m
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} px-3 py-1${outboxStatus === "pending" ? " opacity-60" : ""}`}>
       <div
+        data-bubble
+        data-automated={isAutomated ? "true" : undefined}
         className={`max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
           isUser
-            ? `bg-indigo-500 text-white rounded-br-md${outboxStatus === "failed" ? " border border-red-500" : ""}`
+            ? `${isAutomated ? "bg-gray-200 text-gray-700" : "bg-indigo-500 text-white"} rounded-br-md${
+                outboxStatus === "failed" ? " border border-red-500" : ""
+              }`
             : "bg-gray-100 text-gray-800 rounded-bl-md markdown-body"
         }`}
       >
@@ -984,7 +993,7 @@ const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { m
                 return (
                   <code
                     className={`px-1.5 py-0.5 rounded text-[0.9em] ${
-                      isUser ? "bg-indigo-400/40 text-indigo-50" : "bg-slate-100 text-rose-600"
+                      isUser && !isAutomated ? "bg-indigo-400/40 text-indigo-50" : "bg-slate-100 text-rose-600"
                     }`}
                     {...props}
                   >
@@ -995,7 +1004,7 @@ const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { m
               a({ href, children }) {
                 if (isUser) {
                   return (
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="underline decoration-white/70">
+                    <a href={href} target="_blank" rel="noopener noreferrer" className={`underline ${isAutomated ? "decoration-gray-500" : "decoration-white/70"}`}>
                       {children}
                     </a>
                   );
@@ -1052,7 +1061,11 @@ const MessageBubble = memo(function MessageBubble({ message, answeredWith }: { m
             {bubbleBody}
           </ReactMarkdown>
         </div>
-        <div className={`flex items-center gap-1.5 text-[10px] mt-1 ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
+        <div
+          className={`flex items-center gap-1.5 text-[10px] mt-1 ${
+            isUser ? (isAutomated ? "text-gray-500" : "text-indigo-200") : "text-gray-400"
+          }`}
+        >
           <span>
             {new Date(message.timestamp).toLocaleTimeString("zh-CN", {
               hour: "2-digit",

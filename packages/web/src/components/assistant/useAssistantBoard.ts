@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPlatform } from "../../lib/platform.js";
-import type { AssistantItem } from "../../lib/assistantBoard.js";
+import type { AssistantDeliverable, AssistantItem, AssistantThread } from "../../lib/assistantBoard.js";
 
 export interface AssistantBoard {
   items: AssistantItem[];
   closedRecent: AssistantItem[];
+  /** Missing from servers that predate them. */
+  deliverables?: AssistantDeliverable[];
+  threads?: AssistantThread[];
   plannedAt: string | null;
   generatedAt: string;
 }
 
 export type ItemStatus = "open" | "done" | "dismissed";
+export type DeliverableAction = "seen" | "used" | "dismissed";
 
 const POLL_MS = 30_000;
 
@@ -49,10 +53,11 @@ export function useAssistantBoard() {
     }
   }, []);
 
-  const setStatus = useCallback(
-    async (id: number, status: ItemStatus) => {
+  /** POSTs a status change, then reloads the board; failures show the save banner. */
+  const post = useCallback(
+    async (path: string, status: string) => {
       try {
-        const { status: code, body } = await requestJson(`/api/assistant/items/${id}/status`, {
+        const { status: code, body } = await requestJson(path, {
           method: "POST",
           body: JSON.stringify({ status }),
         });
@@ -70,6 +75,16 @@ export function useAssistantBoard() {
     [reload],
   );
 
+  const setStatus = useCallback(
+    (id: number, status: ItemStatus) => post(`/api/assistant/items/${id}/status`, status),
+    [post],
+  );
+
+  const setDeliverableStatus = useCallback(
+    (id: number, status: DeliverableAction) => post(`/api/assistant/deliverables/${id}/status`, status),
+    [post],
+  );
+
   useEffect(() => {
     mounted.current = true;
     void reload();
@@ -80,5 +95,5 @@ export function useAssistantBoard() {
     };
   }, [reload]);
 
-  return { board, error, setStatus, reload };
+  return { board, error, setStatus, setDeliverableStatus, reload };
 }

@@ -11,6 +11,13 @@ import { FullBoard, ScheduleSections, TodaySections } from "./BoardSections.js";
 import { useAssistantBoard } from "./useAssistantBoard.js";
 import { useItemDiscussion } from "./useItemDiscussion.js";
 import { useResidentChat } from "./useResidentChat.js";
+import { ThreadsContext } from "./threads.js";
+import { onAssistantSessionUpdated, refreshAssistantSession } from "../../lib/assistantEvents.js";
+import { getPlatform } from "../../lib/platform.js";
+import type { AssistantDeliverable, AssistantThread } from "../../lib/assistantBoard.js";
+
+const NO_DELIVERABLES: AssistantDeliverable[] = [];
+const NO_THREADS: AssistantThread[] = [];
 
 type Tab = "today" | "schedule" | "chat";
 /** 电脑上「放大日程」的开关，刷新后保持。 */
@@ -47,9 +54,22 @@ export function AssistantPage() {
       // Private mode and the like: the toggle still works, it just isn't remembered.
     }
   }, [boardWide]);
-  const { board, error, setStatus } = useAssistantBoard();
+  const { board, error, setStatus, setDeliverableStatus, reload } = useAssistantBoard();
   const resident = useResidentChat();
   const rc = resident?.connectionId ?? null;
+  const deliverables = board?.deliverables ?? NO_DELIVERABLES;
+  const threads = board?.threads ?? NO_THREADS;
+
+  // The backend wrote into a session (a reminder, a sub-session it started):
+  // refresh the board for thread states and pull the session list and that chat.
+  useEffect(
+    () =>
+      onAssistantSessionUpdated(({ connectionId, sessionKey }) => {
+        void reload();
+        void refreshAssistantSession(getPlatform(), connectionId, sessionKey);
+      }),
+    [reload],
+  );
 
   const openSession = useCallback(
     (key: string) => {
@@ -128,97 +148,111 @@ export function AssistantPage() {
   const schedule = groups && <ScheduleSections today={today} groups={groups} onStatus={setStatus} onDiscuss={onDiscuss} />;
   const todayView =
     groups && board && (
-      <TodaySections groups={groups} closed={board.closedRecent} onStatus={setStatus} onDiscuss={onDiscuss} />
+      <TodaySections
+        groups={groups}
+        closed={board.closedRecent}
+        today={today}
+        deliverables={deliverables}
+        onDeliverableStatus={setDeliverableStatus}
+        onStatus={setStatus}
+        onDiscuss={onDiscuss}
+      />
     );
 
   if (isMobile) {
     return (
-      <div className="flex h-full flex-col bg-surface text-text-primary">
-        {chatAlert}
-        {tab !== "chat" && (
+      <ThreadsContext.Provider value={threads}>
+        <div className="flex h-full flex-col bg-surface text-text-primary">
+          {chatAlert}
+          {tab !== "chat" && (
+            <div
+              role="tabpanel"
+              id={`assistant-panel-${tab}`}
+              aria-labelledby={`assistant-tab-${tab}`}
+              className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pt-[max(0.75rem,env(safe-area-inset-top))]"
+            >
+              {header}
+              {notice}
+              {loading}
+              {tab === "today" ? todayView : schedule}
+            </div>
+          )}
+          {/* Kept mounted while hidden so a half-typed message survives a tab switch. */}
           <div
             role="tabpanel"
-            id={`assistant-panel-${tab}`}
-            aria-labelledby={`assistant-tab-${tab}`}
-            className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 pt-[max(0.75rem,env(safe-area-inset-top))]"
+            id="assistant-panel-chat"
+            aria-labelledby="assistant-tab-chat"
+            hidden={tab !== "chat"}
+            className={tab === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}
           >
-            {header}
-            {notice}
-            {loading}
-            {tab === "today" ? todayView : schedule}
+            <MobileChatPane
+              resident={resident}
+              view={chatView}
+              onBack={() => setChatView("list")}
+              onOpen={openSession}
+              onNew={() => void newTopic()}
+            />
           </div>
-        )}
-        {/* Kept mounted while hidden so a half-typed message survives a tab switch. */}
-        <div
-          role="tabpanel"
-          id="assistant-panel-chat"
-          aria-labelledby="assistant-tab-chat"
-          hidden={tab !== "chat"}
-          className={tab === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}
-        >
-          <MobileChatPane
-            resident={resident}
-            view={chatView}
-            onBack={() => setChatView("list")}
-            onOpen={openSession}
-            onNew={() => void newTopic()}
-          />
+          <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
+            <div role="tablist" aria-label="蟹哥" className="grid grid-cols-3">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                id={`assistant-tab-${t.id}`}
+                aria-controls={`assistant-panel-${t.id}`}
+                aria-selected={tab === t.id}
+                onClick={() => setTab(t.id)}
+                className={`py-2.5 text-sm ${tab === t.id ? "font-semibold text-primary" : "text-text-secondary"}`}
+              >
+                {t.label}
+              </button>
+            ))}
+            </div>
+          </nav>
         </div>
-        <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
-          <div role="tablist" aria-label="蟹哥" className="grid grid-cols-3">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              id={`assistant-tab-${t.id}`}
-              aria-controls={`assistant-panel-${t.id}`}
-              aria-selected={tab === t.id}
-              onClick={() => setTab(t.id)}
-              className={`py-2.5 text-sm ${tab === t.id ? "font-semibold text-primary" : "text-text-secondary"}`}
-            >
-              {t.label}
-            </button>
-          ))}
-          </div>
-        </nav>
-      </div>
+      </ThreadsContext.Provider>
     );
   }
 
   // Chat on the left as the wide column, the board in a narrower scrolling column on the right.
   // 「放大日程」 swaps the widths; both stay visible. The full pet sits in the board header.
   return (
-    <div className="flex h-full bg-surface text-text-primary">
-      {chatAlert}
-      <section
-        aria-label="聊天"
-        className={`flex min-h-0 flex-col bg-surface-secondary ${boardWide ? "w-[400px] shrink-0" : "min-w-0 flex-1"}`}
-      >
-        <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
-      </section>
-      <section
-        aria-label="事项"
-        className={`min-h-0 overflow-y-auto border-l border-border ${
-          boardWide ? "min-w-0 flex-1" : "w-[480px] shrink-0 xl:w-[540px]"
-        }`}
-      >
-        <div className={`space-y-4 p-5 ${boardWide ? "mx-auto max-w-4xl" : ""}`}>
-          {header}
-          {notice}
-          {loading}
-          {groups && board && (
-            <FullBoard
-              today={today}
-              groups={groups}
-              closed={board.closedRecent}
-              onStatus={setStatus}
-              onDiscuss={onDiscuss}
-              weekLayout={boardWide ? "columns" : "rows"}
-            />
-          )}
-        </div>
-      </section>
-    </div>
+    <ThreadsContext.Provider value={threads}>
+      <div className="flex h-full bg-surface text-text-primary">
+        {chatAlert}
+        <section
+          aria-label="聊天"
+          className={`flex min-h-0 flex-col bg-surface-secondary ${boardWide ? "w-[400px] shrink-0" : "min-w-0 flex-1"}`}
+        >
+          <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
+        </section>
+        <section
+          aria-label="事项"
+          className={`min-h-0 overflow-y-auto border-l border-border ${
+            boardWide ? "min-w-0 flex-1" : "w-[480px] shrink-0 xl:w-[540px]"
+          }`}
+        >
+          <div className={`space-y-4 p-5 ${boardWide ? "mx-auto max-w-4xl" : ""}`}>
+            {header}
+            {notice}
+            {loading}
+            {groups && board && (
+              <FullBoard
+                today={today}
+                groups={groups}
+                closed={board.closedRecent}
+                deliverables={deliverables}
+                onDeliverableStatus={setDeliverableStatus}
+                onStatus={setStatus}
+                onDiscuss={onDiscuss}
+                weekLayout={boardWide ? "columns" : "rows"}
+              />
+            )}
+          </div>
+        </section>
+      </div>
+    </ThreadsContext.Provider>
   );
 }

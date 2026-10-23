@@ -3,6 +3,7 @@ import { formatSessionTime, formatUnread, sessionLastActivity } from "../../lib/
 import { useMessageStore } from "../../lib/store/message.js";
 import { useSessionStore } from "../../lib/store/session.js";
 import { chatTitle, isItemSession } from "./chatSessions.js";
+import { ThreadStatus, useSessionThread } from "./threads.js";
 
 const EMPTY: Session[] = [];
 
@@ -27,6 +28,7 @@ function Row({
   const preview = msgs && msgs.length > 0 ? lastText(msgs[msgs.length - 1].content) : "";
   const title = chatTitle(session);
   const item = isItemSession(session);
+  const thread = useSessionThread(session.key);
 
   return (
     <li>
@@ -56,6 +58,7 @@ function Row({
               {formatSessionTime(sessionLastActivity(cid, session, messagesByChat))}
             </span>
           </span>
+          <ThreadStatus thread={thread} className="mt-0.5" />
           <span className="mt-0.5 flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">{preview}</span>
             {unread > 0 && (
