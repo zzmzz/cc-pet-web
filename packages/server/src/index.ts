@@ -159,7 +159,7 @@ app.post<{ Body: { token?: string } }>("/api/auth/verify", async (req, reply) =>
   };
 });
 app.addHook("onRequest", authGuard(initialConfig.tokens));
-registerConfigRoutes(app, configStore);
+registerConfigRoutes(app, configStore, getRequestAuthIdentity);
 registerSessionRoutes(app, sessionStore, messageStore);
 registerPushRoutes(app, {
   store: pushSubscriptionStore,
