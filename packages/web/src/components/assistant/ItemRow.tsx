@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AssistantItem } from "../../lib/assistantBoard.js";
+import { PriorityBadge } from "./PriorityBadge.js";
 import type { ItemStatus } from "./useAssistantBoard.js";
 
 interface Props {
@@ -52,6 +53,7 @@ export function ItemRow({ item, when, note, onStatus, onDiscuss }: Props) {
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-text-primary">
           {item.title}
+          <PriorityBadge item={item} />
           {item.deadline && <span className="ml-2 text-xs font-normal text-red-500">截止</span>}
           {note && <span className="ml-2 text-xs font-normal text-amber-600">{note}</span>}
         </div>

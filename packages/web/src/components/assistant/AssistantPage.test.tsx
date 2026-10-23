@@ -46,6 +46,7 @@ function item(over: Partial<AssistantItem> & { id: number; title: string }): Ass
     closedReason: null,
     createdAt: `${today}T08:00:00`,
     updatedAt: `${today}T08:00:00`,
+    priority: "normal",
     ...over,
   };
 }
@@ -120,6 +121,32 @@ describe("AssistantPage", () => {
     expect(screen.getByRole("heading", { name: /没定日期的待办/ })).toBeTruthy();
     expect(screen.getByText("整理书架")).toBeTruthy();
     expect(screen.getByText(/事项更新于 \d\d:\d\d/)).toBeTruthy();
+  });
+
+  it("tags urgent items 急 and relaxed ones 不急, and puts urgent ones first", async () => {
+    mockBoard(200, {
+      ...board,
+      items: [
+        ...board.items,
+        item({ id: 6, title: "随手记一下", priority: "low" }),
+        item({ id: 7, title: "交报名表", priority: "high" }),
+        item({ id: 8, title: "周末大扫除", date: tomorrow, priority: "high" }),
+      ],
+    });
+    render(<AssistantPage />);
+
+    const urgent = (await screen.findByText("交报名表")).closest("li")!;
+    expect(within(urgent).getByText("急")).toBeTruthy();
+    const relaxed = screen.getByText("随手记一下").closest("li")!;
+    expect(within(relaxed).getByText("不急")).toBeTruthy();
+    const plain = screen.getByText("去图书馆还书").closest("li")!;
+    expect(within(plain).queryByText("急")).toBeNull();
+    expect(within(plain).queryByText("不急")).toBeNull();
+    expect(within(screen.getByTestId(`week-${tomorrow}`)).getByText("急")).toBeTruthy();
+
+    const undated = screen.getByRole("heading", { name: /没定日期的待办/ }).closest("section")!;
+    const rows = within(undated).getAllByRole("listitem").map((li) => li.textContent ?? "");
+    expect(rows.map((r) => r.slice(0, 4))).toEqual(["交报名表", "整理书架", "随手记一"]);
   });
 
   it("marks an item done when its checkbox is ticked, then reloads", async () => {

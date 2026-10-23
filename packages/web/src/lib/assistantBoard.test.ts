@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discussionPrompt, groupBoard, weekdayLabel, type AssistantItem } from "./assistantBoard.js";
+import { discussionPrompt, groupBoard, priorityRank, weekdayLabel, type AssistantItem } from "./assistantBoard.js";
 
 let seq = 0;
 function mk(p: Partial<AssistantItem>): AssistantItem {
@@ -7,7 +7,7 @@ function mk(p: Partial<AssistantItem>): AssistantItem {
   return {
     id: seq, kind: "todo", title: `事项${seq}`, detail: "", date: null, time: null,
     deadline: false, people: [], status: "open", closedReason: null,
-    createdAt: "2026-10-01 09:00:00", updatedAt: "2026-10-01 09:00:00", ...p,
+    createdAt: "2026-10-01 09:00:00", updatedAt: "2026-10-01 09:00:00", priority: "normal", ...p,
   };
 }
 const TODAY = "2026-10-28";
@@ -78,6 +78,43 @@ describe("groupBoard", () => {
     const ev = mk({ kind: "event", date: "2026-10-27" });
     const r = groupBoard([ev], TODAY);
     expect(Object.values(r).every((v) => (v as unknown[]).length === 0)).toBe(true);
+  });
+});
+
+describe("groupBoard priority", () => {
+  it("farther: high, then normal, then low; by date within a level", () => {
+    const a = mk({ id: 1, date: "2026-11-20" });
+    const b = mk({ id: 2, date: "2026-12-01", priority: "high" });
+    const c = mk({ id: 3, date: "2026-11-10", priority: "low" });
+    const d = mk({ id: 4, date: "2026-11-15", priority: "high" });
+    const e = mk({ id: 5, date: "2026-11-12" });
+    expect(groupBoard([a, b, c, d, e], TODAY).farther.map((i) => i.id)).toEqual([4, 2, 5, 1, 3]);
+  });
+
+  it("waiting: high first, oldest first within a level", () => {
+    const a = mk({ id: 1, kind: "waiting", createdAt: "2026-10-01 09:00:00", priority: "low" });
+    const b = mk({ id: 2, kind: "waiting", createdAt: "2026-10-20 09:00:00", priority: "high" });
+    const c = mk({ id: 3, kind: "waiting", createdAt: "2026-10-05 09:00:00" });
+    const d = mk({ id: 4, kind: "waiting", createdAt: "2026-10-02 09:00:00" });
+    expect(groupBoard([a, b, c, d], TODAY).waiting.map((w) => w.item.id)).toEqual([2, 4, 3, 1]);
+  });
+
+  it("undated: high first, by id within a level; unknown values count as normal", () => {
+    const a = mk({ id: 1, priority: "low" });
+    const b = mk({ id: 2 });
+    const c = mk({ id: 3, priority: "high" });
+    const d = mk({ id: 4, priority: "bogus" as never });
+    expect(groupBoard([a, b, c, d], TODAY).undated.map((i) => i.id)).toEqual([3, 2, 4, 1]);
+  });
+
+  it("today and the week are not reordered by priority", () => {
+    const a = mk({ id: 1, date: TODAY, time: "09:00", priority: "low" });
+    const b = mk({ id: 2, date: TODAY, time: "10:00", priority: "high" });
+    expect(groupBoard([a, b], TODAY).today.map((i) => i.id)).toEqual([1, 2]);
+  });
+
+  it("priorityRank", () => {
+    expect([priorityRank(mk({ priority: "high" })), priorityRank(mk({})), priorityRank(mk({ priority: "low" }))]).toEqual([0, 1, 2]);
   });
 });
 

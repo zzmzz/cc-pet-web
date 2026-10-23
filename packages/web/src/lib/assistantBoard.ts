@@ -1,10 +1,28 @@
 // Board sections for the assistant page. Dates are local YYYY-MM-DD strings;
 // day arithmetic goes through local Date construction, never UTC conversion.
 
+export type Priority = "high" | "normal" | "low";
+
 export interface AssistantItem {
   id: number; kind: "todo" | "event" | "waiting"; title: string; detail: string;
   date: string | null; time: string | null; deadline: boolean; people: string[];
   status: string; closedReason: string | null; createdAt: string; updatedAt: string;
+  priority: Priority;
+}
+
+const PRIORITY_RANK: Record<Priority, number> = { high: 0, normal: 1, low: 2 };
+
+/** high before normal before low; anything else counts as normal. */
+export function priorityRank(item: Pick<AssistantItem, "priority">): number {
+  return PRIORITY_RANK[item.priority] ?? PRIORITY_RANK.normal;
+}
+
+/** Stable: items of the same priority keep the order they came in. */
+function byPriority<T>(list: T[], get: (x: T) => AssistantItem): T[] {
+  return list
+    .map((x, i) => ({ x, i }))
+    .sort((a, b) => priorityRank(get(a.x)) - priorityRank(get(b.x)) || a.i - b.i)
+    .map(({ x }) => x);
 }
 
 export interface BoardGroups {
@@ -79,6 +97,10 @@ export function groupBoard(items: AssistantItem[], today: string): BoardGroups {
   out.farther.sort((a, b) => (a.date! < b.date! ? -1 : a.date! > b.date! ? 1 : byTimeThenId(a, b)));
   out.waiting.sort((a, b) => (a.item.createdAt < b.item.createdAt ? -1 : a.item.createdAt > b.item.createdAt ? 1 : a.item.id - b.item.id));
   out.undated.sort((a, b) => a.id - b.id);
+  // 更远, 等你回复 and 没定日期: the urgent ones first, each level in the order above.
+  out.farther = byPriority(out.farther, (x) => x);
+  out.waiting = byPriority(out.waiting, (x) => x.item);
+  out.undated = byPriority(out.undated, (x) => x);
   return out;
 }
 

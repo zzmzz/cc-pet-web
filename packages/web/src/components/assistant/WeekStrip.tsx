@@ -1,4 +1,5 @@
 import { nextWeekDates, weekdayLabel, type AssistantItem, type BoardGroups } from "../../lib/assistantBoard.js";
+import { PriorityBadge } from "./PriorityBadge.js";
 import { Section } from "./Section.js";
 
 export function WeekStrip({
@@ -38,6 +39,7 @@ export function WeekStrip({
                     >
                       {item.time && <span className="mr-1 font-medium text-primary">{item.time}</span>}
                       {item.title}
+                      <PriorityBadge item={item} />
                     </button>
                   </li>
                 ))}
