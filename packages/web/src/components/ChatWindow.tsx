@@ -9,6 +9,7 @@ import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
 import { extractFiles, dragHasFiles } from "../lib/file-transfer.js";
 import { sendStagedAttachments } from "../lib/attachment-upload.js";
+import { sendTextMessage } from "../lib/sessionActions.js";
 import { MessageList } from "./MessageList.js";
 import { MessageInput } from "./MessageInput.js";
 import { SlashCommandMenu } from "./SlashCommandMenu.js";
@@ -298,24 +299,7 @@ export function ChatWindow() {
     }
 
     setInput("");
-
-    const clientMsgId = getPlatform().sendWsMessage({
-      type: WS_EVENTS.SEND_MESSAGE,
-      connectionId: activeConnectionId,
-      sessionKey: activeSessionKey,
-      content: text,
-    }, "auto");
-
-    useMessageStore.getState().addMessage(chatKey, {
-      id: clientMsgId,
-      role: "user",
-      content: text,
-      timestamp: Date.now(),
-      connectionId: activeConnectionId,
-      sessionKey: activeSessionKey,
-    });
-    useSessionStore.getState().touchSessionAutoTitle(activeConnectionId, activeSessionKey, text);
-    useSessionStore.getState().noteStickySession(activeConnectionId, activeSessionKey);
+    sendTextMessage(activeConnectionId, activeSessionKey, text);
   }, [
     input,
     pendingAttachments,

@@ -1,9 +1,12 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { groupBoard, localDate } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
-import { ChatWindow } from "../ChatWindow.js";
+import { createSession, markSessionRead } from "../../lib/sessionActions.js";
+import { useConnectionStore } from "../../lib/store/connection.js";
+import { useSessionStore } from "../../lib/store/session.js";
 import { BoardHeader } from "./BoardHeader.js";
+import { DesktopChatPane, MobileChatPane, type ChatView } from "./ChatPane.js";
 import { ScheduleSections, TodaySections } from "./BoardSections.js";
 import { useAssistantBoard } from "./useAssistantBoard.js";
 import { useResidentChat } from "./useResidentChat.js";
@@ -15,19 +18,31 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "chat", label: "聊天" },
 ];
 
-function ChatPane() {
-  const resident = useResidentChat();
-  if (!resident) {
-    return <div className="flex h-full items-center justify-center text-sm text-text-secondary">秋来还没配置好</div>;
-  }
-  return <ChatWindow />;
-}
-
 export function AssistantPage() {
   useIsMobileTracker();
   const isMobile = useUIStore((s) => s.isMobile);
   const [tab, setTab] = useState<Tab>("today");
+  const [chatView, setChatView] = useState<ChatView>("list");
   const { board, error, setStatus } = useAssistantBoard();
+  const resident = useResidentChat();
+  const rc = resident?.connectionId ?? null;
+
+  const openSession = useCallback(
+    (key: string) => {
+      if (!rc) return;
+      useConnectionStore.getState().setActiveConnection(rc);
+      useSessionStore.getState().setActiveSession(rc, key);
+      markSessionRead(rc, key);
+      setChatView("chat");
+    },
+    [rc],
+  );
+
+  const newTopic = useCallback(async () => {
+    if (!rc) return;
+    useConnectionStore.getState().setActiveConnection(rc);
+    if (await createSession(rc, `session-${Date.now()}`)) setChatView("chat");
+  }, [rc]);
 
   const now = new Date();
   const today = localDate(now);
@@ -77,7 +92,13 @@ export function AssistantPage() {
           hidden={tab !== "chat"}
           className={tab === "chat" ? "min-h-0 flex-1 overflow-hidden" : "hidden"}
         >
-          <ChatPane />
+          <MobileChatPane
+            resident={resident}
+            view={chatView}
+            onBack={() => setChatView("list")}
+            onOpen={openSession}
+            onNew={() => void newTopic()}
+          />
         </div>
         <nav aria-label="页面" className="shrink-0 border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
           <div role="tablist" aria-label="秋来" className="grid grid-cols-3">
@@ -112,7 +133,7 @@ export function AssistantPage() {
         </div>
       </main>
       <aside className="flex w-[400px] shrink-0 flex-col border-l border-border bg-surface-secondary">
-        <ChatPane />
+        <DesktopChatPane resident={resident} onOpen={openSession} onNew={() => void newTopic()} />
       </aside>
     </div>
   );

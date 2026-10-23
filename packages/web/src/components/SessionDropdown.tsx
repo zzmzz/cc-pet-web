@@ -5,27 +5,18 @@ import { makeChatKey } from "@cc-pet/shared";
 import { useSessionStore } from "../lib/store/session.js";
 import { useMessageStore } from "../lib/store/message.js";
 import { useConnectionStore } from "../lib/store/connection.js";
-import { useUIStore } from "../lib/store/ui.js";
 import { getPlatform } from "../lib/platform.js";
+import {
+  createSession as createSessionIn,
+  formatSessionTime,
+  formatUnread,
+  markSessionRead,
+  sessionBaseLabel,
+  sessionLastActivity,
+} from "../lib/sessionActions.js";
 
 const EMPTY_SESSIONS: Session[] = [];
 const RECENT_VISIBLE = 2;
-
-function formatTime(ts: number): string {
-  const now = new Date();
-  const target = new Date(ts);
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterdayStart = new Date(todayStart.getTime() - 86_400_000);
-  const targetDay = new Date(target.getFullYear(), target.getMonth(), target.getDate());
-
-  if (targetDay.getTime() >= todayStart.getTime()) {
-    return target.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  }
-  if (targetDay.getTime() >= yesterdayStart.getTime()) return "昨天";
-  const daysDiff = Math.floor((todayStart.getTime() - targetDay.getTime()) / 86_400_000);
-  if (daysDiff < 7) return `${daysDiff}天前`;
-  return target.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
-}
 
 /** Aligns with ../cc-pet labels; accepts shared `TaskPhase` and legacy bridge strings. */
 export function formatSessionPhase(phase?: string | null): string {
@@ -39,26 +30,9 @@ export function formatSessionPhase(phase?: string | null): string {
   return "空闲";
 }
 
-function formatUnread(count: number): string {
-  return count > 99 ? "99+" : String(count);
-}
-
 function sessionLabelText(s: Session): string {
-  const base = s.label?.trim() || s.key.split(":").pop() || s.key;
+  const base = sessionBaseLabel(s);
   return s.isResident ? `📌 ${base}` : base;
-}
-
-/** Shown next to session title: last message time, not “last opened”. */
-function lastMessageOrCreatedAt(
-  connectionId: string,
-  session: Session,
-  messagesByChat: Record<string, ChatMessage[]>,
-): number {
-  const msgs = messagesByChat[makeChatKey(connectionId, session.key)] ?? [];
-  if (msgs.length > 0) return Math.max(...msgs.map((m) => m.timestamp));
-  // For sessions whose history hasn't been lazy-loaded yet, fall back to
-  // the server-maintained lastActiveAt instead of createdAt.
-  return session.lastActiveAt ?? session.createdAt;
 }
 
 function phaseForSession(
@@ -148,7 +122,6 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const clearSessionUnread = useSessionStore((s) => s.clearSessionUnread);
   const removeSession = useSessionStore((s) => s.removeSession);
-  const setSessions = useSessionStore((s) => s.setSessions);
   const messagesByChat = useMessageStore((s) => s.messagesByChat);
 
   const residentSession = Object.values(allSessions)
@@ -214,8 +187,8 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     .filter((s) => s.key !== activeKey)
     .sort(
       (a, b) =>
-        lastMessageOrCreatedAt(activeConnectionId, b, messagesByChat) -
-        lastMessageOrCreatedAt(activeConnectionId, a, messagesByChat),
+        sessionLastActivity(activeConnectionId, b, messagesByChat) -
+        sessionLastActivity(activeConnectionId, a, messagesByChat),
     );
 
   const recentInactive = showAll ? inactive : inactive.slice(0, RECENT_VISIBLE);
@@ -239,10 +212,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
     const rk = residentSession.key;
     setActiveConnection(rc);
     setActiveSession(rc, rk);
-    clearSessionUnread(rc, rk);
-    void getPlatform()
-      .fetchApi(`/api/sessions/${encodeURIComponent(rc)}/${encodeURIComponent(rk)}/read`, { method: "POST" })
-      .catch((e) => console.error("mark resident read failed:", e));
+    markSessionRead(rc, rk);
     setOpen(false);
     setShowAll(false);
     setConfirmDeleteId(null);
@@ -274,42 +244,10 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
 
   const createSession = async () => {
     if (!activeConnectionId) return;
-    const key = `session-${Date.now()}`;
-    try {
-      await getPlatform().fetchApi("/api/sessions", {
-        method: "POST",
-        body: JSON.stringify({ connectionId: activeConnectionId, key }),
-      });
-      const sessionStore = useSessionStore.getState();
-
-      // Anything still in flight belongs to the session the user is leaving.
-      // Without this, a keyless reply arriving after the switch would follow
-      // the active-session pointer straight into the new session (sticky is
-      // only set by an outgoing send or a keyed reply, so it can be empty —
-      // e.g. right after a reload while a turn from before it is unfinished).
-      const leavingKey = sessionStore.activeSessionKey[activeConnectionId];
-      if (leavingKey && leavingKey !== key && !sessionStore.stickySessionByConnection[activeConnectionId]) {
-        sessionStore.noteStickySession(activeConnectionId, leavingKey);
-      }
-
-      // A brand-new key has no server history, so any client-side state under
-      // it is residue from another conversation — drop it before we focus it.
-      sessionStore.resetSessionResidue(activeConnectionId, key);
-
-      const list = useSessionStore.getState().sessions[activeConnectionId] ?? [];
-      const now = Date.now();
-      setSessions(activeConnectionId, [
-        ...list,
-        { key, connectionId: activeConnectionId, createdAt: now, lastActiveAt: now },
-      ]);
-      setActiveSession(activeConnectionId, key);
-      useUIStore.getState().resetComposer();
-      setOpen(false);
-      setShowAll(false);
-      setConfirmDeleteId(null);
-    } catch (e) {
-      console.error("create session failed:", e);
-    }
+    if (!(await createSessionIn(activeConnectionId, `session-${Date.now()}`))) return;
+    setOpen(false);
+    setShowAll(false);
+    setConfirmDeleteId(null);
   };
 
   if (sessions.length === 0 && bridgeList.length <= 1) {
@@ -457,7 +395,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                     )}
                     {confirmDeleteId !== activeKey && (
                       <span className="text-xs text-gray-600 flex-shrink-0 group-hover/active:hidden">
-                        {formatTime(lastMessageOrCreatedAt(activeConnectionId, currentSession, messagesByChat))}
+                        {formatSessionTime(sessionLastActivity(activeConnectionId, currentSession, messagesByChat))}
                       </span>
                     )}
                     {listSessions.length > 1 && <DeleteBtn sid={activeKey} className="group-hover/active:flex" />}
@@ -497,7 +435,7 @@ export function SessionDropdown(props: SessionDropdownProps = {}) {
                         )}
                         {confirmDeleteId !== sess.key && (
                           <span className="text-xs text-gray-600 flex-shrink-0 group-hover/item:hidden">
-                            {formatTime(lastMessageOrCreatedAt(activeConnectionId, sess, messagesByChat))}
+                            {formatSessionTime(sessionLastActivity(activeConnectionId, sess, messagesByChat))}
                           </span>
                         )}
                         <DeleteBtn sid={sess.key} className="group-hover/item:flex" />

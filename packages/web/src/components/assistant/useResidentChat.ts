@@ -1,12 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Session } from "@cc-pet/shared";
-import { getPlatform } from "../../lib/platform.js";
+import { markSessionRead } from "../../lib/sessionActions.js";
 import { useConnectionStore } from "../../lib/store/connection.js";
 import { useSessionStore } from "../../lib/store/session.js";
 
 /**
- * Finds the resident session (same lookup as SessionDropdown) and keeps the
- * chat pinned to it. Returns null while there is none.
+ * Finds the resident session (same lookup as SessionDropdown). The chat opens
+ * on it once when the page first sees it; after that Yu picks the session and
+ * it stays put. Returns null while there is none.
  */
 export function useResidentChat(): Session | null {
   const resident = useSessionStore(
@@ -15,23 +16,23 @@ export function useResidentChat(): Session | null {
   const rc = resident?.connectionId ?? null;
   const rk = resident?.key ?? null;
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId);
-  const activeKey = useSessionStore((s) => (rc ? s.activeSessionKey[rc] : undefined));
+  const pinned = useRef(false);
 
-  // Opening the resident session counts as reading it, once per session.
   useEffect(() => {
-    if (!rc || !rk) return;
-    useSessionStore.getState().clearSessionUnread(rc, rk);
-    void getPlatform()
-      .fetchApi(`/api/sessions/${encodeURIComponent(rc)}/${encodeURIComponent(rk)}/read`, { method: "POST" })
-      .catch((e) => console.error("mark resident read failed:", e));
+    if (!rc || !rk || pinned.current) return;
+    pinned.current = true;
+    useConnectionStore.getState().setActiveConnection(rc);
+    useSessionStore.getState().setActiveSession(rc, rk);
+    markSessionRead(rc, rk);
   }, [rc, rk]);
 
-  // Re-pin whenever something else (a manifest, a new-session event) moves the chat away.
+  // The session list only covers the resident's connection, so keep the chat on it
+  // if something else (a manifest from another bridge) moves it away.
   useEffect(() => {
-    if (!rc || !rk) return;
-    if (activeConnectionId !== rc) useConnectionStore.getState().setActiveConnection(rc);
-    if (activeKey !== rk) useSessionStore.getState().setActiveSession(rc, rk);
-  }, [rc, rk, activeConnectionId, activeKey]);
+    if (rc && pinned.current && activeConnectionId !== rc) {
+      useConnectionStore.getState().setActiveConnection(rc);
+    }
+  }, [rc, activeConnectionId]);
 
   return resident;
 }

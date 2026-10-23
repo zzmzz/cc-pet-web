@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AssistantPage } from "./AssistantPage.js";
 import { localDate, nextWeekDates, type AssistantItem } from "../../lib/assistantBoard.js";
@@ -238,6 +238,19 @@ describe("AssistantPage", () => {
     expect(document.getElementById(chatTab.getAttribute("aria-controls")!)?.getAttribute("role")).toBe("tabpanel");
   });
 
+  it("hides an empty time column on a phone", async () => {
+    render(<AssistantPage />);
+
+    const timed = (await screen.findByText("去图书馆还书")).closest("li")!;
+    expect(within(timed).getByTestId("item-when").className).not.toContain("hidden");
+    const overdue = item({ id: 6, title: "补交报销单", date: "2000-01-01" });
+    cleanup();
+    mockBoard(200, { ...board, items: [...board.items, overdue] });
+    render(<AssistantPage />);
+    const untimed = (await screen.findByText("补交报销单")).closest("li")!;
+    expect(within(untimed).getByTestId("item-when").className).toContain("hidden md:block");
+  });
+
   it("says the data is not ready on 503", async () => {
     mockBoard(503, { error: "not ready" });
     render(<AssistantPage />);
@@ -300,5 +313,120 @@ describe("AssistantPage", () => {
     await user.click(screen.getByRole("tab", { name: "聊天" }));
     expect(screen.queryByText("年底体检")).toBeNull();
     expect(screen.getByText("秋来还没配置好")).toBeTruthy();
+  });
+});
+
+describe("AssistantPage chat sessions", () => {
+  function seedSessions() {
+    useConnectionStore.setState({
+      connections: [
+        { id: "c1", name: "Bot", connected: true },
+        { id: "c2", name: "Helper", connected: true },
+      ],
+      activeConnectionId: "c2",
+    });
+    useSessionStore.setState({
+      sessions: {
+        c1: [
+          { key: "s-old", connectionId: "c1", createdAt: 1, lastActiveAt: 100, label: "旧话题" },
+          { key: "home", connectionId: "c1", createdAt: 1, lastActiveAt: 50, isResident: true },
+          { key: "item-4", connectionId: "c1", createdAt: 1, lastActiveAt: 200, label: "事项：整理书架" },
+          { key: "s-new", connectionId: "c1", createdAt: 1, lastActiveAt: 300, label: "周报怎么写" },
+        ],
+        c2: [{ key: "elsewhere", connectionId: "c2", createdAt: 1, lastActiveAt: 999, label: "别的连接" }],
+      },
+      activeSessionKey: { c1: "s-old", c2: "elsewhere" },
+      unread: { "c1::s-new": 2 },
+    });
+  }
+
+  function listRows() {
+    const list = screen.getByRole("list", { name: "会话" });
+    return within(list)
+      .getAllByRole("button")
+      .map((b) => b.textContent ?? "");
+  }
+
+  it("lists 总台, then 新话题, then the other sessions on the same connection, newest first", async () => {
+    seedSessions();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("button", { name: /全部会话/ }));
+    const rows = listRows();
+    expect(rows).toHaveLength(5);
+    expect(rows[0]).toContain("秋来 · 总台");
+    expect(rows[1]).toContain("新话题");
+    expect(rows[2]).toContain("周报怎么写");
+    expect(within(screen.getByRole("list", { name: "会话" })).getByLabelText("2 条未读")).toBeTruthy();
+    expect(rows[3]).toContain("事项");
+    expect(rows[3]).toContain("整理书架");
+    expect(rows[3]).not.toContain("事项：");
+    expect(rows[4]).toContain("旧话题");
+    expect(screen.queryByText("别的连接")).toBeNull();
+    expect(screen.queryByText("Bot")).toBeNull();
+  });
+
+  it("opens a picked session and does not pull it back to 总台", async () => {
+    seedSessions();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe("home"));
+    expect(useConnectionStore.getState().activeConnectionId).toBe("c1");
+
+    await user.click(screen.getByRole("button", { name: /全部会话/ }));
+    await user.click(screen.getByRole("button", { name: /周报怎么写/ }));
+
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("s-new");
+    expect(useSessionStore.getState().unread["c1::s-new"] ?? 0).toBe(0);
+    expect(platformMock.fetchApi).toHaveBeenCalledWith("/api/sessions/c1/s-new/read", { method: "POST" });
+    expect(screen.queryByRole("list", { name: "会话" })).toBeNull();
+
+    // A session list refresh used to re-pin the chat; it must stay where Yu put it.
+    act(() => {
+      useSessionStore.getState().setSessions("c1", [...useSessionStore.getState().sessions.c1]);
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("s-new");
+  });
+
+  it("starts a new topic on the resident's connection and switches to it", async () => {
+    seedSessions();
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("button", { name: /全部会话/ }));
+    await user.click(screen.getByRole("button", { name: /新话题/ }));
+
+    await waitFor(() => {
+      const post = platformMock.fetchApi.mock.calls.find(([p]) => p === "/api/sessions");
+      expect(post).toBeTruthy();
+    });
+    const [, init] = platformMock.fetchApi.mock.calls.find(([p]) => p === "/api/sessions")!;
+    const body = JSON.parse(String(init.body));
+    expect(body.connectionId).toBe("c1");
+    expect(body.key).toMatch(/^session-\d+$/);
+    await waitFor(() => expect(useSessionStore.getState().activeSessionKey.c1).toBe(body.key));
+    expect(useSessionStore.getState().sessions.c1.some((s) => s.key === body.key)).toBe(true);
+  });
+
+  it("shows the list first on a phone, opens a chat, and goes back", async () => {
+    seedSessions();
+    setWidth(390);
+    const user = userEvent.setup();
+    render(<AssistantPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "聊天" }));
+    expect(screen.getByRole("list", { name: "会话" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /返回/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /旧话题/ }));
+    expect(useSessionStore.getState().activeSessionKey.c1).toBe("s-old");
+    expect(screen.queryByRole("list", { name: "会话" })).toBeNull();
+    expect(screen.getByTestId("chat-window")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /返回/ }));
+    expect(screen.getByRole("list", { name: "会话" })).toBeTruthy();
   });
 });

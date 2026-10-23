@@ -39,7 +39,13 @@ export function ItemRow({ item, when, note, onStatus }: Props) {
         onChange={() => void change("done")}
       />
       {when !== undefined && (
-        <span className="w-16 shrink-0 pt-0.5 text-xs text-text-secondary">{when ?? ""}</span>
+        // An empty time column keeps the titles lined up on a wide screen; a phone needs the width more.
+        <span
+          data-testid="item-when"
+          className={`w-16 shrink-0 pt-0.5 text-xs text-text-secondary ${when ? "" : "hidden md:block"}`}
+        >
+          {when ?? ""}
+        </span>
       )}
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-text-primary">
