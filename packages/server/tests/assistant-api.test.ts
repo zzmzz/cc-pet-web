@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import Database from "better-sqlite3";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { registerAssistantRoutes } from "../src/api/assistant.js";
+import { registerAssistantRoutes, toContainerPath } from "../src/api/assistant.js";
 import type { AuthIdentity } from "../src/auth/token-auth.js";
 
 const ASSISTANT: AuthIdentity = { tokenName: "A", bridgeIds: new Set(), ui: "assistant" };
@@ -173,5 +173,180 @@ describe("assistant API", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM actions").get() as { n: number }).n;
     db.close();
     expect(n).toBe(0);
+  });
+});
+
+const SCHEMA_V4 = SCHEMA.replace("PRAGMA user_version = 3;", `
+CREATE TABLE threads(session_key TEXT PRIMARY KEY, item_id INTEGER, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running', progress TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE deliverables(id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER, session_key TEXT, title TEXT NOT NULL, path TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'new', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+PRAGMA user_version = 4;
+`);
+
+describe("assistant API: deliverables and threads", () => {
+  let dir: string;
+  let outRoot: string;
+  let dbPath: string;
+  let app: FastifyInstance;
+  let identity: AuthIdentity | null;
+
+  async function build(p: string) {
+    const a = Fastify();
+    registerAssistantRoutes(a, { dbPath: p, outputRoot: outRoot, getAuthIdentity: () => identity });
+    await a.ready();
+    return a;
+  }
+
+  beforeEach(async () => {
+    identity = ASSISTANT;
+    dir = await mkdtemp(path.join(tmpdir(), "assistant-deliv-"));
+    outRoot = path.join(dir, "out");
+    await mkdir(outRoot, { recursive: true });
+    await writeFile(path.join(outRoot, "周报草稿.md"), "# 示例周报\n内容甲\n", "utf8");
+    await writeFile(path.join(outRoot, "数据.xlsx"), Buffer.from([1, 2, 3, 4]));
+    await writeFile(path.join(dir, "secret.txt"), "不该被读到", "utf8");
+    dbPath = path.join(dir, "qiulai.db");
+    const db = new Database(dbPath);
+    db.exec(SCHEMA_V4);
+    const old = "2026-10-01T08:00:00";
+    db.prepare("INSERT INTO items (kind, title, created_at, updated_at) VALUES ('todo', '示例事项', ?, ?)").run(old, old);
+    const ins = db.prepare(
+      "INSERT INTO deliverables (item_id, session_key, title, path, summary, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+    );
+    ins.run(1, "item-1", "周报草稿", path.join(outRoot, "周报草稿.md"), "按上周记录整理", "new", hoursAgo(5), hoursAgo(5));
+    ins.run(null, null, "数据表", path.join(outRoot, "数据.xlsx"), "", "seen", hoursAgo(1), hoursAgo(1));
+    ins.run(1, "item-1", "很早的成品", path.join(outRoot, "周报草稿.md"), "", "used", hoursAgo(24 * 4), hoursAgo(24 * 4));
+    ins.run(1, null, "越界的成品", path.join(dir, "secret.txt"), "", "new", hoursAgo(1.5), hoursAgo(1.5));
+    ins.run(1, null, "不见了的成品", path.join(outRoot, "没了.md"), "", "new", hoursAgo(2), hoursAgo(2));
+    ins.run(1, null, "绕出去的成品", `${outRoot}/../secret.txt`, "", "new", hoursAgo(2.5), hoursAgo(2.5));
+    const th = db.prepare(
+      "INSERT INTO threads (session_key, item_id, title, status, progress, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+    );
+    th.run("item-1", 1, "示例事项", "running", "查完一半", "planner", old, hoursAgo(1));
+    th.run("task-2", null, "临时活", "stuck", "", "assistant", old, hoursAgo(2));
+    db.close();
+    app = await build(dbPath);
+  });
+  afterEach(async () => {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const board = () => app.inject({ method: "GET", url: "/api/assistant/board" });
+  const setStatus = (id: string | number, payload: unknown) =>
+    app.inject({ method: "POST", url: `/api/assistant/deliverables/${id}/status`, payload: payload as object });
+  const file = (id: string | number) => app.inject({ method: "GET", url: `/api/assistant/deliverables/${id}/file` });
+
+  it("returns deliverables from the last 3 days, newest first, and all threads", async () => {
+    const body = (await board()).json();
+    expect(body.deliverables.map((d: { title: string }) => d.title)).toEqual([
+      "数据表", "越界的成品", "不见了的成品", "绕出去的成品", "周报草稿",
+    ]);
+    const d = body.deliverables.find((x: { title: string }) => x.title === "周报草稿");
+    expect(d).toEqual({
+      id: 1, itemId: 1, sessionKey: "item-1", title: "周报草稿", path: path.join(outRoot, "周报草稿.md"),
+      summary: "按上周记录整理", status: "new", createdAt: hoursAgo(5),
+    });
+    expect(body.threads).toEqual(expect.arrayContaining([
+      { sessionKey: "item-1", itemId: 1, title: "示例事项", status: "running", progress: "查完一半", updatedAt: hoursAgo(1) },
+      { sessionKey: "task-2", itemId: null, title: "临时活", status: "stuck", progress: "", updatedAt: hoursAgo(2) },
+    ]));
+    expect(body.threads).toHaveLength(2);
+  });
+
+  it("returns empty arrays for an older database without the new tables", async () => {
+    const oldPath = path.join(dir, "v3.db");
+    const db = new Database(oldPath);
+    db.exec(SCHEMA);
+    db.close();
+    const a = await build(oldPath);
+    try {
+      const body = (await a.inject({ method: "GET", url: "/api/assistant/board" })).json();
+      expect(body.deliverables).toEqual([]);
+      expect(body.threads).toEqual([]);
+      const res = await a.inject({ method: "POST", url: "/api/assistant/deliverables/1/status", payload: { status: "seen" } });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await a.close();
+    }
+  });
+
+  it("updates deliverable status and logs an action for its item", async () => {
+    const res = await setStatus(1, { status: "used" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: 1, status: "used", itemId: 1 });
+    expect((await setStatus(1, { status: "seen" })).json().status).toBe("seen");
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.prepare("SELECT item_id, action, source FROM actions ORDER BY id").all();
+    const d = db.prepare("SELECT status, updated_at FROM deliverables WHERE id = 1").get() as { status: string; updated_at: string };
+    db.close();
+    expect(rows).toEqual([
+      { item_id: 1, action: "deliverable_used", source: "web" },
+      { item_id: 1, action: "deliverable_seen", source: "web" },
+    ]);
+    expect(d.status).toBe("seen");
+    expect(d.updated_at).not.toBe(hoursAgo(5));
+  });
+
+  it("updates a deliverable that has no item without writing an action", async () => {
+    const res = await setStatus(2, { status: "dismissed" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("dismissed");
+    const db = new Database(dbPath, { readonly: true });
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM actions").get() as { n: number }).n;
+    db.close();
+    expect(n).toBe(0);
+  });
+
+  it("validates deliverable status requests", async () => {
+    expect((await setStatus("x", { status: "seen" })).statusCode).toBe(400);
+    expect((await setStatus(1, { status: "new" })).statusCode).toBe(400);
+    expect((await setStatus(1, {})).statusCode).toBe(400);
+    expect((await setStatus(999, { status: "seen" })).statusCode).toBe(404);
+    identity = PLAIN;
+    expect((await setStatus(1, { status: "seen" })).statusCode).toBe(403);
+    expect((await file(1)).statusCode).toBe(403);
+    identity = null;
+    expect((await setStatus(1, { status: "seen" })).statusCode).toBe(401);
+    expect((await file(1)).statusCode).toBe(401);
+  });
+
+  it("serves md as text and other files as attachments", async () => {
+    const md = await file(1);
+    expect(md.statusCode).toBe(200);
+    expect(md.headers["content-type"]).toMatch(/^text\/markdown; charset=utf-8/);
+    expect(md.body).toBe("# 示例周报\n内容甲\n");
+    expect(md.headers["content-disposition"]).toBeUndefined();
+
+    const bin = await file(2);
+    expect(bin.statusCode).toBe(200);
+    expect(bin.headers["content-type"]).toBe("application/octet-stream");
+    expect(bin.headers["content-disposition"]).toContain("attachment;");
+    expect(bin.headers["content-disposition"]).toContain(`filename*=UTF-8''${encodeURIComponent("数据.xlsx")}`);
+    expect(bin.rawPayload).toEqual(Buffer.from([1, 2, 3, 4]));
+  });
+
+  it("refuses files outside the output root and 404s missing ones", async () => {
+    expect((await file(4)).statusCode).toBe(403);
+    expect((await file(6)).statusCode).toBe(403);
+    expect((await file(5)).statusCode).toBe(404);
+    expect((await file(999)).statusCode).toBe(404);
+    expect((await file("abc")).statusCode).toBe(400);
+  });
+
+  it("refuses a symlink inside the root that points outside", async () => {
+    await symlink(path.join(dir, "secret.txt"), path.join(outRoot, "link.txt"));
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO deliverables (title, path, created_at, updated_at) VALUES ('链接', ?, ?, ?)")
+      .run(path.join(outRoot, "link.txt"), hoursAgo(1), hoursAgo(1));
+    db.close();
+    expect((await file(7)).statusCode).toBe(403);
+  });
+});
+
+describe("toContainerPath", () => {
+  it("maps the host workspace prefix to /hywork/", () => {
+    expect(toContainerPath("/root/code/hyworkspace/产出/蟹哥/a.md")).toBe("/hywork/产出/蟹哥/a.md");
+    expect(toContainerPath("/hywork/产出/蟹哥/a.md")).toBe("/hywork/产出/蟹哥/a.md");
+    expect(toContainerPath("/root/code/hyworkspaceX/a.md")).toBe("/root/code/hyworkspaceX/a.md");
   });
 });
