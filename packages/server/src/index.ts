@@ -51,6 +51,7 @@ import { ProactiveDetector } from "./resident/proactive-detector.js";
 import { PushSubscriptionStore } from "./storage/push-subscriptions.js";
 import { WebPushService } from "./push/web-push-service.js";
 import { registerPushRoutes } from "./api/push.js";
+import { registerAssistantRoutes } from "./api/assistant.js";
 
 const PORT = parseInt(process.env.CC_PET_PORT ?? "3000", 10);
 const DATA_DIR = process.env.CC_PET_DATA_DIR ?? "./data";
@@ -163,6 +164,10 @@ registerSessionRoutes(app, sessionStore, messageStore);
 registerPushRoutes(app, {
   store: pushSubscriptionStore,
   webPush,
+  getAuthIdentity: getRequestAuthIdentity,
+});
+registerAssistantRoutes(app, {
+  dbPath: process.env.ASSISTANT_DB ?? path.join(DATA_DIR, "qiulai", "qiulai.db"),
   getAuthIdentity: getRequestAuthIdentity,
 });
 registerHistoryRoutes(app, messageStore);
