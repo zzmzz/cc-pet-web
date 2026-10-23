@@ -151,6 +151,10 @@ export type ThreadStatus = "running" | "done" | "stuck";
 export interface AssistantThread {
   sessionKey: string; itemId: number | null; title: string;
   status: string; progress: string; updatedAt: string;
+  /** The session that dispatched it; null for the planner's own, missing from older servers. */
+  parent?: string | null;
+  /** Missing from older servers. */
+  createdAt?: string;
 }
 
 const DELIVERABLE_LABELS: Record<DeliverableStatus, string> = {
@@ -183,4 +187,56 @@ export function deliverableTime(createdAt: string, today: string): string {
 /** The thread for an item: prefer its own item-<id> session, else the newest one pointing at it. */
 export function threadForItem(threads: AssistantThread[], itemId: number): AssistantThread | undefined {
   return threads.find((t) => t.sessionKey === `item-${itemId}`) ?? threads.find((t) => t.itemId === itemId);
+}
+
+/**
+ * Whether a thread's parent names the resident session. The backend stores the
+ * session key cc-connect hands the agent, which may or may not carry the bridge
+ * prefix, so either side may be the longer one; a match has to cover whole
+ * colon-separated segments at the end.
+ */
+export function isChildOf(parent: string | null | undefined, residentKey: string): boolean {
+  if (!parent) return false;
+  return parent === residentKey || residentKey.endsWith(`:${parent}`) || parent.endsWith(`:${residentKey}`);
+}
+
+function parseTime(s: string | undefined): number {
+  if (!s) return NaN;
+  // The backend writes local time without a zone; a space instead of the T also occurs.
+  return new Date(s.replace(" ", "T")).getTime();
+}
+
+/** How long ago `since` was, the way you would say it: 刚开始, 12 分钟, 2 小时 25 分钟, 3 天. */
+export function elapsedLabel(since: string, now: Date): string {
+  const ms = now.getTime() - parseTime(since);
+  if (!(ms >= 60_000)) return "刚开始";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours} 小时 ${minutes % 60} 分钟` : `${hours} 小时`;
+  return `${Math.floor(hours / 24)} 天`;
+}
+
+const DONE_WINDOW_MS = 24 * 3600 * 1000;
+const ROW_RANK: Record<string, number> = { stuck: 0, running: 1, done: 2 };
+
+/**
+ * The progress strip above the main chat: threads the resident session dispatched,
+ * stuck first, then running (newest first), then those finished in the last 24 hours
+ * (most recently finished first).
+ */
+export function progressRows(threads: AssistantThread[], residentKey: string, now: Date): AssistantThread[] {
+  const cutoff = now.getTime() - DONE_WINDOW_MS;
+  return threads
+    .filter((t) => Object.hasOwn(ROW_RANK, t.status) && isChildOf(t.parent, residentKey))
+    .filter((t) => t.status !== "done" || parseTime(t.updatedAt) >= cutoff)
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      const rank = ROW_RANK[a.t.status] - ROW_RANK[b.t.status];
+      if (rank) return rank;
+      const at = a.t.status === "done" ? a.t.updatedAt : a.t.createdAt ?? a.t.updatedAt;
+      const bt = b.t.status === "done" ? b.t.updatedAt : b.t.createdAt ?? b.t.updatedAt;
+      return parseTime(bt) - parseTime(at) || a.i - b.i;
+    })
+    .map(({ t }) => t);
 }

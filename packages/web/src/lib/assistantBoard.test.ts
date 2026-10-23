@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   deliverableStatusLabel, deliverableTime, discussionPrompt, fileName, groupBoard, isTextDeliverable,
-  priorityRank, threadForItem, weekdayLabel, type AssistantItem,
+  isChildOf, elapsedLabel, priorityRank, progressRows, threadForItem, weekdayLabel,
+  type AssistantItem, type AssistantThread,
 } from "./assistantBoard.js";
 
 let seq = 0;
@@ -181,5 +182,74 @@ describe("deliverable and thread helpers", () => {
     expect(threadForItem(threads, 3)?.sessionKey).toBe("item-3");
     expect(threadForItem(threads, 5)?.sessionKey).toBe("task-2");
     expect(threadForItem(threads, 9)).toBeUndefined();
+  });
+});
+
+describe("isChildOf", () => {
+  const KEY = "demo:resident:resident";
+  it("matches the resident key as stored, with or without the bridge prefix", () => {
+    expect(isChildOf(KEY, KEY)).toBe(true);
+    expect(isChildOf("resident:resident", KEY)).toBe(true);
+    expect(isChildOf("resident", KEY)).toBe(true);
+    expect(isChildOf("bridge:demo:resident:resident", KEY)).toBe(true);
+  });
+  it("rejects other sessions and empty parents", () => {
+    expect(isChildOf(null, KEY)).toBe(false);
+    expect(isChildOf(undefined, KEY)).toBe(false);
+    expect(isChildOf("", KEY)).toBe(false);
+    expect(isChildOf("item-3", KEY)).toBe(false);
+    expect(isChildOf("demo:item-3:item-3", KEY)).toBe(false);
+    expect(isChildOf("ent:resident", KEY)).toBe(false);
+    expect(isChildOf("other:resident:other", KEY)).toBe(false);
+  });
+});
+
+describe("elapsedLabel", () => {
+  const now = new Date(2026, 9, 28, 12, 0, 0);
+  it("reads like spoken time", () => {
+    expect(elapsedLabel("2026-10-28T11:59:40", now)).toBe("刚开始");
+    expect(elapsedLabel("2026-10-28T11:48:00", now)).toBe("12 分钟");
+    expect(elapsedLabel("2026-10-28T10:00:00", now)).toBe("2 小时");
+    expect(elapsedLabel("2026-10-28T09:35:00", now)).toBe("2 小时 25 分钟");
+    expect(elapsedLabel("2026-10-26T08:00:00", now)).toBe("2 天");
+  });
+  it("treats future or unparsable times as just started", () => {
+    expect(elapsedLabel("2026-10-28T12:30:00", now)).toBe("刚开始");
+    expect(elapsedLabel("not a time", now)).toBe("刚开始");
+  });
+});
+
+describe("progressRows", () => {
+  const KEY = "demo:resident:resident";
+  const now = new Date(2026, 9, 28, 12, 0, 0);
+  function th(p: Partial<AssistantThread>): AssistantThread {
+    return {
+      sessionKey: "task-1", itemId: null, title: "活", status: "running", progress: "",
+      parent: KEY, createdAt: "2026-10-28T10:00:00", updatedAt: "2026-10-28T11:00:00", ...p,
+    };
+  }
+  it("keeps the resident's own threads: unfinished ones, and done ones from the last 24 hours", () => {
+    const rows = progressRows([
+      th({ sessionKey: "task-1" }),
+      th({ sessionKey: "task-2", parent: null }),
+      th({ sessionKey: "task-3", parent: "item-4" }),
+      th({ sessionKey: "task-4", status: "done", updatedAt: "2026-10-27T11:00:00" }),
+      th({ sessionKey: "task-5", status: "done", updatedAt: "2026-10-28T09:00:00" }),
+      th({ sessionKey: "task-6", status: "stuck", createdAt: "2026-10-20T10:00:00", updatedAt: "2026-10-20T10:00:00" }),
+      th({ sessionKey: "task-7", status: "weird" }),
+      th({ sessionKey: "task-9", status: "toString" }),
+      th({ sessionKey: "task-8", parent: undefined }),
+    ], KEY, now);
+    expect(rows.map((t) => t.sessionKey)).toEqual(["task-6", "task-1", "task-5"]);
+  });
+  it("orders stuck, then running newest first, then done newest first", () => {
+    const rows = progressRows([
+      th({ sessionKey: "task-1", status: "done", updatedAt: "2026-10-28T08:00:00" }),
+      th({ sessionKey: "task-2", createdAt: "2026-10-28T09:00:00" }),
+      th({ sessionKey: "task-3", status: "done", updatedAt: "2026-10-28T10:00:00" }),
+      th({ sessionKey: "task-4", createdAt: "2026-10-28T11:00:00" }),
+      th({ sessionKey: "task-5", status: "stuck" }),
+    ], KEY, now);
+    expect(rows.map((t) => t.sessionKey)).toEqual(["task-5", "task-4", "task-2", "task-3", "task-1"]);
   });
 });
