@@ -84,6 +84,7 @@ export function SettingsPanel() {
     }
     setTokenSaving(true);
     setTokenError(null);
+    let ui: unknown;
     try {
       const res = await fetch("/api/auth/verify", {
         method: "POST",
@@ -94,6 +95,7 @@ export function SettingsPanel() {
         setTokenError("Token 无效");
         return;
       }
+      ui = ((await res.json().catch(() => null)) as { ui?: unknown } | null)?.ui;
     } catch {
       setTokenError("认证服务不可用，请稍后重试");
       return;
@@ -101,6 +103,10 @@ export function SettingsPanel() {
       setTokenSaving(false);
     }
     localStorage.setItem(CC_PET_TOKEN_KEY, token);
+    // The new token may use a different page; App re-checks on boot, but an
+    // offline reload would otherwise render the old token's page.
+    if (ui === "assistant") localStorage.setItem("cc-pet-ui", "assistant");
+    else localStorage.removeItem("cc-pet-ui");
     window.location.reload();
   }, [tokenDraft]);
 
