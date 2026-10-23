@@ -176,17 +176,17 @@ describe("AssistantPage", () => {
     expect(within(section).getByRole("button", { name: /还有 1 件不急的/ })).toBeTruthy();
   });
 
-  it("orders the sections: today, next week, waiting, farther, undated, recently closed", async () => {
+  it("orders the sections: today, waiting, undated, next week, farther, recently closed", async () => {
     render(<AssistantPage />);
 
     await screen.findByText("去图书馆还书");
     const titles = screen
       .getAllByRole("heading", { level: 2 })
       .map((h) => (h.textContent ?? "").replace(/[\d▸▾\s]/g, ""));
-    expect(titles).toEqual(["今天", "接下来一周", "等你回复", "更远", "没定日期的待办"]);
+    expect(titles).toEqual(["今天", "等你回复", "没定日期的待办", "接下来一周", "更远"]);
     const closed = screen.getByRole("button", { name: /最近 24 小时结案/ });
-    const undated = screen.getByRole("heading", { name: /没定日期的待办/ });
-    expect(undated.compareDocumentPosition(closed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const farther = screen.getByRole("heading", { name: /更远/ });
+    expect(farther.compareDocumentPosition(closed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("tags urgent items 急 and relaxed ones 不急, and puts urgent ones first", async () => {
