@@ -179,6 +179,44 @@ describe("App integration", () => {
     expect(localStorage.getItem("cc-pet-token")).toBeNull();
   });
 
+  it("renders the assistant page instead of the chat shell for assistant-mode tokens", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ valid: true, name: "demo", bridgeIds: ["cc-connect"], ui: "assistant" }),
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "秋来" });
+    expect(screen.queryByPlaceholderText(INPUT_PLACEHOLDER)).toBeNull();
+    expect(localStorage.getItem("cc-pet-ui")).toBe("assistant");
+  });
+
+  it("uses the remembered ui mode on an offline cold start", async () => {
+    localStorage.setItem("cc-pet-ui", "assistant");
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "秋来" });
+  });
+
+  it("drops the remembered ui mode when verify reports none", async () => {
+    localStorage.setItem("cc-pet-ui", "assistant");
+    render(<App />);
+
+    await screen.findByPlaceholderText(INPUT_PLACEHOLDER);
+    expect(screen.queryByRole("heading", { name: "秋来" })).toBeNull();
+    expect(localStorage.getItem("cc-pet-ui")).toBeNull();
+  });
+
+  it("clears the remembered ui mode when the token is rejected", async () => {
+    localStorage.setItem("cc-pet-ui", "assistant");
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
+    render(<App />);
+
+    await screen.findByText("输入访问 Token");
+    expect(localStorage.getItem("cc-pet-ui")).toBeNull();
+  });
+
   it("shows connection status and updates to connected after bridge event", async () => {
     render(<App />);
 

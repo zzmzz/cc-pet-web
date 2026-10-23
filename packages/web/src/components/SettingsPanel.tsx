@@ -106,6 +106,7 @@ export function SettingsPanel() {
 
   const logout = useCallback(() => {
     localStorage.removeItem(CC_PET_TOKEN_KEY);
+    localStorage.removeItem("cc-pet-ui");
     window.location.reload();
   }, []);
 

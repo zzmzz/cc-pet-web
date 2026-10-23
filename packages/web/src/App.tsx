@@ -1,3 +1,4 @@
+import { AssistantPage } from "./components/assistant/AssistantPage.js";
 import { useEffect, useState } from "react";
 import { WS_EVENTS, makeChatKey, type TaskPhase } from "@cc-pet/shared";
 import { setPlatform, getPlatform, type PlatformAPI } from "./lib/platform.js";
@@ -45,6 +46,22 @@ const CONTENT_BEARING_WS_EVENTS = new Set<string>([
   WS_EVENTS.BRIDGE_PREVIEW_UPDATE,
 ]);
 
+const UI_KEY = "cc-pet-ui";
+
+function readStoredUi(): "assistant" | null {
+  return localStorage.getItem(UI_KEY) === "assistant" ? "assistant" : null;
+}
+
+// Persist the server-reported UI mode so an offline cold start renders the same page.
+function rememberUi(value: unknown): "assistant" | null {
+  if (value === "assistant") {
+    localStorage.setItem(UI_KEY, "assistant");
+    return "assistant";
+  }
+  localStorage.removeItem(UI_KEY);
+  return null;
+}
+
 export default function App() {
   useVisualViewport();
 
@@ -52,6 +69,7 @@ export default function App() {
   const [authBooting, setAuthBooting] = useState(true);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [ui, setUi] = useState<"assistant" | null>(readStoredUi);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +90,13 @@ export default function App() {
         // the user out for something they cannot have caused.
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem("cc-pet-token");
+          localStorage.removeItem(UI_KEY);
+          if (!cancelled) setUi(null);
         } else if (!cancelled) {
+          if (res.ok) {
+            const data = await res.json().catch(() => null);
+            setUi(rememberUi(data?.ui));
+          }
           setAuthToken(storedToken);
         }
       } catch {
@@ -106,6 +130,8 @@ export default function App() {
         setAuthError("Token 无效");
         return false;
       }
+      const data = await res.json().catch(() => null);
+      setUi(rememberUi(data?.ui));
     } catch {
       setAuthError("认证服务不可用，请稍后重试");
       return false;
@@ -659,6 +685,8 @@ export default function App() {
   if (authBooting) return null;
   if (!authToken) return <LoginGate onSubmit={handleLogin} errorMessage={authError} />;
   if (!ready) return null;
+
+  if (ui === "assistant") return <AssistantPage />;
 
   return (
     <>
