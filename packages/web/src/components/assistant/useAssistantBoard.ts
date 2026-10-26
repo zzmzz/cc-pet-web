@@ -25,6 +25,22 @@ export const AUTH_FAILED_MESSAGE = "登录失效了，请退出后重新登录";
 const isAuthFailure = (status: number) => status === 401 || status === 403;
 
 // fetchApi resolves on any HTTP status, so go through fetchApiRaw and check it here.
+const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
+/** The server always sends every list, but a proxy error page or a test stub may not: missing lists become empty. */
+export function normalizeBoard(raw: unknown): AssistantBoard {
+  const b = (raw && typeof raw === "object" ? raw : {}) as Partial<AssistantBoard>;
+  return {
+    ...b,
+    items: asArray<AssistantItem>(b.items),
+    closedRecent: asArray<AssistantItem>(b.closedRecent),
+    deliverables: asArray<AssistantDeliverable>(b.deliverables),
+    threads: asArray<AssistantThread>(b.threads),
+    plannedAt: typeof b.plannedAt === "string" ? b.plannedAt : null,
+    generatedAt: typeof b.generatedAt === "string" ? b.generatedAt : "",
+  } as AssistantBoard;
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<{ status: number; body: T | null }> {
   const res = await getPlatform().fetchApiRaw(path, init);
   if (!res?.ok) return { status: res?.status ?? 0, body: null };
@@ -50,7 +66,7 @@ export function useAssistantBoard() {
       const { status, body } = await requestJson<AssistantBoard>("/api/assistant/board");
       if (!mounted.current) return;
       if (body) {
-        setBoard(body);
+        setBoard(normalizeBoard(body));
         setError(null);
       } else {
         setError(
