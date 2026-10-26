@@ -143,6 +143,66 @@ export type DeliverableStatus = "new" | "seen" | "used" | "dismissed";
 export interface AssistantDeliverable {
   id: number; itemId: number | null; sessionKey: string | null; title: string;
   path: string; summary: string; status: string; createdAt: string;
+  /** What the work is about, e.g. 年会筹备; null when not given, missing from older servers. */
+  topic?: string | null;
+}
+
+/** Above this many deliverables the list is grouped by topic. */
+export const DELIVERABLE_FLAT_MAX = 5;
+/** At most this many topic groups; the rest go into 「其他」. */
+export const DELIVERABLE_GROUP_MAX = 5;
+export const OTHER_TOPIC = "其他";
+/** Group key of 「其他」, distinct from any topic text. */
+export const OTHER_GROUP_KEY = "\u0000other";
+
+export interface DeliverableGroup {
+  key: string;
+  label: string;
+  deliverables: AssistantDeliverable[];
+  /** How many are still 待你看 (status new). */
+  unseen: number;
+  /** createdAt of the newest one. */
+  newest: string;
+}
+
+/**
+ * Group deliverables by topic. A deliverable without one falls back to its item's
+ * title, then its thread's title, then 「其他」. The newest five groups stay; the
+ * rest join 「其他」, which always comes last. Order inside a group is kept.
+ */
+export function groupDeliverables(
+  deliverables: AssistantDeliverable[],
+  titles: { item?: (id: number) => string | undefined; thread?: (key: string) => string | undefined } = {},
+): DeliverableGroup[] {
+  const labelOf = (d: AssistantDeliverable): string | null => {
+    const raw =
+      d.topic?.trim() ||
+      (d.itemId != null ? titles.item?.(d.itemId)?.trim() : undefined) ||
+      (d.sessionKey ? titles.thread?.(d.sessionKey)?.trim() : undefined);
+    return raw && raw !== OTHER_TOPIC ? raw : null;
+  };
+  const byLabel = new Map<string, AssistantDeliverable[]>();
+  const other: AssistantDeliverable[] = [];
+  for (const d of deliverables) {
+    const label = labelOf(d);
+    if (label === null) other.push(d);
+    else byLabel.set(label, [...(byLabel.get(label) ?? []), d]);
+  }
+  const make = (key: string, label: string, list: AssistantDeliverable[]): DeliverableGroup => ({
+    key,
+    label,
+    deliverables: list,
+    unseen: list.filter((d) => d.status === "new").length,
+    newest: list.reduce((m, d) => (d.createdAt > m ? d.createdAt : m), ""),
+  });
+  const topics = [...byLabel.entries()]
+    .map(([label, list]) => make(label, label, list))
+    .sort((a, b) => (a.newest < b.newest ? 1 : a.newest > b.newest ? -1 : 0));
+  const kept = topics.slice(0, DELIVERABLE_GROUP_MAX);
+  const rest = new Set([...other, ...topics.slice(DELIVERABLE_GROUP_MAX).flatMap((g) => g.deliverables)]);
+  if (rest.size === 0) return kept;
+  // Keep the incoming (newest-first) order inside 其他 too.
+  return [...kept, make(OTHER_GROUP_KEY, OTHER_TOPIC, deliverables.filter((d) => rest.has(d)))];
 }
 
 export type ThreadStatus = "running" | "done" | "stuck";

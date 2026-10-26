@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { groupBoard, localDate, type AssistantItem } from "../../lib/assistantBoard.js";
 import { useUIStore } from "../../lib/store/ui.js";
 import { useIsMobileTracker } from "../../lib/useIsMobileTracker.js";
@@ -65,6 +65,7 @@ export function AssistantPage() {
   const rc = resident?.connectionId ?? null;
   const deliverables = board?.deliverables ?? NO_DELIVERABLES;
   const threads = board?.threads ?? NO_THREADS;
+  const boardItems = useMemo(() => (board ? [...board.items, ...board.closedRecent] : undefined), [board]);
 
   // The backend wrote into a session (a reminder, a sub-session it started):
   // refresh the board for thread states and pull the session list and those chats.
@@ -192,6 +193,7 @@ export function AssistantPage() {
         today={today}
         deliverables={deliverables}
         onDeliverableStatus={setDeliverableStatus}
+        items={boardItems}
         onStatus={setStatus}
         onDiscuss={onDiscuss}
       />
@@ -284,6 +286,7 @@ export function AssistantPage() {
                 closed={board.closedRecent}
                 deliverables={deliverables}
                 onDeliverableStatus={setDeliverableStatus}
+                items={boardItems}
                 onStatus={setStatus}
                 onDiscuss={onDiscuss}
                 weekLayout={boardWide ? "columns" : "rows"}

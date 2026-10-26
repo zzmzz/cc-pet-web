@@ -103,10 +103,28 @@ const DELIVERABLE_STATUSES: readonly string[] = ["seen", "used", "dismissed"];
 const DELIVERABLE_WINDOW_MS = 3 * 24 * 3600 * 1000;
 /** 「用了」的成品留这么久；「不用了」的立刻不再返回 */
 const DELIVERABLE_USED_WINDOW_MS = 24 * 3600 * 1000;
-/** 这两种直接在页面里显示，其余一律下载 */
-const TEXT_TYPES: Record<string, string> = {
+/** 文本和图片直接在页面里显示，其余一律下载 */
+const INLINE_TYPES: Record<string, string> = {
   ".md": "text/markdown; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+};
+/** 下载时带上的类型，好让手机选对打开方式；不认识的是 application/octet-stream */
+const DOWNLOAD_TYPES: Record<string, string> = {
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".doc": "application/msword",
+  ".xls": "application/vnd.ms-excel",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".wps": "application/vnd.ms-works",
+  ".et": "application/vnd.ms-excel",
+  ".dps": "application/vnd.ms-powerpoint",
+  ".pdf": "application/pdf",
+  ".csv": "text/csv; charset=utf-8",
+  ".zip": "application/zip",
 };
 
 export interface PathMap {
@@ -141,6 +159,8 @@ interface DeliverableRow {
   summary: string;
   status: string;
   created_at: string;
+  /** 第 6 版库才有：成品的主题 */
+  topic?: string | null;
 }
 
 interface ThreadRow {
@@ -167,8 +187,15 @@ function toDeliverable(r: DeliverableRow) {
     path: r.path,
     summary: r.summary,
     status: r.status,
+    topic: r.topic ?? null,
     createdAt: r.created_at,
   };
+}
+
+/** topic 列是第 6 版库才加的；旧库不选它 */
+function deliverableColumns(db: Database.Database): string {
+  const cols = db.pragma("table_info(deliverables)") as { name: string }[];
+  return cols.some((c) => c.name === "topic") ? `${DELIVERABLE_COLUMNS}, topic` : DELIVERABLE_COLUMNS;
 }
 
 function toThread(r: ThreadRow) {
@@ -259,7 +286,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
         deliverables = (
           db
             .prepare(
-              `SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE (status IN ('new', 'seen') AND created_at >= ?) OR (status = 'used' AND updated_at >= ?) ORDER BY created_at DESC, id DESC`,
+              `SELECT ${deliverableColumns(db)} FROM deliverables WHERE (status IN ('new', 'seen') AND created_at >= ?) OR (status = 'used' AND updated_at >= ?) ORDER BY created_at DESC, id DESC`,
             )
             .all(since, usedSince) as DeliverableRow[]
         ).map(toDeliverable);
@@ -332,7 +359,7 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
         const row = db.transaction((): DeliverableRow | undefined => {
           const info = db.prepare("UPDATE deliverables SET status = ?, updated_at = ? WHERE id = ?").run(next, at, id);
           if (info.changes === 0) return undefined;
-          const r = db.prepare(`SELECT ${DELIVERABLE_COLUMNS} FROM deliverables WHERE id = ?`).get(id) as DeliverableRow;
+          const r = db.prepare(`SELECT ${deliverableColumns(db)} FROM deliverables WHERE id = ?`).get(id) as DeliverableRow;
           // actions.item_id 不能为空；没挂事项的成品只改状态
           if (r.item_id != null) {
             db.prepare("INSERT INTO actions (item_id, action, source, at) VALUES (?, ?, 'web', ?)").run(
@@ -384,16 +411,19 @@ export function registerAssistantRoutes(app: FastifyInstance, deps: AssistantRou
     if (!stat.isFile()) return reply.code(404).send({ error: "文件不存在" });
 
     reply.header("Content-Length", stat.size).header("X-Content-Type-Options", "nosniff");
-    const textType = TEXT_TYPES[path.extname(real).toLowerCase()];
-    if (textType) {
-      return reply.type(textType).send(fs.createReadStream(real));
-    }
+    const ext = path.extname(real).toLowerCase();
     const name = path.basename(filePath);
     // 老浏览器只认 filename，给个 ASCII 兜底；真名放 filename*
     const fallback = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const filename = `filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+    const inlineType = INLINE_TYPES[ext];
+    if (inlineType) {
+      if (inlineType.startsWith("image/")) reply.header("Content-Disposition", `inline; ${filename}`);
+      return reply.type(inlineType).send(fs.createReadStream(real));
+    }
     return reply
-      .type("application/octet-stream")
-      .header("Content-Disposition", `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`)
+      .type(DOWNLOAD_TYPES[ext] ?? "application/octet-stream")
+      .header("Content-Disposition", `attachment; ${filename}`)
       .send(fs.createReadStream(real));
   });
 }

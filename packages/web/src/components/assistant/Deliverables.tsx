@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getPlatform } from "../../lib/platform.js";
 import {
+  DELIVERABLE_FLAT_MAX,
   deliverableStatusLabel,
   deliverableTime,
   fileName,
+  groupDeliverables,
   isTextDeliverable,
   type AssistantDeliverable,
+  type AssistantItem,
+  type DeliverableGroup,
 } from "../../lib/assistantBoard.js";
 import { Section } from "./Section.js";
+import { ThreadsContext } from "./threads.js";
 import type { DeliverableAction } from "./useAssistantBoard.js";
 
 type OnDeliverableStatus = (id: number, status: DeliverableAction) => Promise<void>;
@@ -28,7 +33,11 @@ function fileIcon(path: string): string {
   if (ext === "xlsx" || ext === "xls" || ext === "csv") return "📊";
   if (ext === "pdf") return "📕";
   if (ext === "pptx" || ext === "ppt") return "📽️";
-  if (ext === "docx" || ext === "doc") return "📄";
+  if (ext === "docx" || ext === "doc" || ext === "wps") return "📄";
+  if (ext === "et") return "📊";
+  if (ext === "dps") return "📽️";
+  if (ext === "png" || ext === "jpg" || ext === "jpeg") return "🖼️";
+  if (ext === "zip") return "🗜️";
   return "📎";
 }
 
@@ -222,31 +231,118 @@ function DeliverableRow({
   );
 }
 
-/** 「蟹哥做好的」：近 3 天的成品（用了的留 24 小时，不用了的不显示）。没有就不显示。 */
+export const DELIVERABLE_GROUPS_OPEN_KEY = "cc-pet-assistant-deliverable-groups-open";
+
+function readOpenGroups(): Set<string> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(DELIVERABLE_GROUPS_OPEN_KEY) ?? "[]");
+    return new Set(Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeOpenGroups(keys: Set<string>): void {
+  try {
+    if (keys.size > 0) localStorage.setItem(DELIVERABLE_GROUPS_OPEN_KEY, JSON.stringify([...keys]));
+    else localStorage.removeItem(DELIVERABLE_GROUPS_OPEN_KEY);
+  } catch {
+    // Private mode and the like: groups still open and close, they just aren't remembered.
+  }
+}
+
+function GroupRow({
+  group: g,
+  open,
+  onToggle,
+  today,
+  children,
+}: {
+  group: DeliverableGroup;
+  open: boolean;
+  onToggle: () => void;
+  today: string;
+  children: ReactNode;
+}) {
+  return (
+    <li data-testid="deliverable-group" className="border-b border-border last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 py-2.5 text-left text-sm text-text-primary"
+      >
+        <span aria-hidden className="w-3 shrink-0 text-xs text-text-secondary">
+          {open ? "▾" : "▸"}
+        </span>
+        <span data-testid="deliverable-group-topic" className="min-w-0 truncate font-medium">
+          {g.label}
+        </span>
+        <span className="shrink-0 rounded-full bg-surface px-2 text-xs text-text-secondary">{g.deliverables.length}</span>
+        {g.unseen > 0 && (
+          <span data-testid="deliverable-group-unseen" className="shrink-0 rounded bg-amber-50 px-1.5 text-[11px] text-amber-700">
+            {g.unseen} 待你看
+          </span>
+        )}
+        <span className="ml-auto shrink-0 text-xs text-text-secondary">{deliverableTime(g.newest, today)}</span>
+      </button>
+      {open && <ul className="pl-5">{children}</ul>}
+    </li>
+  );
+}
+
+/**
+ * 「蟹哥做好的」：近 3 天的成品（用了的留 24 小时，不用了的不显示）。没有就不显示。
+ * 超过 5 件时按主题分组，组默认收起，展开过的组记在 localStorage 里。
+ */
 export function Deliverables({
   deliverables,
   today,
   onStatus,
+  items,
 }: {
   deliverables: AssistantDeliverable[];
   today: string;
   onStatus: OnDeliverableStatus;
+  /** Item titles stand in for a missing topic. */
+  items?: AssistantItem[];
 }) {
   const { open, viewer } = useOpenDeliverable(onStatus);
+  const threads = useContext(ThreadsContext);
+  const [openGroups, setOpenGroups] = useState(readOpenGroups);
+  const groups = useMemo(() => {
+    if (deliverables.length <= DELIVERABLE_FLAT_MAX) return null;
+    const itemTitles = new Map((items ?? []).map((i) => [i.id, i.title]));
+    const threadTitles = new Map(threads.map((t) => [t.sessionKey, t.title]));
+    return groupDeliverables(deliverables, {
+      item: (id) => itemTitles.get(id),
+      thread: (key) => threadTitles.get(key),
+    });
+  }, [deliverables, items, threads]);
   if (deliverables.length === 0) return null;
+  const toggle = (key: string) => {
+    const next = new Set(openGroups);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setOpenGroups(next);
+    writeOpenGroups(next);
+  };
+  const row = (d: AssistantDeliverable) => (
+    <DeliverableRow key={d.id} deliverable={d} today={today} onStatus={onStatus} onOpen={open} />
+  );
   return (
     <Section title="蟹哥做好的" count={deliverables.length}>
-      <ul>
-        {deliverables.map((d) => (
-          <DeliverableRow
-            key={d.id}
-            deliverable={d}
-            today={today}
-            onStatus={onStatus}
-            onOpen={open}
-          />
-        ))}
-      </ul>
+      {groups ? (
+        <ul>
+          {groups.map((g) => (
+            <GroupRow key={g.key} group={g} open={openGroups.has(g.key)} onToggle={() => toggle(g.key)} today={today}>
+              {g.deliverables.map(row)}
+            </GroupRow>
+          ))}
+        </ul>
+      ) : (
+        <ul>{deliverables.map(row)}</ul>
+      )}
       {viewer}
     </Section>
   );

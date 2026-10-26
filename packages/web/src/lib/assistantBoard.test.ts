@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  deliverableStatusLabel, deliverableTime, discussionPrompt, fileName, groupBoard, isTextDeliverable,
+  deliverableStatusLabel, deliverableTime, discussionPrompt, fileName, groupBoard, groupDeliverables, isTextDeliverable,
+  OTHER_GROUP_KEY, type AssistantDeliverable,
   isChildOf, elapsedLabel, priorityRank, progressRows, threadSourceLabel, threadForItem, weekdayLabel,
   type AssistantItem, type AssistantThread,
 } from "./assistantBoard.js";
@@ -182,6 +183,70 @@ describe("deliverable and thread helpers", () => {
     expect(threadForItem(threads, 3)?.sessionKey).toBe("item-3");
     expect(threadForItem(threads, 5)?.sessionKey).toBe("task-2");
     expect(threadForItem(threads, 9)).toBeUndefined();
+  });
+});
+
+describe("groupDeliverables", () => {
+  let n = 0;
+  const d = (p: Partial<AssistantDeliverable>): AssistantDeliverable => {
+    n += 1;
+    return {
+      id: n, itemId: null, sessionKey: null, title: `成品${n}`, path: `/out/${n}.md`, summary: "",
+      status: "seen", createdAt: "2026-10-28T09:00:00", ...p,
+    };
+  };
+
+  it("groups by topic, falling back to the item title, then the thread title, then 其他", () => {
+    const list = [
+      d({ topic: "年会筹备", createdAt: "2026-10-28T10:00:00", status: "new" }),
+      d({ topic: null, itemId: 7, createdAt: "2026-10-28T09:00:00" }),
+      d({ topic: null, sessionKey: "task-1", createdAt: "2026-10-28T08:00:00" }),
+      d({ topic: "年会筹备", createdAt: "2026-10-27T08:00:00", status: "new" }),
+      d({ createdAt: "2026-10-27T07:00:00" }),
+      d({ topic: "  ", itemId: 99, createdAt: "2026-10-26T07:00:00" }),
+    ];
+    const groups = groupDeliverables(list, {
+      item: (id) => (id === 7 ? "写示例报告" : undefined),
+      thread: (key) => (key === "task-1" ? "查资料" : undefined),
+    });
+    expect(groups.map((g) => [g.label, g.deliverables.map((x) => x.id), g.unseen, g.newest])).toEqual([
+      ["年会筹备", [list[0].id, list[3].id], 2, "2026-10-28T10:00:00"],
+      ["写示例报告", [list[1].id], 0, "2026-10-28T09:00:00"],
+      ["查资料", [list[2].id], 0, "2026-10-28T08:00:00"],
+      ["其他", [list[4].id, list[5].id], 0, "2026-10-27T07:00:00"],
+    ]);
+    expect(groups[3].key).toBe(OTHER_GROUP_KEY);
+  });
+
+  it("keeps the five newest topics and puts the rest into 其他, last", () => {
+    const list = [
+      d({ topic: "甲", createdAt: "2026-10-28T09:00:00" }),
+      d({ topic: null, createdAt: "2026-10-28T08:30:00" }),
+      d({ topic: "乙", createdAt: "2026-10-28T08:00:00" }),
+      d({ topic: "丙", createdAt: "2026-10-28T07:00:00" }),
+      d({ topic: "丁", createdAt: "2026-10-28T06:00:00" }),
+      d({ topic: "戊", createdAt: "2026-10-28T05:00:00" }),
+      d({ topic: "己", createdAt: "2026-10-28T04:00:00", status: "new" }),
+      d({ topic: "甲", createdAt: "2026-10-28T03:00:00" }),
+    ];
+    const groups = groupDeliverables(list);
+    expect(groups.map((g) => g.label)).toEqual(["甲", "乙", "丙", "丁", "戊", "其他"]);
+    expect(groups[0].deliverables).toHaveLength(2);
+    expect(groups[5].deliverables.map((x) => x.id)).toEqual([list[1].id, list[6].id]);
+    expect(groups[5].unseen).toBe(1);
+  });
+
+  it("orders groups by their newest deliverable, not by the first one listed", () => {
+    const list = [
+      d({ topic: "甲", createdAt: "2026-10-28T08:00:00" }),
+      d({ topic: "乙", createdAt: "2026-10-28T09:00:00" }),
+    ];
+    expect(groupDeliverables(list).map((g) => g.label)).toEqual(["乙", "甲"]);
+  });
+
+  it("treats a topic literally called 其他 as the 其他 group", () => {
+    const groups = groupDeliverables([d({ topic: "其他" }), d({ topic: "甲" })]);
+    expect(groups.map((g) => [g.key === OTHER_GROUP_KEY, g.label])).toEqual([[false, "甲"], [true, "其他"]]);
   });
 });
 

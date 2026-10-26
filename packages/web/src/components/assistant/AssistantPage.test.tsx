@@ -863,6 +863,20 @@ describe("AssistantPage deliverables and threads", () => {
     expect(screen.queryByRole("heading", { name: /蟹哥做好的/ })).toBeNull();
   });
 
+  it("groups more than five deliverables, labelling ones without a topic by their item", async () => {
+    const many = [
+      ...deliverables.slice(0, 2),
+      { ...deliverables[1], id: 5, itemId: 9, title: "牛奶清单" },
+      ...[6, 7, 8].map((id) => ({ ...deliverables[1], id, title: `示例${id}`, topic: "示例主题" })),
+    ];
+    mockAll({ ...fullBoard, deliverables: many });
+    render(<AssistantPage />);
+    const section = (await screen.findByRole("heading", { name: /蟹哥做好的/ })).closest("section")!;
+    const labels = within(section).getAllByTestId("deliverable-group-topic").map((e) => e.textContent);
+    expect(labels).toEqual(expect.arrayContaining(["整理书架", "买牛奶", "示例主题", "其他"]));
+    expect(within(section).queryAllByRole("button", { name: "打开" })).toHaveLength(0);
+  });
+
   it("works with a board that has no deliverables field at all", async () => {
     mockAll(board);
     render(<AssistantPage />);

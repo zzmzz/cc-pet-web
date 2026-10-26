@@ -275,7 +275,7 @@ describe("assistant API: deliverables and threads", () => {
     const d = body.deliverables.find((x: { title: string }) => x.title === "周报草稿");
     expect(d).toEqual({
       id: 1, itemId: 1, sessionKey: "item-1", title: "周报草稿", path: path.join(outRoot, "周报草稿.md"),
-      summary: "按上周记录整理", status: "new", createdAt: at.d5,
+      summary: "按上周记录整理", status: "new", topic: null, createdAt: at.d5,
     });
     expect(body.threads).toEqual(expect.arrayContaining([
       {
@@ -300,6 +300,21 @@ describe("assistant API: deliverables and threads", () => {
       "item-1": null,
       "task-2": "demo:resident:resident",
     });
+  });
+
+  it("returns topic as null before version 6 and the stored topic from version 6", async () => {
+    const before = (await board()).json().deliverables as { title: string; topic: string | null }[];
+    expect(before.every((d) => d.topic === null)).toBe(true);
+    const db = new Database(dbPath);
+    db.exec("ALTER TABLE threads ADD COLUMN parent TEXT; ALTER TABLE deliverables ADD COLUMN topic TEXT; PRAGMA user_version = 6;");
+    db.prepare("UPDATE deliverables SET topic = '示例主题' WHERE id = 1").run();
+    db.close();
+    const after = (await board()).json().deliverables as { id: number; topic: string | null }[];
+    expect(Object.fromEntries(after.map((d) => [d.id, d.topic]))).toEqual({
+      1: "示例主题", 2: null, 4: null, 5: null, 6: null,
+    });
+    const res = await setStatus(1, { status: "seen" });
+    expect(res.json().topic).toBe("示例主题");
   });
 
   it("returns empty arrays for an older database without the new tables", async () => {
@@ -370,12 +385,45 @@ describe("assistant API: deliverables and threads", () => {
 
     const bin = await file(2);
     expect(bin.statusCode).toBe(200);
-    expect(bin.headers["content-type"]).toBe("application/octet-stream");
+    expect(bin.headers["content-type"]).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
     expect(bin.headers["content-disposition"]).toContain("attachment;");
     expect(bin.headers["content-disposition"]).toContain(`filename*=UTF-8''${encodeURIComponent("数据.xlsx")}`);
     expect(bin.rawPayload).toEqual(Buffer.from([1, 2, 3, 4]));
     expect(bin.headers["content-length"]).toBe("4");
     expect(bin.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("downloads zip and office files as attachments and shows images inline", async () => {
+    const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0]);
+    await writeFile(path.join(outRoot, "资料包.zip"), zip);
+    await writeFile(path.join(outRoot, "旧表.xls"), Buffer.from([9, 9]));
+    await writeFile(path.join(outRoot, "示意图.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const db = new Database(dbPath);
+    const ins = db.prepare("INSERT INTO deliverables (id, title, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)");
+    ins.run(20, "资料包", path.join(outRoot, "资料包.zip"), hoursAgo(1), hoursAgo(1));
+    ins.run(21, "旧表", path.join(outRoot, "旧表.xls"), hoursAgo(1), hoursAgo(1));
+    ins.run(22, "示意图", path.join(outRoot, "示意图.png"), hoursAgo(1), hoursAgo(1));
+    db.close();
+
+    const z = await file(20);
+    expect(z.statusCode).toBe(200);
+    expect(z.headers["content-type"]).toBe("application/zip");
+    expect(z.headers["content-disposition"]).toContain("attachment;");
+    expect(z.headers["content-disposition"]).toContain(`filename*=UTF-8''${encodeURIComponent("资料包.zip")}`);
+    expect(z.rawPayload).toEqual(zip);
+    expect(z.headers["content-length"]).toBe(String(zip.length));
+
+    const x = await file(21);
+    expect(x.headers["content-type"]).toBe("application/vnd.ms-excel");
+    expect(x.headers["content-disposition"]).toContain("attachment;");
+
+    const img = await file(22);
+    expect(img.statusCode).toBe(200);
+    expect(img.headers["content-type"]).toBe("image/png");
+    expect(img.headers["content-disposition"]).toMatch(/^inline;/);
+    expect(img.headers["x-content-type-options"]).toBe("nosniff");
   });
 
   it("allows a file whose name merely starts with two dots", async () => {

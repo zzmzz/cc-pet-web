@@ -20,6 +20,8 @@ interface Made {
   today: string;
   deliverables: AssistantDeliverable[];
   onDeliverableStatus: (id: number, status: DeliverableAction) => Promise<void>;
+  /** Open and recently closed items; their titles label deliverables without a topic. */
+  items?: AssistantItem[];
 }
 
 interface Common {
@@ -151,13 +153,14 @@ export function FullBoard({
   closed,
   deliverables,
   onDeliverableStatus,
+  items,
   weekLayout = "rows",
   ...common
 }: Common & Made & { closed: AssistantItem[]; weekLayout?: "columns" | "rows" }) {
   return (
     <>
       <TodaySection {...common} />
-      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} />
+      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} items={items} />
       <WaitingSection {...common} />
       <UndatedSection {...common} />
       <WeekStrip today={today} week={common.groups.week} onDiscuss={common.onDiscuss} layout={weekLayout} />
@@ -173,12 +176,13 @@ export function TodaySections({
   today,
   deliverables,
   onDeliverableStatus,
+  items,
   ...common
 }: Common & Made & { closed: AssistantItem[] }) {
   return (
     <>
       <TodaySection {...common} />
-      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} />
+      <Deliverables deliverables={deliverables} today={today} onStatus={onDeliverableStatus} items={items} />
       <WaitingSection {...common} />
       <UndatedSection {...common} />
       <ClosedRecent items={closed} onStatus={common.onStatus} />
